@@ -74,11 +74,15 @@ def find_glucose_gaps(entries_list: list[dict], min_gap_min: int) -> list[dict]:
     return gaps
 
 
-def find_existing(treatments_list: list[dict], around: datetime) -> bool:
+def find_existing(
+    treatments_list: list[dict],
+    around: datetime,
+    event_types: tuple[str, ...] = ("Sensor Change", "Sensor Start", "Sensor Stop"),
+) -> bool:
     from datetime import timedelta
     win = timedelta(minutes=IDEMPOTENCY_TOL_MIN)
     for t in treatments_list:
-        if t.get("eventType") not in ("Sensor Change", "Sensor Start"):
+        if t.get("eventType") not in event_types:
             continue
         ts = _parse_dt(t.get("created_at", ""))
         if ts and abs((ts - around).total_seconds()) < win.total_seconds():
@@ -141,32 +145,46 @@ def main() -> int:
         conn=conn, count=10000, date_gte=iso_s, date_lte=iso_e,
     )
 
-    print(f"  {'gap_start':<22s} {'gap':>7s}  status")
+    print(f"  {'stop_at (gap_start)':<22s} {'start_at (gap_end)':<22s} {'gap':>5s}  status")
     posted = skipped = errors = 0
     for ev in deduped:
-        dup = find_existing(existing, ev["gap_start"])
-        status = "exists ✓ skip" if dup else ("WOULD POST" if not args.apply else "POSTING...")
-        line = f"  {ev['gap_start'].isoformat()[:19]:<22s} {ev['gap_min']:>5.0f}m  {status}"
-        if dup:
+        dup_stop = find_existing(existing, ev["gap_start"], ("Sensor Stop",))
+        dup_start = find_existing(existing, ev["gap_end"], ("Sensor Start", "Sensor Change"))
+        already_done = dup_stop and dup_start
+        status = "exists ✓ skip" if already_done else ("WOULD POST" if not args.apply else "POSTING...")
+        line = (f"  {ev['gap_start'].isoformat()[:19]:<22s} "
+                f"{ev['gap_end'].isoformat()[:19]:<22s} "
+                f"{ev['gap_min']:>4.0f}m  {status}")
+        if already_done:
             skipped += 1; print(line); continue
         if not args.apply:
             print(line); continue
         if args.interactive:
-            print(line, end=""); ans = input("  Post? [y/N]: ").strip().lower()
+            print(line, end=""); ans = input("  Post pair? [y/N]: ").strip().lower()
             if ans not in ("y", "yes"):
                 print(f"  {ev['gap_start'].isoformat()[:19]}  skipped (user)"); continue
         try:
-            iso = ev["gap_start"].strftime("%Y-%m-%dT%H:%M:%S.000Z")
-            note = f"Backfilled (NS gap detection) — gap {ev['gap_min']:.0f}min"
-            if ev['gap_min'] > 600:
-                note += " — extended off-CGM (likely failure/outage)"
-            treatments.add_treatment(
-                event_type="Sensor Change",
-                entered_by="ha-bridge-backfill-ns",
-                created_at=iso, notes=note, conn=conn,
-            )
+            stop_iso = ev["gap_start"].strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            start_iso = ev["gap_end"].strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            note_suffix = " — extended off-CGM (likely failure/outage)" if ev['gap_min'] > 600 else ""
+            if not dup_stop:
+                treatments.add_treatment(
+                    event_type="Sensor Stop",
+                    entered_by="ha-bridge-backfill-ns",
+                    created_at=stop_iso,
+                    notes=f"Backfilled — gap {ev['gap_min']:.0f}min starts here{note_suffix}",
+                    conn=conn,
+                )
+            if not dup_start:
+                treatments.add_treatment(
+                    event_type="Sensor Start",
+                    entered_by="ha-bridge-backfill-ns",
+                    created_at=start_iso,
+                    notes=f"Backfilled — gap {ev['gap_min']:.0f}min ends here{note_suffix}",
+                    conn=conn,
+                )
             posted += 1
-            print(f"  {ev['gap_start'].isoformat()[:19]}  posted ✓")
+            print(f"  {ev['gap_start'].isoformat()[:19]}  posted Stop+Start ✓")
         except Exception as exc:
             errors += 1
             print(f"  {ev['gap_start'].isoformat()[:19]}  ERROR: {exc}")

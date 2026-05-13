@@ -110,7 +110,11 @@ def fetch_history(ha_client, entity_id: str, start: datetime, end: datetime) -> 
 
 
 def detect_changes(samples: list[dict], *, min_jump: float, min_new: float) -> list[dict]:
-    """Walk the duration samples; emit upward-jump candidates."""
+    """Walk the duration samples; emit upward-jump candidates.
+
+    Each candidate carries BOTH the prev-sample time (= Sensor Stop) and
+    the new-sample time (= Sensor Start) so the caller can emit a pair.
+    """
     cleaned: list[tuple[str, float, datetime]] = []
     for p in samples:
         v = _parse_dur_state(p.get("state", ""))
@@ -130,7 +134,11 @@ def detect_changes(samples: list[dict], *, min_jump: float, min_new: float) -> l
         jump = cur_v - prev_v
         if jump >= min_jump and cur_v >= min_new:
             out.append({
-                "reset_at": cur_ts,
+                "stop_at": prev_ts,
+                "stop_at_dt": prev_dt,
+                "start_at": cur_ts,
+                "start_at_dt": cur_dt,
+                "reset_at": cur_ts,        # back-compat alias
                 "reset_at_dt": cur_dt,
                 "prev_remaining_h": prev_v,
                 "new_remaining_h": cur_v,
@@ -148,10 +156,14 @@ def detect_changes(samples: list[dict], *, min_jump: float, min_new: float) -> l
     return deduped
 
 
-def find_existing_sensor_change(treatments_list: list[dict], around: datetime) -> bool:
+def find_existing_sensor_event(
+    treatments_list: list[dict],
+    around: datetime,
+    event_types: tuple[str, ...] = ("Sensor Change", "Sensor Start", "Sensor Stop"),
+) -> bool:
     window = timedelta(minutes=IDEMPOTENCY_TOLERANCE_MIN)
     for t in treatments_list:
-        if t.get("eventType") not in ("Sensor Change", "Sensor Start"):
+        if t.get("eventType") not in event_types:
             continue
         ts = _parse_dt(t.get("created_at", ""))
         if ts and abs((ts - around).total_seconds()) < window.total_seconds():
@@ -210,43 +222,51 @@ def main() -> int:
         conn=ns_conn, count=10000, date_gte=iso_s, date_lte=iso_e,
     )
 
-    print(f"  {'reset_at':<22s} {'prev':>5s} → {'new':>5s}  {'jump':>5s}  status")
+    print(f"  {'stop_at':<22s} {'start_at':<22s} {'prev':>5s} → {'new':>5s}  status")
     posted = skipped_dup = errors = 0
     for ev in events:
-        dup = find_existing_sensor_change(existing, ev["reset_at_dt"])
-        status = "exists ✓ skip" if dup else ("WOULD POST" if not args.apply else "POSTING...")
-        line = (f"  {ev['reset_at'][:19]:<22s} "
+        dup_stop = find_existing_sensor_event(existing, ev["stop_at_dt"], ("Sensor Stop",))
+        dup_start = find_existing_sensor_event(existing, ev["start_at_dt"], ("Sensor Start", "Sensor Change"))
+        already_done = dup_stop and dup_start
+        status = "exists ✓ skip" if already_done else ("WOULD POST" if not args.apply else "POSTING...")
+        line = (f"  {ev['stop_at'][:19]:<22s} {ev['start_at'][:19]:<22s} "
                 f"{ev['prev_remaining_h']:>3.0f}h → "
-                f"{ev['new_remaining_h']:>3.0f}h  "
-                f"+{ev['jump_h']:>3.0f}h  {status}")
-        if dup:
+                f"{ev['new_remaining_h']:>3.0f}h  {status}")
+        if already_done:
             skipped_dup += 1
             print(line); continue
         if not args.apply:
             print(line); continue
         if args.interactive:
             print(line, end="")
-            ans = input("  Post? [y/N]: ").strip().lower()
+            ans = input("  Post pair? [y/N]: ").strip().lower()
             if ans not in ("y", "yes"):
-                print(f"  {ev['reset_at'][:19]}  skipped (user)")
+                print(f"  {ev['start_at'][:19]}  skipped (user)")
                 continue
         try:
-            iso = ev["reset_at_dt"].strftime("%Y-%m-%dT%H:%M:%S.000Z")
-            treatments.add_treatment(
-                event_type="Sensor Change",
-                entered_by="ha-bridge-backfill",
-                created_at=iso,
-                notes=(
-                    f"Backfilled — duration_hours jumped from "
-                    f"{ev['prev_remaining_h']:.0f}h to {ev['new_remaining_h']:.0f}h"
-                ),
-                conn=ns_conn,
-            )
+            stop_iso = ev["stop_at_dt"].strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            start_iso = ev["start_at_dt"].strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            if not dup_stop:
+                treatments.add_treatment(
+                    event_type="Sensor Stop",
+                    entered_by="ha-bridge-backfill",
+                    created_at=stop_iso,
+                    notes=f"Backfilled — old sensor at {ev['prev_remaining_h']:.0f}h",
+                    conn=ns_conn,
+                )
+            if not dup_start:
+                treatments.add_treatment(
+                    event_type="Sensor Start",
+                    entered_by="ha-bridge-backfill",
+                    created_at=start_iso,
+                    notes=f"Backfilled — fresh sensor at {ev['new_remaining_h']:.0f}h",
+                    conn=ns_conn,
+                )
             posted += 1
-            print(f"  {ev['reset_at'][:19]}  posted ✓")
+            print(f"  {ev['start_at'][:19]}  posted Stop+Start ✓")
         except Exception as exc:
             errors += 1
-            print(f"  {ev['reset_at'][:19]}  ERROR: {exc}")
+            print(f"  {ev['start_at'][:19]}  ERROR: {exc}")
 
     print()
     print(f"=== Summary ===")

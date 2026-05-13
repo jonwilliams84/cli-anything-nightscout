@@ -1,0 +1,44 @@
+# Stand up a real Nightscout + Mongo locally for end-to-end testing.
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up -d
+#   sleep 15  # let Nightscout finish bundling on first start
+#   curl http://localhost:1337/api/v1/status.json
+#
+# Then run:
+#   NIGHTSCOUT_URL=http://localhost:1337 \
+#   NIGHTSCOUT_API_SECRET=test_secret_at_least_12_chars \
+#   CLI_ANYTHING_FORCE_INSTALLED=1 \
+#     pytest cli_anything/nightscout/tests/test_full_e2e.py -v -s
+
+services:
+  mongo:
+    image: mongo:6
+    container_name: ns-test-mongo
+    restart: unless-stopped
+    volumes:
+      - ns_test_mongo:/data/db
+    ports:
+      - "27017:27017"
+
+  nightscout:
+    image: nightscout/cgm-remote-monitor:latest_dev
+    container_name: ns-test-nightscout
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    ports:
+      - "1337:1337"
+    environment:
+      - MONGO_CONNECTION=mongodb://mongo:27017/nightscout
+      - DISPLAY_UNITS=mg/dl
+      - API_SECRET=test_secret_at_least_12_chars
+      - ENABLE=careportal basal dbsize
+      - AUTH_DEFAULT_ROLES=denied
+      - INSECURE_USE_HTTP=true
+      - HOSTNAME=localhost
+      - PORT=1337
+      - TZ=UTC
+
+volumes:
+  ns_test_mongo:

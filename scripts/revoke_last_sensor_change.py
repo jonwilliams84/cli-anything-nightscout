@@ -8,10 +8,10 @@ HA via a `shell_command`.
 ## Safety
 
   * Only deletes events with `enteredBy` starting with `ha-bridge` so this
-    can't accidentally remove manually-entered sensor events.
-  * Only deletes the SINGLE most recent Stop and SINGLE most recent Start
-    if they're a plausible pair (within 30 minutes of each other and
-    posted within the last 24 hours).
+Originally designed to be called from HA via shell_command, but the HA-side
+revoke now runs natively in HA via rest_command (no shell needed). This script
+remains useful as a CLI tool for ad-hoc revocation from any machine with the
+harness installed.
   * Idempotent: if no recent pair exists, exits cleanly with a log message.
 
 ## Usage

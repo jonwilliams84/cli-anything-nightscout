@@ -1,3 +1,4 @@
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -11,3 +12,26 @@ htmlcov/
 venv/
 *.swp
 .DS_Store
+
+# Secrets & local state — DO NOT COMMIT
+# Personal config / session files for the CLI (contain api_secret / token).
+config.json
+session.json
+*.session.json
+.cli-anything/
+
+# Environment files commonly used during dev (Nightscout URL + secret).
+.env
+.env.*
+!.env.example
+
+# TLS material — never commit
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Editor / OS cruft
+.idea/
+.vscode/
+*~

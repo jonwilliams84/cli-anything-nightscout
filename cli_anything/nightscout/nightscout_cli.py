@@ -19,19 +19,23 @@ from cli_anything.nightscout.core import (
     activity as activity_mod,
     devicestatus as ds_mod,
     entries as entries_mod,
+    excursions as excursions_mod,
     food as food_mod,
     profile as profile_mod,
     project,
     report as report_mod,
+    sensors as sensors_mod,
     status as status_mod,
     treatments as treatments_mod,
+    v3 as v3_mod,
+    watch as watch_mod,
 )
 from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
 
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-VERSION = "1.2.1"
+VERSION = "2.0.0"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -1014,6 +1018,306 @@ def report_hypos(ctx: click.Context, days: int, threshold: float | None,
         for e in evts:
             mn = e.get("min_mmol") if mmol else e.get("min_mgdl")
             click.echo(f"  {e['start'][:19]:<22s} {e['duration_min']:>4.0f}m  {mn:>5}  {e['level']}")
+
+
+# ─── report: NEW v2 — MAGE / risk / day-of-week ────────────────────────────
+
+@report_grp.command("mage")
+@click.option("--days", default=14, type=int)
+@click.option("--units", "units_flag", default=None,
+                type=click.Choice(["mg/dl", "mmol", "mmol/l"]))
+@click.pass_context
+def report_mage(ctx: click.Context, days: int, units_flag: str | None) -> None:
+    """Mean Amplitude of Glycemic Excursions (Service 1970)."""
+    from datetime import datetime, timedelta, timezone
+    conn = _conn(ctx); _require_url(conn)
+    units = units_flag or conn.get("units", "mg/dl")
+    mmol = _is_mmol_units(units)
+    end = datetime.now(timezone.utc); start = end - timedelta(days=days)
+    data = entries_mod.list_entries(
+        conn=conn, count=100000, type_="sgv",
+        date_gte=start.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        date_lte=end.strftime("%Y-%m-%dT%H:%M:%S.000Z"))
+    res = report_mod.mage(data, units=units, input_units="mg/dl")
+    if _is_json(ctx):
+        _emit(ctx, res)
+    else:
+        u = "mmol/L" if mmol else "mg/dL"
+        v = res.get("mage_mmol") if mmol else res.get("mage_mgdl")
+        click.echo(f"  MAGE ({days}d): {v if v is not None else '—'} {u}")
+        click.echo(f"  Excursions counted: {res.get('count_excursions', 0)}")
+
+
+@report_grp.command("risk")
+@click.option("--days", default=14, type=int)
+@click.pass_context
+def report_risk(ctx: click.Context, days: int) -> None:
+    """Kovatchev LBGI / HBGI risk indices."""
+    from datetime import datetime, timedelta, timezone
+    conn = _conn(ctx); _require_url(conn)
+    end = datetime.now(timezone.utc); start = end - timedelta(days=days)
+    data = entries_mod.list_entries(
+        conn=conn, count=100000, type_="sgv",
+        date_gte=start.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        date_lte=end.strftime("%Y-%m-%dT%H:%M:%S.000Z"))
+    res = report_mod.risk_indices(data, units="mg/dl")
+    if _is_json(ctx):
+        _emit(ctx, res)
+    else:
+        click.echo(f"  LBGI: {res['lbgi']:.2f}  ({res['lbgi_risk']})  — hypoglycemia risk")
+        click.echo(f"  HBGI: {res['hbgi']:.2f}  ({res['hbgi_risk']})  — hyperglycemia risk")
+        click.echo(f"  Readings: {res['count']}")
+
+
+@report_grp.command("by-weekday")
+@click.option("--days", default=14, type=int)
+@click.option("--units", "units_flag", default=None,
+                type=click.Choice(["mg/dl", "mmol", "mmol/l"]))
+@click.pass_context
+def report_by_weekday(ctx: click.Context, days: int, units_flag: str | None) -> None:
+    """Per-weekday TIR / mean / TBR / TAR."""
+    from datetime import datetime, timedelta, timezone
+    conn = _conn(ctx); _require_url(conn)
+    units = units_flag or conn.get("units", "mg/dl")
+    mmol = _is_mmol_units(units)
+    end = datetime.now(timezone.utc); start = end - timedelta(days=days)
+    data = entries_mod.list_entries(
+        conn=conn, count=100000, type_="sgv",
+        date_gte=start.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        date_lte=end.strftime("%Y-%m-%dT%H:%M:%S.000Z"))
+    rows = report_mod.day_of_week(data, units=units, input_units="mg/dl")
+    if _is_json(ctx):
+        _emit(ctx, rows)
+    else:
+        click.echo(f"  day   #     mean   TIR%   TBR%   TAR%")
+        for r in rows:
+            mean = r.get("mean_mmol") if mmol else r.get("mean_mgdl")
+            click.echo(f"  {r['weekday']:<5s} {r['count']:>4d}  {str(mean):>5}  {r['tir_pct']:>5.1f}  {r['tbr_pct']:>5.2f}  {r['tar_pct']:>5.1f}")
+
+
+# ─── report: excursions ────────────────────────────────────────────────────
+
+@report_grp.command("excursions")
+@click.option("--days", default=14, type=int)
+@click.option("--window-min", default=120, type=int)
+@click.option("--units", "units_flag", default=None,
+                type=click.Choice(["mg/dl", "mmol", "mmol/l"]))
+@click.pass_context
+def report_excursions(ctx: click.Context, days: int, window_min: int,
+                        units_flag: str | None) -> None:
+    """Post-meal glucose responses paired with the meal/bolus that drove them."""
+    from datetime import datetime, timedelta, timezone
+    conn = _conn(ctx); _require_url(conn)
+    units = units_flag or conn.get("units", "mg/dl")
+    mmol = _is_mmol_units(units)
+    end = datetime.now(timezone.utc); start = end - timedelta(days=days)
+    iso_s = start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    iso_e = end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    sgvs = entries_mod.list_entries(conn=conn, count=100000, type_="sgv",
+                                       date_gte=iso_s, date_lte=iso_e)
+    txs = treatments_mod.list_treatments(conn=conn, count=10000,
+                                            date_gte=iso_s, date_lte=iso_e)
+    rows = excursions_mod.postprandial_responses(
+        sgvs, txs, window_min=window_min, units=units, input_units="mg/dl",
+    )
+    if _is_json(ctx):
+        _emit(ctx, rows)
+    else:
+        u = "mmol/L" if mmol else "mg/dL"
+        click.echo(f"  {len(rows)} qualifying meals over {days}d, {window_min}min window")
+        click.echo(f"  {'when':<19s} {'carbs':>5s} {'ins':>5s} {'base':>5s} {'peak':>5s} {'Δ':>5s} {'ttp':>5s} {'ICR':>5s}")
+        for r in rows[:50]:
+            base = r.get("baseline_mmol") if mmol else r.get("baseline_mgdl")
+            peak = r.get("peak_mmol") if mmol else r.get("peak_mgdl")
+            delta = r.get("delta_mmol") if mmol else r.get("delta_mgdl")
+            icr = r.get("ICR_effective_g_per_u")
+            click.echo(f"  {r['created_at'][:19]:<19s} {str(r.get('carbs','?')):>5} {str(r.get('insulin','?')):>5} {str(base):>5} {str(peak):>5} {str(delta):>5} {str(r.get('time_to_peak_min','?')):>5} {str(icr) if icr is not None else '—':>5}")
+
+
+@report_grp.command("excursions-by-hour")
+@click.option("--days", default=14, type=int)
+@click.option("--units", "units_flag", default=None,
+                type=click.Choice(["mg/dl", "mmol", "mmol/l"]))
+@click.pass_context
+def report_excursions_by_hour(ctx: click.Context, days: int,
+                                 units_flag: str | None) -> None:
+    """Mean post-meal Δglucose / ICR by hour-of-day."""
+    from datetime import datetime, timedelta, timezone
+    conn = _conn(ctx); _require_url(conn)
+    units = units_flag or conn.get("units", "mg/dl")
+    end = datetime.now(timezone.utc); start = end - timedelta(days=days)
+    iso_s = start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    iso_e = end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    sgvs = entries_mod.list_entries(conn=conn, count=100000, type_="sgv",
+                                       date_gte=iso_s, date_lte=iso_e)
+    txs = treatments_mod.list_treatments(conn=conn, count=10000,
+                                            date_gte=iso_s, date_lte=iso_e)
+    rows = excursions_mod.postprandial_responses(
+        sgvs, txs, units=units, input_units="mg/dl")
+    summ = excursions_mod.excursion_summary(rows, bucket="hour")
+    if _is_json(ctx):
+        _emit(ctx, summ)
+    else:
+        mmol_mode = _is_mmol_units(units)
+        click.echo(f"  hour  meals  mean_baseline  mean_peak  mean_Δ  mean_ICR(g/U)")
+        for r in summ:
+            if mmol_mode:
+                base = r.get("mean_baseline_mmol", r.get("mean_baseline_mgdl"))
+                peak = r.get("mean_peak_mmol", r.get("mean_peak_mgdl"))
+                delta = r.get("mean_delta_mmol", r.get("mean_delta_mgdl"))
+            else:
+                base = r.get("mean_baseline_mgdl")
+                peak = r.get("mean_peak_mgdl")
+                delta = r.get("mean_delta_mgdl")
+            icr = r.get("mean_ICR_effective_g_per_u")
+            click.echo(f"  {r.get('hour','?'):>3}h  {r.get('count','?'):>5} {str(base) if base is not None else '—':>13} {str(peak) if peak is not None else '—':>10} {str(delta) if delta is not None else '—':>7} {str(icr) if icr is not None else '—':>13}")
+
+
+# ─── profile: schedule snapshot ────────────────────────────────────────────
+
+@profile_grp.command("schedule")
+@click.option("--at", "at_time", default=None,
+                help="HH:MM time of day (default: now in local time)")
+@click.pass_context
+def profile_schedule(ctx: click.Context, at_time: str | None) -> None:
+    """Show active basal / carbratio / sens / target at a given time."""
+    from datetime import datetime
+    conn = _conn(ctx); _require_url(conn)
+    if at_time is None:
+        at_time = datetime.now().strftime("%H:%M")
+    store = profile_mod.current_store(conn=conn)
+    if not store:
+        _emit(ctx, {}, human="no active profile found"); return
+    snap = profile_mod.schedule_snapshot(store, at_time)
+    if _is_json(ctx):
+        _emit(ctx, {"at": at_time, **snap})
+    else:
+        click.echo(f"Active profile at {at_time}:")
+        for k, v in snap.items():
+            click.echo(f"  {k:<13s} {v if v is not None else '—'}")
+
+
+# ─── sensors ───────────────────────────────────────────────────────────────
+
+@cli.group("sensors")
+def sensors_grp() -> None:
+    """CGM sensor session detection."""
+
+
+@sensors_grp.command("sessions")
+@click.option("--days", default=30, type=int)
+@click.option("--with-stats", is_flag=True, default=False,
+                help="Include entry counts per session")
+@click.pass_context
+def sensors_sessions(ctx: click.Context, days: int, with_stats: bool) -> None:
+    """List sensor sessions in the recent window."""
+    from datetime import datetime, timedelta, timezone
+    conn = _conn(ctx); _require_url(conn)
+    end = datetime.now(timezone.utc); start = end - timedelta(days=days)
+    iso_s = start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    iso_e = end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    txs = treatments_mod.list_treatments(conn=conn, count=10000,
+                                            date_gte=iso_s, date_lte=iso_e)
+    sgvs = None
+    if with_stats:
+        sgvs = entries_mod.list_entries(conn=conn, count=100000, type_="sgv",
+                                            date_gte=iso_s, date_lte=iso_e)
+    sessions = sensors_mod.sensor_sessions(txs, entries=sgvs)
+    if _is_json(ctx):
+        _emit(ctx, sessions)
+    else:
+        click.echo(f"  {len(sessions)} sensor session(s) over {days}d")
+        for s in sessions:
+            end_disp = s.get("end") or "(ongoing)"
+            click.echo(f"  #{s['session_index']:>2}  {s['start'][:19]} → {end_disp[:19]:<19s}  {s['duration_days']:>5.1f}d  {s['marker_event_type']}"
+                      + (f"  {s.get('entries_count',0)} entries" if with_stats else ""))
+
+
+# ─── v3 generic CRUD ───────────────────────────────────────────────────────
+
+@cli.group("v3")
+def v3_grp() -> None:
+    """Generic CRUD for any v3 collection."""
+
+
+@v3_grp.command("list")
+@click.argument("collection")
+@click.option("--limit", default=100, type=int)
+@click.pass_context
+def v3_list_cmd(ctx: click.Context, collection: str, limit: int) -> None:
+    conn = _conn(ctx); _require_url(conn)
+    res = v3_mod.v3_list(collection, conn=conn, limit=limit)
+    _emit(ctx, res, human=f"  {len(res)} record(s) in '{collection}'")
+
+
+@v3_grp.command("get")
+@click.argument("collection")
+@click.argument("identifier")
+@click.pass_context
+def v3_get_cmd(ctx: click.Context, collection: str, identifier: str) -> None:
+    conn = _conn(ctx); _require_url(conn)
+    _emit(ctx, v3_mod.v3_get(collection, identifier, conn=conn))
+
+
+@v3_grp.command("delete")
+@click.argument("collection")
+@click.argument("identifier")
+@click.confirmation_option(prompt="Really delete?")
+@click.pass_context
+def v3_delete_cmd(ctx: click.Context, collection: str, identifier: str) -> None:
+    conn = _conn(ctx); _require_url(conn)
+    res = v3_mod.v3_delete(collection, identifier, conn=conn)
+    _maybe_save_session(ctx, action=f"v3.{collection}.delete", detail=identifier)
+    _emit(ctx, res, human=f"deleted {collection}/{identifier}")
+
+
+# ─── treatments: bg-check convenience ──────────────────────────────────────
+
+@treatments_grp.command("bg-check")
+@click.option("--glucose", required=True, type=float)
+@click.option("--glucose-type", default="Finger",
+                type=click.Choice(["Finger", "Sensor", "Manual"]))
+@click.option("--notes", default=None)
+@click.pass_context
+def treatments_bg_check(ctx: click.Context, glucose: float,
+                           glucose_type: str, notes: str | None) -> None:
+    """Post a BG Check treatment (finger-stick / sensor read)."""
+    conn = _conn(ctx); _require_url(conn)
+    res = treatments_mod.add_bg_check(
+        glucose=glucose, glucose_type=glucose_type, notes=notes, conn=conn)
+    _maybe_save_session(ctx, action="treatments.bg_check",
+                          detail=f"{glucose} ({glucose_type})")
+    _emit(ctx, res, human=f"recorded BG {glucose} ({glucose_type})")
+
+
+# ─── watch (real-time, requires optional extra) ────────────────────────────
+
+@cli.group("watch")
+def watch_grp() -> None:
+    """Real-time entries/treatments via socket.io (requires `pip install '.[watch]'`)."""
+
+
+@watch_grp.command("entries")
+@click.option("--timeout", default=None, type=float,
+                help="Stop after this many seconds")
+@click.pass_context
+def watch_entries_cmd(ctx: click.Context, timeout: float | None) -> None:
+    """Stream live SGV updates to stdout."""
+    conn = _conn(ctx); _require_url(conn)
+    def _cb(entry: dict) -> None:
+        click.echo(f"[sgv] {entry.get('dateString','?')[:19]}  sgv={entry.get('sgv','?')}  dir={entry.get('direction','?')}")
+    watch_mod.watch_entries(conn=conn, callback=_cb, timeout=timeout)
+
+
+@watch_grp.command("treatments")
+@click.option("--timeout", default=None, type=float)
+@click.pass_context
+def watch_treatments_cmd(ctx: click.Context, timeout: float | None) -> None:
+    """Stream live treatment events to stdout."""
+    conn = _conn(ctx); _require_url(conn)
+    def _cb(t: dict) -> None:
+        click.echo(f"[tx] {t.get('created_at','?')[:19]}  {t.get('eventType','?')}  carbs={t.get('carbs')}  ins={t.get('insulin')}")
+    watch_mod.watch_treatments(conn=conn, callback=_cb, timeout=timeout)
 
 
 # ─── session ───────────────────────────────────────────────────────────────

@@ -468,6 +468,244 @@ def _hour_key(ts: Any) -> int | None:
     return None
 
 
+# ── MAGE (Mean Amplitude of Glycemic Excursions) ─────────────────────────
+
+
+def mage(
+    entries: list[dict[str, Any]],
+    *,
+    units: str = "mg/dl",
+    input_units: str | None = None,
+) -> dict[str, Any]:
+    """Mean Amplitude of Glycemic Excursions (Service 1970).
+
+    Sort readings by timestamp; identify turning points (a local maximum is a
+    point strictly greater than both neighbors, a local minimum is strictly
+    less than both). Compute the absolute differences between consecutive
+    turning points. MAGE is the mean of those differences whose magnitude
+    exceeds 1 stdev of all readings.
+
+    Fewer than 2 turning points → ``mage_mgdl`` is ``None``.
+    """
+    units, input_units = _resolve_units(units, input_units)
+    mmol = _is_mmol(units)
+
+    typed: list[tuple[datetime, float]] = []
+    for e in _filter_sgv(entries):
+        ts = _parse_ts(e.get("dateString") or e.get("date"))
+        v = _entry_mgdl(e, input_units)
+        if ts is not None and v is not None:
+            typed.append((ts, v))
+    typed.sort(key=lambda x: x[0])
+    values = [v for _, v in typed]
+
+    base_out: dict[str, Any] = {
+        "count_excursions": 0,
+        "mage_mgdl": None,
+        "stdev_mgdl": 0.0,
+        "units": "mmol/l" if mmol else "mg/dl",
+    }
+    if mmol:
+        base_out["mage_mmol"] = None
+
+    if not values:
+        return base_out
+
+    stdev = statistics.pstdev(values) if len(values) > 1 else 0.0
+    base_out["stdev_mgdl"] = round(stdev, 2)
+
+    # Identify turning points: strict local max/min.
+    turning: list[float] = []
+    for i in range(1, len(values) - 1):
+        prev, cur, nxt = values[i - 1], values[i], values[i + 1]
+        if (cur > prev and cur > nxt) or (cur < prev and cur < nxt):
+            turning.append(cur)
+
+    if len(turning) < 2:
+        return base_out
+
+    diffs = [abs(turning[i] - turning[i - 1]) for i in range(1, len(turning))]
+    qualifying = [d for d in diffs if d > stdev]
+    base_out["count_excursions"] = len(qualifying)
+    if not qualifying:
+        return base_out
+    mage_val = sum(qualifying) / len(qualifying)
+    base_out["mage_mgdl"] = round(mage_val, 2)
+    if mmol:
+        base_out["mage_mmol"] = _round_mmol(mage_val)
+    return base_out
+
+
+# ── Risk indices (Kovatchev 2003 LBGI / HBGI) ────────────────────────────
+
+
+def risk_indices(
+    entries: list[dict[str, Any]],
+    *,
+    units: str = "mg/dl",
+    input_units: str | None = None,
+) -> dict[str, Any]:
+    """Kovatchev Low / High Blood Glucose Index (LBGI / HBGI, 2003).
+
+    For each reading in mg/dL::
+
+        f  = 1.509 * (ln(bg)**1.084 - 5.381)
+        r  = 10 * f**2
+        rl = r if f < 0 else 0
+        rh = r if f > 0 else 0
+
+    LBGI = mean(rl), HBGI = mean(rh). Both are dimensionless — the same value
+    regardless of display units.
+
+    Risk bands (Kovatchev):
+
+    * LBGI: minimal <1.1, low <2.5, moderate <5.0, high ≥5.0
+    * HBGI: minimal <4.5, low <9.0, moderate <15.0, high ≥15.0
+    """
+    units, input_units = _resolve_units(units, input_units)
+    sgv_entries = _filter_sgv(entries)
+    values = [
+        v for v in (_entry_mgdl(e, input_units) for e in sgv_entries)
+        if v is not None and v > 0
+    ]
+
+    def _lbgi_band(x: float) -> str:
+        if x < 1.1:
+            return "minimal"
+        if x < 2.5:
+            return "low"
+        if x < 5.0:
+            return "moderate"
+        return "high"
+
+    def _hbgi_band(x: float) -> str:
+        if x < 4.5:
+            return "minimal"
+        if x < 9.0:
+            return "low"
+        if x < 15.0:
+            return "moderate"
+        return "high"
+
+    if not values:
+        return {
+            "count": 0,
+            "lbgi": 0.0,
+            "hbgi": 0.0,
+            "lbgi_risk": _lbgi_band(0.0),
+            "hbgi_risk": _hbgi_band(0.0),
+        }
+
+    rl_sum = 0.0
+    rh_sum = 0.0
+    for bg in values:
+        f = 1.509 * (math.log(bg) ** 1.084 - 5.381)
+        r = 10 * f * f
+        if f < 0:
+            rl_sum += r
+        elif f > 0:
+            rh_sum += r
+    n = len(values)
+    lbgi = rl_sum / n
+    hbgi = rh_sum / n
+    return {
+        "count": n,
+        "lbgi": round(lbgi, 2),
+        "hbgi": round(hbgi, 2),
+        "lbgi_risk": _lbgi_band(lbgi),
+        "hbgi_risk": _hbgi_band(hbgi),
+    }
+
+
+# ── Day-of-week breakdown ────────────────────────────────────────────────
+
+_WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def day_of_week(
+    entries: list[dict[str, Any]],
+    *,
+    units: str = "mg/dl",
+    input_units: str | None = None,
+) -> list[dict[str, Any]]:
+    """Aggregate readings by day-of-week (Mon-Sun).
+
+    Returns 7 rows in Mon→Sun order. Each row has ``count``, ``mean_mgdl``
+    (plus ``mean_mmol`` in mmol mode), and TIR/TBR/TAR percentages using the
+    consensus thresholds for ``units``. Weekdays with no readings appear with
+    ``count=0`` and 0.0 percentages.
+    """
+    units, input_units = _resolve_units(units, input_units)
+    mmol = _is_mmol(units)
+    low_mgdl = _to_mgdl(DEFAULT_LOW_MMOL if mmol else DEFAULT_LOW_MGDL, units)
+    high_mgdl = _to_mgdl(DEFAULT_HIGH_MMOL if mmol else DEFAULT_HIGH_MGDL, units)
+
+    by_dow: dict[int, list[float]] = defaultdict(list)
+    for e in _filter_sgv(entries):
+        ts = e.get("dateString") or e.get("date")
+        idx = _weekday_key(ts)
+        if idx is None:
+            continue
+        v = _entry_mgdl(e, input_units)
+        if v is None:
+            continue
+        by_dow[idx].append(v)
+
+    rows: list[dict[str, Any]] = []
+    for i in range(7):
+        vals = by_dow.get(i, [])
+        row: dict[str, Any] = {
+            "weekday": _WEEKDAY_NAMES[i],
+            "weekday_index": i,
+            "count": len(vals),
+            "units": "mmol/l" if mmol else "mg/dl",
+        }
+        if not vals:
+            row.update({
+                "mean_mgdl": None,
+                "tir_pct": 0.0, "tbr_pct": 0.0, "tar_pct": 0.0,
+            })
+            if mmol:
+                row["mean_mmol"] = None
+            rows.append(row)
+            continue
+        mean = sum(vals) / len(vals)
+        in_range = sum(1 for v in vals if low_mgdl <= v <= high_mgdl)
+        below = sum(1 for v in vals if v < low_mgdl)
+        above = sum(1 for v in vals if v > high_mgdl)
+        total = len(vals)
+        row.update({
+            "mean_mgdl": round(mean, 2),
+            "tir_pct": round(in_range / total * 100, 2),
+            "tbr_pct": round(below / total * 100, 2),
+            "tar_pct": round(above / total * 100, 2),
+        })
+        if mmol:
+            row["mean_mmol"] = _round_mmol(mean)
+        rows.append(row)
+    return rows
+
+
+def _weekday_key(ts: Any) -> int | None:
+    """Extract the weekday (0=Mon..6=Sun) from an ISO string or epoch-ms."""
+    if ts is None:
+        return None
+    if isinstance(ts, (int, float)) and not math.isnan(float(ts)):
+        try:
+            return datetime.fromtimestamp(float(ts) / 1000.0, tz=timezone.utc).weekday()
+        except (OSError, ValueError, OverflowError):
+            return None
+    if isinstance(ts, str) and len(ts) >= 10:
+        try:
+            return datetime.fromisoformat(ts[:19]).weekday()
+        except ValueError:
+            try:
+                return datetime.fromisoformat(ts[:10]).weekday()
+            except ValueError:
+                return None
+    return None
+
+
 def _parse_ts(ts: Any) -> datetime | None:
     if ts is None:
         return None

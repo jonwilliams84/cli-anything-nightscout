@@ -89,3 +89,66 @@ def current_named(name: str, *, conn: dict[str, Any]) -> dict[str, Any] | None:
         return None
     body = (record.get("store") or {}).get(name)
     return body if isinstance(body, dict) else None
+
+
+# ─── schedule helpers ──────────────────────────────────────────────────────
+#
+# Nightscout profile bodies expose multiple time-of-day schedules as ordered
+# lists of ``{"time": "HH:MM", "value": <number>}`` slots. The active value at
+# a given ``HH:MM`` is the value from the latest slot whose ``time`` is less
+# than or equal to that ``HH:MM`` — i.e. forward-fill semantics, identical to
+# how the Nightscout UI and AAPS read the schedule.
+
+_SCHEDULE_FIELDS = ("basal", "carbratio", "sens", "target_low", "target_high")
+
+
+def schedule_value_at(slots: list[dict], hhmm: str) -> float | None:
+    """Return the value active at ``hhmm`` from a slot-list (forward-fill).
+
+    Returns ``None`` if no slot's time is ``<=`` ``hhmm`` (e.g. empty list, or
+    the first slot is ``"06:00"`` and you ask for ``"03:00"``).
+    """
+    if not slots:
+        return None
+    active: float | None = None
+    active_time: str | None = None
+    for slot in slots:
+        if not isinstance(slot, dict):
+            continue
+        t = slot.get("time")
+        if not isinstance(t, str) or t > hhmm:
+            continue
+        # Pick the slot with the latest time that is still <= hhmm. Slot lists
+        # are typically already sorted, but don't assume.
+        if active_time is None or t >= active_time:
+            active_time = t
+            value = slot.get("value")
+            active = value if isinstance(value, (int, float)) else None
+    return active
+
+
+def setting_at(store: dict, field: str, hhmm: str) -> float | None:
+    """Return the active value of ``store[field]`` at ``hhmm``.
+
+    Convenience wrapper around :func:`schedule_value_at`. Returns ``None`` if
+    the field is missing or its slot list is empty.
+    """
+    if not store:
+        return None
+    slots = store.get(field)
+    if not slots:
+        return None
+    if not isinstance(slots, list):
+        return None
+    return schedule_value_at(slots, hhmm)
+
+
+def schedule_snapshot(store: dict, hhmm: str) -> dict[str, float | None]:
+    """Snapshot of all standard schedule fields at ``hhmm``.
+
+    Returns a dict with keys ``basal``, ``carbratio``, ``sens``, ``target_low``,
+    ``target_high``. Each value is the forward-filled setting at ``hhmm`` or
+    ``None`` when the corresponding field is missing/empty.
+    """
+    store = store or {}
+    return {field: setting_at(store, field, hhmm) for field in _SCHEDULE_FIELDS}

@@ -28,6 +28,8 @@ COMMON_EVENT_TYPES = (
     "D.A.D. Alert",
 )
 
+VALID_GLUCOSE_TYPES = ("Finger", "Sensor", "Manual")
+
 
 def latest(*, count: int = 1, conn: dict[str, Any]) -> list[dict[str, Any]]:
     return backend.get(
@@ -93,6 +95,14 @@ def add_treatment(
     `event_type` is one of the Nightscout event types (e.g. ``Meal Bolus``,
     ``BG Check``). `created_at` defaults to now in ISO 8601 UTC.
     """
+    if glucose_type is not None:
+        if glucose_type not in VALID_GLUCOSE_TYPES:
+            raise ValueError(
+                f"Invalid glucose_type {glucose_type!r}; allowed values are "
+                f"{VALID_GLUCOSE_TYPES} (case-sensitive)"
+            )
+        if glucose is None:
+            raise ValueError("glucose_type provided without glucose value")
     payload: dict[str, Any] = {
         "eventType": event_type,
         "enteredBy": entered_by,
@@ -104,7 +114,7 @@ def add_treatment(
         payload["insulin"] = insulin
     if glucose is not None:
         payload["glucose"] = glucose
-    if glucose_type:
+    if glucose_type is not None:
         payload["glucoseType"] = glucose_type
     if notes:
         payload["notes"] = notes
@@ -117,6 +127,28 @@ def add_treatment(
         version="v1",
         api_secret=conn.get("api_secret"),
         token=conn.get("api_token"),
+    )
+
+
+def add_bg_check(
+    *,
+    glucose: float,
+    glucose_type: str = "Finger",
+    notes: str | None = None,
+    entered_by: str = "cli-anything-nightscout",
+    created_at: str | None = None,
+    conn: dict[str, Any],
+) -> Any:
+    """Convenience for BG Check treatments. Wraps add_treatment with
+    event_type='BG Check' and default glucose_type='Finger'."""
+    return add_treatment(
+        event_type="BG Check",
+        glucose=glucose,
+        glucose_type=glucose_type,
+        notes=notes,
+        entered_by=entered_by,
+        created_at=created_at,
+        conn=conn,
     )
 
 

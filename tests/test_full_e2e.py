@@ -420,7 +420,12 @@ class TestCLISubprocess:
     def test_version(self):
         r = self._run(["--version"])
         assert r.returncode == 0
-        assert "1.0.0" in r.stdout
+        # Don't pin to a specific version — just verify the output is well-formed.
+        assert "cli-anything-nightscout" in r.stdout
+        assert "version" in r.stdout.lower()
+        # Some version-looking string (digits.dots.digits)
+        import re
+        assert re.search(r"\d+\.\d+\.\d+", r.stdout), r.stdout
 
     def test_config_show_masks_secrets(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret)

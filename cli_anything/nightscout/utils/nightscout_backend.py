@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -31,6 +32,19 @@ try:
     DEFAULT_TIMEOUT = int(os.environ.get("NIGHTSCOUT_TIMEOUT", "30"))
 except (TypeError, ValueError):
     DEFAULT_TIMEOUT = 30
+
+
+DEFAULT_RETRIES = 2
+try:
+    DEFAULT_RETRIES = int(os.environ.get("NIGHTSCOUT_RETRIES", "2"))
+except (TypeError, ValueError):
+    DEFAULT_RETRIES = 2
+
+
+# HTTP statuses we will retry. Plain transient gateway/upstream errors only;
+# other 5xx are usually deterministic (config bug, code bug) and 4xx are NEVER
+# retried.
+_RETRYABLE_STATUSES = (502, 503, 504)
 
 
 def _resolve_verify(verify: bool | str | None) -> bool | str:
@@ -71,13 +85,29 @@ def hash_api_secret(plaintext: str) -> str:
 
 
 def normalize_url(url: str) -> str:
-    """Ensure the URL has a scheme and no trailing slash."""
+    """Ensure the URL has a scheme and no trailing slash.
+
+    Also strips a trailing ``/api/v1`` or ``/api/v3`` suffix (with or without
+    trailing slash). Users sometimes paste the *API* URL into config instead
+    of the server root, which then double-stacks to ``/api/v1/api/v1/...``
+    and 404s. Only the trailing position is stripped — mid-path ``/api/v1``
+    (which would be unusual but valid) is preserved.
+
+    Idempotent: ``normalize_url(normalize_url(x)) == normalize_url(x)``.
+    """
     if not url:
         return ""
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         url = f"https://{url}"
-    return url.rstrip("/")
+    url = url.rstrip("/")
+    # Strip trailing /api/v1 or /api/v3 (after the trailing slash has been
+    # removed above, we only need to match the bare suffix once).
+    for suffix in ("/api/v1", "/api/v3"):
+        if url.endswith(suffix):
+            url = url[: -len(suffix)]
+            break
+    return url
 
 
 def _resolve_secret_hash(api_secret: str | None) -> str | None:
@@ -147,6 +177,7 @@ def request(
     json_data: Any = None,
     timeout: int | None = None,
     verify: bool | str | None = None,
+    retries: int | None = None,
 ) -> Any:
     """Make a request to a Nightscout server.
 
@@ -160,6 +191,13 @@ def request(
       * A path string — verify against that CA bundle.
       * ``None`` (default) — resolve from ``NIGHTSCOUT_VERIFY_SSL`` /
         ``NIGHTSCOUT_CA_BUNDLE`` env vars, then fall back to ``True``.
+
+    ``retries`` is the number of *retries* after the initial attempt. ``None``
+    uses ``DEFAULT_RETRIES`` (env ``NIGHTSCOUT_RETRIES``, default 2). ``0``
+    disables retries entirely. We retry on ``ConnectionError`` / ``Timeout``
+    and HTTP 502/503/504. SSL errors and 4xx are never retried; 5xx other
+    than 502/503/504 are also not retried (likely deterministic). Backoff
+    is exponential base-4 starting at 0.5s (0.5s, 2s, 8s, ...).
     """
     url = _build_url(base_url, path, version)
     p = dict(params or {})
@@ -173,33 +211,73 @@ def request(
         if token and "Authorization" not in headers and "token" not in p:
             p["token"] = token
     resolved_verify = _resolve_verify(verify)
-    try:
-        resp = requests.request(
-            method.upper(),
-            url,
-            headers=headers,
-            params=p or None,
-            json=json_data,
-            timeout=timeout or DEFAULT_TIMEOUT,
-            verify=resolved_verify,
-        )
-    except requests.exceptions.SSLError as exc:
-        # Self-signed certs are common on home / k8s-internal Nightscout
-        # instances. Don't make the caller dig through stack traces —
-        # tell them how to fix it.
-        if resolved_verify:  # only nag when we were actually verifying
-            raise NightscoutAPIError(
-                0,
-                f"SSL verification failed for {url}. If this is a self-signed "
-                f"or internal-CA cert (common for k8s.home / .lan / .internal "
-                f"hosts), either:\n"
-                f"  1. Disable verification: export NIGHTSCOUT_VERIFY_SSL=0\n"
-                f"  2. Point at the CA bundle: export NIGHTSCOUT_CA_BUNDLE=/path/to/ca.pem\n"
-                f"  3. Pass verify=False / verify='/path' to backend.request()\n"
-                f"Underlying error: {exc}",
-            ) from exc
-        raise  # already disabled and still failed — surface raw error
-    return _handle_response(resp)
+
+    max_retries = DEFAULT_RETRIES if retries is None else int(retries)
+    if max_retries < 0:
+        max_retries = 0
+    total_attempts = max_retries + 1
+
+    last_exc: BaseException | None = None
+    last_retry_error: NightscoutAPIError | None = None
+
+    for attempt in range(total_attempts):
+        try:
+            resp = requests.request(
+                method.upper(),
+                url,
+                headers=headers,
+                params=p or None,
+                json=json_data,
+                timeout=timeout or DEFAULT_TIMEOUT,
+                verify=resolved_verify,
+            )
+        except requests.exceptions.SSLError as exc:
+            # SSL errors are deterministic — retrying won't help. Hand off
+            # to the helpful-hint behavior immediately.
+            if resolved_verify:
+                raise NightscoutAPIError(
+                    0,
+                    f"SSL verification failed for {url}. If this is a self-signed "
+                    f"or internal-CA cert (common for k8s.home / .lan / .internal "
+                    f"hosts), either:\n"
+                    f"  1. Disable verification: export NIGHTSCOUT_VERIFY_SSL=0\n"
+                    f"  2. Point at the CA bundle: export NIGHTSCOUT_CA_BUNDLE=/path/to/ca.pem\n"
+                    f"  3. Pass verify=False / verify='/path' to backend.request()\n"
+                    f"Underlying error: {exc}",
+                ) from exc
+            raise  # already disabled and still failed — surface raw error
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout) as exc:
+            last_exc = exc
+            last_retry_error = None
+            if attempt < total_attempts - 1:
+                time.sleep(0.5 * 4 ** attempt)
+                continue
+            raise
+
+        # We have a response. If it's a retryable HTTP status and we have
+        # attempts left, back off and retry. Otherwise, hand off to
+        # _handle_response (which will raise for non-2xx).
+        if resp.status_code in _RETRYABLE_STATUSES and attempt < total_attempts - 1:
+            # Build the NightscoutAPIError now so we can re-raise it if all
+            # subsequent attempts also fail — preserves error body for caller.
+            try:
+                _handle_response(resp)
+            except NightscoutAPIError as api_exc:
+                last_retry_error = api_exc
+                last_exc = api_exc
+            time.sleep(0.5 * 4 ** attempt)
+            continue
+
+        return _handle_response(resp)
+
+    # Loop fell through (shouldn't normally happen — final attempt either
+    # returned or raised). If we somehow got here, surface the last error.
+    if last_retry_error is not None:
+        raise last_retry_error
+    if last_exc is not None:
+        raise last_exc
+    raise NightscoutAPIError(0, "request failed with no response")
 
 
 def get(path: str, **kwargs: Any) -> Any:

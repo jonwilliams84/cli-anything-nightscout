@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
 """Revoke the most recent ha-bridge Sensor Stop + Sensor Start pair from Nightscout.
 
-Triggered by the HA `input_button.revoke_last_sensor_change` or by the
-mobile_app actionable notification's "Mark False" button. Called from
-HA via a `shell_command`.
+Originally designed to be called from HA via shell_command, but Jon's HA
+runs in k3s so shell_command can't reach this script's filesystem. The
+HA-side revoke now runs natively via rest_command (input_text helpers
+hold the IDs at POST time; the revoke automation DELETEs by ID).
+
+This script remains useful as a CLI tool for ad-hoc revocation from any
+machine with the harness installed.
 
 ## Safety
 
-  * Only deletes events with `enteredBy` starting with `ha-bridge` so this
-Originally designed to be called from HA via shell_command, but the HA-side
-revoke now runs natively in HA via rest_command (no shell needed). This script
-remains useful as a CLI tool for ad-hoc revocation from any machine with the
-harness installed.
-  * Idempotent: if no recent pair exists, exits cleanly with a log message.
+  * Only deletes events with `enteredBy` starting with `ha-bridge` so
+    this can't accidentally remove manually-entered sensor events.
+  * Only deletes the SINGLE most recent Stop and SINGLE most recent
+    Start if they're a plausible pair (≤ 30 min apart, ≤ 24 h old).
+  * Idempotent: if no recent pair exists, exits cleanly with a log
+    message.
 
 ## Usage
 
     NIGHTSCOUT_VERIFY_SSL=0 PYTHONPATH=/home/jonwi/nightscout-agent-harness \\
         python3 /home/jonwi/nightscout-agent-harness/scripts/revoke_last_sensor_change.py
-
-Output goes to stdout/stderr — HA's shell_command logs both.
 
 Pass `--dry-run` to see what would be deleted without acting.
 """

@@ -73,7 +73,7 @@ def _parse_dur(raw: str) -> float | None:
     return v
 
 
-def find_stop_time_from_ha(ha, around_dt: datetime, look_back_hours: int = 6) -> datetime | None:
+def find_stop_time_from_ha(ha, around_dt: datetime, look_back_hours: int = 24) -> datetime | None:
     """For an HA-source event at `around_dt`, find the last non-sentinel
     sample of `sensor.sensor_duration_hours` BEFORE that time.
     Returns the timestamp or None if no good signal."""
@@ -103,23 +103,32 @@ def find_stop_time_from_ha(ha, around_dt: datetime, look_back_hours: int = 6) ->
 
 
 def find_start_time_from_ns(entries_module, conn: dict, around_dt: datetime,
-                              look_forward_hours: int = 6) -> datetime | None:
+                              look_forward_hours: int = 168) -> datetime | None:
     """For an NS-source event (gap_start = around_dt), find the FIRST
-    glucose reading after that time = gap_end = start_at."""
-    win_start_iso = around_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    win_end_iso = (around_dt + timedelta(hours=look_forward_hours)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    es = entries_module.list_entries(
-        conn=conn, count=200, type_="sgv",
-        date_gte=win_start_iso, date_lte=win_end_iso,
-    )
-    if not es:
-        return None
-    timestamps = []
-    for e in es:
-        ts = _parse_dt(e.get("dateString", ""))
-        if ts and ts > around_dt:
-            timestamps.append(ts)
-    return min(timestamps) if timestamps else None
+    glucose reading after that time = gap_end = start_at.
+
+    Tries an escalating sequence of windows so we don't pull a week of
+    data for every small gap, while still handling multi-day outages.
+    Nightscout returns entries newest-first, so count must be high
+    enough to span the full window.
+    """
+    # Try small window first (covers normal 2-8h sensor change gaps)
+    # then escalate if needed (e.g. the Mar 22 4.7-day off-CGM event).
+    for hours, count in [(24, 500), (look_forward_hours, 5000)]:
+        win_start_iso = around_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        win_end_iso = (around_dt + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        es = entries_module.list_entries(
+            conn=conn, count=count, type_="sgv",
+            date_gte=win_start_iso, date_lte=win_end_iso,
+        )
+        timestamps = []
+        for e in es:
+            ts = _parse_dt(e.get("dateString", ""))
+            if ts and ts > around_dt:
+                timestamps.append(ts)
+        if timestamps:
+            return min(timestamps)
+    return None
 
 
 def main() -> int:

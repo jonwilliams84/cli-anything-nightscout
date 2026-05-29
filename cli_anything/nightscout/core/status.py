@@ -38,6 +38,18 @@ def last_modified(*, conn: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def versions(*, conn: dict[str, Any]) -> dict[str, Any]:
+    """Plugin / package version manifest via ``GET /api/v1/versions``."""
+    res = backend.get(
+        "/versions",
+        base_url=conn["server_url"],
+        version="v1",
+        api_secret=conn.get("api_secret"),
+        token=conn.get("api_token"),
+    )
+    return res if isinstance(res, dict) else {"raw": res}
+
+
 def verifyauth(*, conn: dict[str, Any]) -> dict[str, Any]:
     """Test current credentials against the server."""
     return backend.get(

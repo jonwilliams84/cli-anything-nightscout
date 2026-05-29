@@ -21,12 +21,21 @@ SENSOR_MARKER_EVENT_TYPES = ("Sensor Start", "Sensor Change")
 # ── timestamp helpers ──────────────────────────────────────────────────────
 
 def _parse_iso(ts: str) -> _dt.datetime:
-    """Parse an ISO 8601 timestamp (Nightscout uses ``...Z`` form)."""
+    """Parse an ISO 8601 timestamp (Nightscout uses ``...Z`` form).
+
+    Returns an aware datetime: inputs lacking a timezone offset are assumed
+    to be UTC (matches Nightscout's storage convention). Older Care Portal
+    versions sometimes write timezone-naive ``created_at`` strings, which
+    would otherwise crash callers that do ``now(utc) - parsed_dt``.
+    """
     # Python <3.11 doesn't accept the trailing 'Z' directly.
     s = ts.strip()
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
-    return _dt.datetime.fromisoformat(s)
+    dt = _dt.datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_dt.timezone.utc)
+    return dt
 
 
 def _entry_dt(entry: dict[str, Any]) -> _dt.datetime | None:
@@ -146,6 +155,59 @@ def sensor_sessions(
     # Newest first.
     sessions.reverse()
     return sessions
+
+
+def sensor_life_report(
+    sessions: list[dict],
+    *,
+    threshold_hours: float = 168.0,
+    now: _dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Summarise the current sensor's age vs the replacement threshold.
+
+    Medtronic / Dexcom CGM sensors are documented as 7-day wear (168h) but
+    auto-restart and remain trustworthy for slightly longer in practice.
+    Pass ``threshold_hours=165`` to match the sensor-change bridge logic.
+
+    Returns::
+
+        {
+            "now": "<iso>",
+            "current_session": {...},   # the most-recent session, or None
+            "age_hours": 142.5,
+            "threshold_hours": 168.0,
+            "hours_remaining": 25.5,
+            "is_stale": False,          # True iff age >= threshold
+            "should_replace_soon": True,  # within 12h of threshold
+        }
+    """
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    if not sessions:
+        return {
+            "now": _to_iso_z(now),
+            "current_session": None,
+            "age_hours": None,
+            "threshold_hours": float(threshold_hours),
+            "hours_remaining": None,
+            "is_stale": False,
+            "should_replace_soon": False,
+        }
+    # sensor_sessions returns newest-first; the current (ongoing) session is
+    # the first one whose end is None — or just sessions[0] if all are closed.
+    current = next((s for s in sessions if s.get("end") is None), sessions[0])
+    start_dt = _parse_iso(current["start"])
+    age = now - start_dt
+    age_hours = age.total_seconds() / 3600.0
+    remaining = float(threshold_hours) - age_hours
+    return {
+        "now": _to_iso_z(now),
+        "current_session": current,
+        "age_hours": round(age_hours, 2),
+        "threshold_hours": float(threshold_hours),
+        "hours_remaining": round(remaining, 2),
+        "is_stale": age_hours >= float(threshold_hours),
+        "should_replace_soon": 0 <= remaining <= 12.0,
+    }
 
 
 def split_entries_by_session(

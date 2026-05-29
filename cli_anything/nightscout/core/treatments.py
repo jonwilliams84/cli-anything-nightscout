@@ -152,9 +152,61 @@ def add_bg_check(
     )
 
 
+def update_treatment(
+    spec: str,
+    fields: dict[str, Any],
+    *,
+    conn: dict[str, Any],
+) -> Any:
+    """Update a treatment by ``_id`` via v1 PUT.
+
+    Nightscout's v1 PUT semantics expect the full updated record in the body
+    with an ``_id`` field. ``fields`` provides the changes; this function
+    fetches the existing record, merges, and writes back.
+    """
+    if not spec:
+        raise ValueError("spec (treatment _id) is required")
+    if not isinstance(fields, dict) or not fields:
+        raise ValueError("fields must be a non-empty dict of changes")
+    existing = get_treatment(spec, conn=conn)
+    if isinstance(existing, list):
+        if not existing:
+            raise ValueError(f"no treatment matches spec {spec!r}")
+        # Some Nightscout versions return a list even for an _id lookup. Only
+        # pick a single record when there's no ambiguity OR exactly one entry
+        # has a matching _id — otherwise refuse rather than silently editing
+        # the wrong record.
+        matching = [t for t in existing
+                    if isinstance(t, dict) and t.get("_id") == spec]
+        if len(matching) == 1:
+            existing = matching[0]
+        elif len(existing) == 1:
+            existing = existing[0]
+        else:
+            raise ValueError(
+                f"spec {spec!r} matched {len(existing)} treatments "
+                f"({len(matching)} by _id). Refusing to update — pass the "
+                f"exact _id of the intended record."
+            )
+    if not isinstance(existing, dict):
+        raise ValueError(f"unexpected response type for treatment {spec!r}")
+    merged = dict(existing)
+    merged.update(fields)
+    if "_id" not in merged:
+        merged["_id"] = spec
+    return backend.put(
+        "/treatments.json",
+        data=merged,
+        base_url=conn["server_url"],
+        version="v1",
+        api_secret=conn.get("api_secret"),
+        token=conn.get("api_token"),
+    )
+
+
 def delete_treatment(spec: str, *, conn: dict[str, Any]) -> Any:
     return backend.delete(
-        f"/treatments/{spec}",
+        f"/treatments/{spec}.json",
         base_url=conn["server_url"],
         version="v1",
         api_secret=conn.get("api_secret"),

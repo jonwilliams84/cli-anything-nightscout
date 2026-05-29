@@ -45,8 +45,20 @@ from __future__ import annotations
 import math
 import statistics
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, Iterable
+
+
+def _resolve_tz(tz: tzinfo | str | None) -> tzinfo:
+    if tz is None:
+        return timezone.utc
+    if isinstance(tz, tzinfo):
+        return tz
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(tz)
+    except Exception:
+        return timezone.utc
 
 MMOL_TO_MGDL = 18.018
 
@@ -248,6 +260,7 @@ def excursion_summary(
     responses: list[dict[str, Any]],
     *,
     bucket: str = "hour",
+    tz: tzinfo | str | None = None,
 ) -> list[dict[str, Any]]:
     """Aggregate postprandial responses by hour-of-day or weekday.
 
@@ -273,12 +286,14 @@ def excursion_summary(
         for r in responses
     )
 
+    tzo = _resolve_tz(tz)
     grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for r in responses:
         ts = _parse_ts(r.get("created_at"))
         if ts is None:
             continue
-        key = ts.hour if bucket == "hour" else ts.weekday()
+        local_ts = ts.astimezone(tzo)
+        key = local_ts.hour if bucket == "hour" else local_ts.weekday()
         grouped[key].append(r)
 
     keys = range(24) if bucket == "hour" else range(7)

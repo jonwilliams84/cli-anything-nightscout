@@ -18,7 +18,7 @@ no slashes, no dots. This blocks accidental or malicious path traversal
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Iterable
 
 from cli_anything.nightscout.utils import nightscout_backend as backend
 
@@ -158,20 +158,89 @@ def v3_search(
     collection: str,
     *,
     conn: dict[str, Any],
-    query: str,
+    query: str | None = None,
+    fields: Iterable[str] = ("notes", "eventType"),
+    filter: dict[str, Any] | None = None,
     limit: int = 100,
+    sort: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Convenience regex search via the ``$re`` operator.
+    """Regex/equality search over a v3 collection.
 
-    Matches against the ``notes`` and ``eventType`` fields — the two most
-    commonly searched free-text fields across v3 collections. For more
-    precise control (other fields, ``$eq``/``$gte``/etc.) use
-    :func:`v3_list` with an explicit ``filter`` dict.
+    Two modes — and they compose:
+
+    * ``query`` (free-text) — applies the ``$re`` operator to every field in
+      ``fields`` (default ``notes`` + ``eventType``). Multiple ``$re`` filters
+      are server-side AND-ed, so a record matches only if *every* listed field
+      contains the pattern. Pass a single-element ``fields`` list to search
+      one field, e.g. ``fields=["notes"]``.
+    * ``filter`` (dict) — explicit v3 operator filters, passed through verbatim:
+      ``{"created_at$gte": "2025-01-01", "carbs$gt": 40}``.
+
+    Backward-compatible: existing callers that pass only ``query=`` get the
+    same notes-or-eventType behavior as before.
     """
     _validate_collection(collection)
+    if query is None and not filter:
+        raise ValueError("v3_search requires query=... and/or filter=...")
+    merged: dict[str, Any] = {}
+    if query is not None:
+        for f in fields:
+            if not isinstance(f, str) or not f:
+                continue
+            merged[f"{f}$re"] = query
+    if filter:
+        merged.update(filter)
     return v3_list(
-        collection,
-        conn=conn,
-        limit=limit,
-        filter={"notes$re": query, "eventType$re": query},
+        collection, conn=conn, limit=limit, sort=sort, filter=merged,
     )
+
+
+def v3_patch(
+    collection: str,
+    identifier: str,
+    payload: dict[str, Any],
+    *,
+    conn: dict[str, Any],
+) -> Any:
+    """PATCH a partial update for a record by ``_id`` or UUID.
+
+    Use ``v3_update`` for full replacement.
+    """
+    _validate_collection(collection)
+    _validate_identifier(identifier)
+    return backend.request(
+        "PATCH",
+        f"/{collection}/{identifier}",
+        base_url=conn["server_url"],
+        version="v3",
+        token=conn.get("api_token"),
+        json_data=payload,
+    )
+
+
+def v3_history(
+    collection: str,
+    *,
+    conn: dict[str, Any],
+    last_modified_ms: int | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Fetch the mutation history for a v3 collection.
+
+    Without ``last_modified_ms``, returns the recent change log. With it,
+    returns changes since the given epoch-millisecond timestamp — the
+    canonical incremental-sync pattern.
+    """
+    _validate_collection(collection)
+    if last_modified_ms is None:
+        path = f"/{collection}/history"
+    else:
+        path = f"/{collection}/history/{int(last_modified_ms)}"
+    res = backend.get(
+        path,
+        base_url=conn["server_url"],
+        version="v3",
+        token=conn.get("api_token"),
+        params={"limit": limit},
+    )
+    return _unwrap_list(res)

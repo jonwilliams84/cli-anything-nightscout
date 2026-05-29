@@ -4,7 +4,155 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.1.0] — 2026-05-29
+
+Safety + medical-data correctness refine. The headline change: `--dry-run`
+is now a true network-safety flag, not a session-cache flag — agents can
+preview any mutation without it reaching a live diabetes dataset. Plus a
+fix for the `entries delete sgv` footgun, an opt-in `--tz` for the time-of-
+day reports, and `--yes` on every destructive verb for non-interactive use.
+
+### Changed — safety
+
+- **`--dry-run` is now network-safe.** Mutating commands (`entries add`,
+  `treatments add/update/delete/bg-check`, `entries delete`, `profile
+  create/update/delete`, `devicestatus add/delete`, `food add/update/delete`,
+  `activity add/delete`, `v3 create/update/patch/delete`, `notifications ack`)
+  print `{"dry_run": true, "would": "<verb> <path>", ...}` and do **not**
+  send the HTTP request. Previously they only suppressed the local session
+  save — a silent footgun on a live CGM stream. README/SKILL/NIGHTSCOUT docs
+  updated to match.
+- **`entries delete <spec>` requires a 24-hex ObjectId.** Earlier the spec
+  could be a type prefix (`sgv` / `mbg` / `cal` / `etr`) and Nightscout's
+  v1 DELETE would mass-delete every entry of that type. That form is now
+  refused at the CLI layer; the explicit, gated `entries delete-by-type`
+  is the supported path for bulk delete (requires `--before` or `--after`,
+  lists matched IDs by default, needs `--apply --yes` to commit).
+- **All destructive verbs gain `--yes`.** `entries delete`, `treatments
+  delete`, `devicestatus delete`, `food delete`, `profile delete`, `activity
+  delete`, `v3 delete` now accept `--yes` to bypass the interactive prompt.
+  Without it the command prompts Y/N (and aborts on a closed stdin), so
+  scripted use is explicit.
+- `_load_body` (used by every `--body-json` / `--body-file` site, including
+  `profile create/update`, `v3 create/update/patch`, `devicestatus add`)
+  now rejects non-dict JSON. Posting a list / scalar / null to a document
+  endpoint would silently corrupt the collection.
+
+### Changed — Nightscout API contract
+
+- v1 writes now include the `.json` suffix on every path
+  (`/profile.json`, `/treatments.json`, `/devicestatus.json`,
+  `/entries/<id>.json`, etc.) — strict Nightscout middleware (some
+  reverse-proxy setups) returns 404 on the bare form. Reads were already
+  correct. `entries delete <id>` switched to `/entries/<id>.json`.
+- `treatments.update_treatment()` refuses to silently update the wrong
+  record when a server returns a list response for an `_id` lookup. It now
+  picks only when the list contains exactly one record with a matching
+  `_id` (or exactly one element total); otherwise raises.
+- `backend._handle_response()` distinguishes "204 No Content" success and
+  "got 2xx with unparseable body" from a real document. Both now return a
+  sentinel dict with `_status_code` (and `_no_content` for 204), so
+  callers doing `.get('_id')` after a POST can tell whether the server
+  actually persisted anything.
+- `sensors._parse_iso()` now forces UTC on timezone-naive input. Older
+  Care Portal versions sometimes write naive `created_at` strings, which
+  used to crash `sensor_life_report()` with `TypeError: can't subtract
+  offset-naive and offset-aware`.
+
+### Added — reports
+
+- **`report daily`, `report agp`, `report by-weekday`, `report
+  excursions-by-hour` now accept `--tz`.** Default is the local system
+  timezone (a 09:00 BST breakfast lands in the 09:00 AGP bucket, not
+  08:00; the day boundary for `daily` is local midnight, not UTC).
+  Pass `--tz UTC` to keep the old UTC bucketing or `--tz Europe/London`
+  to be explicit. `report.daily/hourly_pattern/day_of_week` and
+  `excursions.excursion_summary` accept `tz=` at the library level too.
+- **Truncation warning** on the dated-range path of `report tir/summary/
+  daily/agp/hypos`. When the hardcoded `count=10000`/`100000` is hit, a
+  `⚠ result hit count limit …` warning goes to stderr so the result
+  isn't silently mistaken for a complete window.
+
+### Added — entries
+
+- **`entries delete-by-type <type> --before <iso> [--after <iso>] --apply
+  --yes`** — the gated form of mass-delete. Lists matching IDs by default
+  (preview), commits only on `--apply` + `--yes`, refuses if neither
+  `--before` nor `--after` is supplied (no way to delete the whole
+  collection in one shot).
+
+### Added — v3
+
+- `v3 list` now exposes `--sort` and repeatable `--filter k$op=v`
+  (the underlying core helper already supported both). Previously the CLI
+  only surfaced `--limit`, which made paging large collections impossible
+  without dropping into `v3 search`.
+
+### Fixed — watch
+
+- `watch entries` / `watch treatments` no longer silently swallow callback
+  exceptions. The "don't kill the socket on a buggy callback" behaviour
+  still holds, but the error now goes to stderr so REPL crashes are
+  visible.
+
+### Docs
+
+- SKILL.md: removed the "values <30 are treated as mmol/L automatically"
+  claim (that heuristic was killed in v1.1.0 for safety; the doc had
+  drifted). Added the new safety surface, env-only knobs, truncation
+  warning, and `--tz` defaults.
+- NIGHTSCOUT.md, cli_anything/nightscout/README.md: same updates; pytest
+  command path corrected to `tests/`.
+
+### Tests
+
+- `tests/test_refine_v06.py` — new regression test file. Covers every
+  v2.1.0 behaviour change: `--dry-run` skipping the network, `entries
+  delete` ObjectId gate, `entries delete-by-type` flow, `--yes` flag
+  presence on every destructive verb, `_load_body` dict validation,
+  `.json` suffix on writes, `sensors._parse_iso` naive-input handling,
+  `v3 list --sort/--filter`, `update_treatment` multi-match refusal,
+  `_handle_response` 204 sentinel, `_warn_truncation` stderr signal,
+  watch-callback error surfacing, report `--tz` bucketing.
+- Existing tests adjusted for the new paths and 204 sentinel; 357 passing
+  before this release, more after.
+
 ## [Unreleased]
+
+### Added — refine pass (2026-05-25)
+
+- `core/properties.py` — wraps `/api/v2/properties[/names]` (the canonical
+  derived-state endpoint used by every HA / agent integration). Also exposes
+  `iob_cob_report()` for a flattened one-call snapshot.
+- `core/notifications.py` — `ack()` for `/api/v1/notifications/ack` and
+  `admin_notifies()` for `/api/v1/adminnotifies`.
+- `core/v3.py` — added `v3_patch()`, `v3_history()`; `v3_search()` now
+  accepts multi-field regex (`fields=[...]`), explicit `filter=` dict, and
+  combines both.
+- `core/treatments.py` — `update_treatment()` (merging v1 PUT).
+- `core/food.py` — `add_food`, `update_food`, `delete_food`, `quickpicks`,
+  `regular` (v1 surface; v3 read path unchanged).
+- `core/profile.py` — `create_profile`, `update_profile`, `delete_profile`.
+- `core/devicestatus.py` — `add_devicestatus`.
+- `core/entries.py` — `current()`, `count_records()`, `times_query()`.
+- `core/status.py` — `versions()` (plugin/package manifest).
+- `core/sensors.py` — `sensor_life_report()` composing sessions + age math
+  against a configurable threshold (default 168h, override `--threshold-hours`
+  on the CLI for the bridge's 165h logic).
+- CLI groups: `properties get`, `notifications ack`/`admin`; new commands on
+  every group above. Added 11 commands; total surface now ~16 groups.
+- Backend: `version="v2"` now uses v1-style `api-secret` auth so the
+  properties endpoint authorises correctly without a separate code path.
+
+### Tests
+
+- `test_refine.py` — 50 new unit tests covering every new core function with
+  mocked backend.
+- `test_full_e2e.py::TestRefineCLISubprocess` — 13 new subprocess E2E tests
+  exercising the installed CLI against the in-process stand-in server.
+- Stand-in extended with PUT/PATCH handlers and routes for properties,
+  versions, food CRUD, notifications, count, times, single-record GETs.
+- 357 total tests pass (up from 294); no regressions.
 
 ## [2.0.0] — 2026-05-13
 

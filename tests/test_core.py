@@ -79,7 +79,11 @@ class TestBackend:
         r = mock.Mock()
         r.status_code = 204
         r.text = ""
-        assert self.backend._handle_response(r) == {}
+        # v2.1.0+: 204 returns a sentinel so callers can distinguish a true
+        # No-Content ack from "got a record back".
+        assert self.backend._handle_response(r) == {
+            "_status_code": 204, "_no_content": True,
+        }
 
     def test_handle_response_200_json(self):
         r = mock.Mock()

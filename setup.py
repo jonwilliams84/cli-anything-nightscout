@@ -11,7 +11,7 @@ long_description = README.read_text(encoding="utf-8") if README.exists() else ""
 
 setup(
     name="cli-anything-nightscout",
-    version="2.0.0",
+    version="2.1.0",
     description="CLI harness for the Nightscout CGM remote monitor — REST API v1 + v3",
     long_description=long_description,
     long_description_content_type="text/markdown",

@@ -63,15 +63,63 @@ Every command supports `--json` for agent consumption:
 cli-anything-nightscout --json entries latest --count 5 | jq '.[].sgv'
 ```
 
+### Sensor-change history
+
+```bash
+# Sensor sessions over the last 90 days (start/end + duration)
+cli-anything-nightscout sensors sessions --days 90
+
+# With entry counts per session
+cli-anything-nightscout sensors sessions --days 90 --with-stats --json
+```
+
+Sessions are derived from `Sensor Start` / `Sensor Change` treatment events
+stored on the server — the same events Nightscout uses for its sensor-age
+pill in the web UI. This is the canonical answer for "when did Sophie last
+change her sensor?".
+
+### Dry-run is network-safe (v2.1.0+)
+
+`--dry-run` now describes the request without sending it — every mutating
+verb returns `{"dry_run": true, "would": "<verb> <path>", ...}` and the
+network call is skipped entirely.
+
+```bash
+cli-anything-nightscout --dry-run entries add --sgv 120
+# {"dry_run": true, "would": "POST /entries.json",
+#  "payload": {"sgv": 120, "direction": "Flat", "device": "...", ...}}
+```
+
+Earlier versions only suppressed the local session-cache save (silent
+footgun on a live diabetes dataset). The new semantics are safe for agents
+to use freely when previewing what they would do.
+
+### Destructive verbs require `--yes` when scripted
+
+```bash
+# Interactive: prompts Y/N
+cli-anything-nightscout entries delete 6650a1b2c3d4e5f607080910
+
+# Scripted / non-interactive: pass --yes
+cli-anything-nightscout entries delete 6650a1b2c3d4e5f607080910 --yes
+```
+
+`entries delete` accepts only a 24-hex ObjectId. For the (rare, scary)
+operation of mass-deleting every entry of a given type, use the dedicated
+gated form:
+
+```bash
+cli-anything-nightscout entries delete-by-type sgv \
+    --before 2025-01-01T00:00:00Z --apply --yes
+```
+
 ### Session state
 
 The CLI maintains a session JSON file in `~/.cli-anything/nightscout/session.json`
-(or at `--project PATH`). Mutations (`entries add`, `treatments add`,
-`*.delete`) auto-save the session unless `--dry-run` is passed.
+(or at `--project PATH`). Mutations auto-save the session on success.
 
 ```bash
 cli-anything-nightscout session info
-cli-anything-nightscout --dry-run entries add --sgv 120
 ```
 
 ## Command groups
@@ -79,14 +127,33 @@ cli-anything-nightscout --dry-run entries add --sgv 120
 | Group | Description |
 |-------|-------------|
 | `config` | Manage server URL + API secret/token (`set`, `show`, `clear`, `test`) |
-| `status` | Server identity (`info`, `version`, `last-modified`, `verifyauth`) |
-| `entries` | CGM entries (`latest`, `list`, `get`, `add`, `delete`, `slice`) |
-| `treatments` | Treatment events (`latest`, `list`, `get`, `add`, `delete`) |
-| `profile` | Profile records (`current`, `list`) |
-| `devicestatus` | Pump/CGM status (`latest`, `list`, `delete`) |
-| `food` | Food database (`list`) |
-| `report` | Computed reports (`tir`, `summary`, `daily`, `gmi`) |
+| `status` | Server identity (`info`, `version`, `versions`, `last-modified`, `verifyauth`) |
+| `entries` | CGM entries (`latest`, `current`, `list`, `get`, `add`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize`) |
+| `treatments` | Treatment events incl. boluses, meals, site/sensor changes (`latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`) |
+| `profile` | Profile records (`active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `create`, `update`, `delete`) |
+| `devicestatus` | Pump/CGM status (`latest`, `list`, `add`, `delete`) |
+| `sensors` | CGM sensor-session detection from `Sensor Start` / `Sensor Change` treatments (`sessions`) |
+| `properties` | Derived state from `/api/v2/properties` — IOB, COB, bgnow, delta, loop, sensor age (`get`) |
+| `notifications` | Alarm `ack` + `admin` notices |
+| `activity` | Activity / exercise records — API v3 (`latest`, `list`, `get`, `add`, `delete`) |
+| `food` | Food database (`list`, `quickpicks`, `regular`, `add`, `update`, `delete`) |
+| `report` | Computed reports: `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, plus composed snapshots `sensor-life` and `iob-cob` |
+| `v3` | Generic CRUD + sync over any v3 collection (`list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history`) |
+| `watch` | Real-time entries/treatments via socket.io (needs `pip install '.[watch]'`) |
 | `session` | Session state (`info`, `save`, `load`, `clear`) |
+
+### Agent-friendly snapshots
+
+```bash
+# One-call "what's happening right now" — IOB, COB, bgnow, delta, loop
+cli-anything-nightscout --json report iob-cob | jq .summary
+
+# All properties (or a comma-separated subset)
+cli-anything-nightscout properties get iob,cob,sensor
+
+# Current sensor age vs. replacement threshold
+cli-anything-nightscout report sensor-life --threshold-hours 168
+```
 
 ## Tests
 
@@ -94,14 +161,17 @@ Unit tests have no external dependencies. E2E tests need a real Nightscout
 instance — point at it with `NIGHTSCOUT_URL` and `NIGHTSCOUT_API_SECRET`:
 
 ```bash
-# Unit
-pytest cli_anything/nightscout/tests/test_core.py -v
+# Unit + integration (no server required — uses an in-process mock)
+pytest tests/ -v
 
-# Full E2E (requires server)
+# Subset: just the refine / E2E suite
+pytest tests/test_refine.py tests/test_full_e2e.py -v
+
+# Full E2E against a real Nightscout (overrides the mock)
 NIGHTSCOUT_URL=http://localhost:1337 \
 NIGHTSCOUT_API_SECRET=test_secret_at_least_12_chars \
 CLI_ANYTHING_FORCE_INSTALLED=1 \
-  pytest cli_anything/nightscout/tests/test_full_e2e.py -v -s
+  pytest tests/test_full_e2e.py -v -s
 ```
 
 To stand up a real local test server with Docker:

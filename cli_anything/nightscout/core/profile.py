@@ -76,6 +76,73 @@ def current_store(*, conn: dict[str, Any]) -> dict[str, Any] | None:
     return body if isinstance(body, dict) else None
 
 
+def create_profile(payload: dict[str, Any], *, conn: dict[str, Any]) -> Any:
+    """Create a profile record via ``POST /api/v1/profile``.
+
+    ``payload`` is the full profile-record envelope (``defaultProfile``,
+    ``store``, ``startDate``, etc.) — same shape returned by :func:`current`.
+    """
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError("payload must be a non-empty profile-record dict")
+    return backend.post(
+        "/profile.json",
+        data=payload,
+        base_url=conn["server_url"],
+        version="v1",
+        api_secret=conn.get("api_secret"),
+        token=conn.get("api_token"),
+    )
+
+
+def update_profile(
+    profile_id: str,
+    fields: dict[str, Any],
+    *,
+    conn: dict[str, Any],
+) -> Any:
+    """Replace fields on a profile record via ``PUT /api/v1/profile``.
+
+    Fetches the existing record, merges ``fields`` on top, and writes back.
+    """
+    if not profile_id:
+        raise ValueError("profile_id is required")
+    if not isinstance(fields, dict) or not fields:
+        raise ValueError("fields must be a non-empty dict of changes")
+    records = list_profiles(conn=conn)
+    target: dict[str, Any] | None = None
+    for r in records:
+        if isinstance(r, dict) and (r.get("_id") == profile_id):
+            target = r
+            break
+    if target is None:
+        raise ValueError(f"no profile record matches _id {profile_id!r}")
+    merged = dict(target)
+    merged.update(fields)
+    if "_id" not in merged:
+        merged["_id"] = profile_id
+    return backend.put(
+        "/profile.json",
+        data=merged,
+        base_url=conn["server_url"],
+        version="v1",
+        api_secret=conn.get("api_secret"),
+        token=conn.get("api_token"),
+    )
+
+
+def delete_profile(profile_id: str, *, conn: dict[str, Any]) -> Any:
+    """Delete a profile record by ``_id`` via ``DELETE /api/v1/profile/<id>``."""
+    if not profile_id:
+        raise ValueError("profile_id is required")
+    return backend.delete(
+        f"/profile/{profile_id}.json",
+        base_url=conn["server_url"],
+        version="v1",
+        api_secret=conn.get("api_secret"),
+        token=conn.get("api_token"),
+    )
+
+
 def current_named(name: str, *, conn: dict[str, Any]) -> dict[str, Any] | None:
     """Return a specific named profile from the current profile record.
 

@@ -148,21 +148,38 @@ def _build_url(base_url: str, path: str, version: str) -> str:
 
 
 def _handle_response(resp: requests.Response) -> Any:
-    if resp.status_code == 204:
-        return {}
+    """Decode a Nightscout HTTP response.
+
+    Successful (2xx) results:
+      * 204 No Content → ``{"_status_code": 204, "_no_content": True}``
+      * Parseable JSON body → the parsed value
+      * Empty body → ``{"_status_code": <code>, "_no_content": True}``
+      * Non-JSON body → ``{"_status_code": <code>, "raw": <text>}``
+
+    The sentinel keys (``_status_code``, ``_no_content``) let callers
+    distinguish "server ack'd with no body" from "got a record back" —
+    useful when chaining a POST then trying to read ``_id`` from the
+    response. They are deliberately namespaced with a leading underscore
+    so they cannot collide with Nightscout document fields.
+    """
+    code = resp.status_code
+    if code == 204:
+        return {"_status_code": 204, "_no_content": True}
     text = resp.text
-    if not (200 <= resp.status_code < 300):
+    if not (200 <= code < 300):
         try:
             body = resp.json()
             msg = body.get("message") or body.get("status", {}).get("message") or text or "request failed"
         except (ValueError, json.JSONDecodeError):
             body = {"raw": text}
             msg = text or "request failed"
-        raise NightscoutAPIError(resp.status_code, str(msg), body=body)
+        raise NightscoutAPIError(code, str(msg), body=body)
+    if not text:
+        return {"_status_code": code, "_no_content": True}
     try:
         return resp.json()
     except (ValueError, json.JSONDecodeError):
-        return {"raw": text} if text else {}
+        return {"_status_code": code, "raw": text}
 
 
 def request(
@@ -201,7 +218,9 @@ def request(
     """
     url = _build_url(base_url, path, version)
     p = dict(params or {})
-    if version == "v1":
+    if version in ("v1", "v2"):
+        # /api/v2/properties (the canonical derived-state endpoint) authorizes
+        # against the same api-secret header + ?token= query string as v1.
         secret_hash = _resolve_secret_hash(api_secret)
         headers = _v1_headers(secret_hash)
         if token and "token" not in p:

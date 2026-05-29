@@ -142,6 +142,36 @@ class _NightscoutStandIn:
                 if p == "/api/v3/food":
                     return self._json(200, {"result": outer.food})
 
+                # v3 generic: list / get / history
+                m3 = re.match(r"^/api/v3/([a-z]+)$", p)
+                if m3 and m3.group(1) not in ("version", "lastModified"):
+                    coll = m3.group(1)
+                    return self._json(200, {"status": 200,
+                                              "result": getattr(outer, coll, [])})
+                m3h = re.match(r"^/api/v3/([a-z]+)/history(?:/(\d+))?$", p)
+                if m3h:
+                    return self._json(200, {"status": 200, "result": []})
+
+                # v2 properties (uses v1-style api-secret auth)
+                m_props = re.match(r"^/api/v2/properties(?:/([\w,]+))?$", p)
+                if m_props:
+                    if not self._is_authed_v1():
+                        return self._json(401, {"message": "Unauthorized"})
+                    full = {
+                        "iob": {"iob": 2.4, "display": "2.4U"},
+                        "cob": {"cob": 32, "display": "32g"},
+                        "bgnow": {"mean": 138, "last": 138, "displayLine": "138"},
+                        "delta": {"mean5MinsAgo": -2, "display": "-2"},
+                        "loop": {"display": {"label": "Enacted", "code": 0}},
+                        "buttonMood": {"label": "ok"},
+                        "sensor": {"display": "168.0h"},
+                    }
+                    names = m_props.group(1)
+                    if names:
+                        keys = [n for n in names.split(",") if n]
+                        full = {k: full[k] for k in keys if k in full}
+                    return self._json(200, full)
+
                 # v1 endpoints — auth required.
                 if p.startswith("/api/v1/"):
                     if not self._is_authed_v1():
@@ -184,6 +214,57 @@ class _NightscoutStandIn:
                         return self._json(200, items[:cnt])
                     if p == "/api/v1/profile.json":
                         return self._json(200, outer.profile)
+                    if p == "/api/v1/versions":
+                        return self._json(200, {"plugins": ["bgnow", "iob", "cob"]})
+                    if p == "/api/v1/entries/current.json":
+                        items = sorted(outer.entries,
+                                         key=lambda e: e.get("date", 0),
+                                         reverse=True)
+                        return self._json(200, items[:1])
+                    if p == "/api/v1/food/quickpicks":
+                        return self._json(200, [f for f in outer.food
+                                                  if f.get("type") == "quickpick"])
+                    if p == "/api/v1/food/regular":
+                        return self._json(200, [f for f in outer.food
+                                                  if f.get("type") != "quickpick"])
+                    if p == "/api/v1/notifications/ack":
+                        return self._json(200, {"acked": True,
+                                                  "level": int(qs.get("level", "0")),
+                                                  "group": qs.get("group", "default")})
+                    if p == "/api/v1/adminnotifies":
+                        return self._json(200, {"notifies": [],
+                                                  "notifyCount": 0})
+                    m_cnt = re.match(r"^/api/v1/count/(\w+)/where$", p)
+                    if m_cnt:
+                        coll = m_cnt.group(1)
+                        items = list(getattr(outer, coll, []))
+                        # Apply the where[type][$eq] filter if present.
+                        want_type = None
+                        for k, v in qs.items():
+                            if k.startswith("where[") and "$eq" in k:
+                                want_type = v
+                        if want_type is not None:
+                            items = [i for i in items
+                                       if i.get("type") == want_type]
+                        return self._json(200, {"count": len(items)})
+                    m_t = re.match(r"^/api/v1/times/([^/]+)(?:/([^.]+))?\.json$", p)
+                    if m_t:
+                        prefix = m_t.group(1)
+                        items = [e for e in outer.entries
+                                   if (e.get("dateString") or "").startswith(prefix)]
+                        return self._json(200, items)
+                    # Single-record get for treatments / entries.
+                    m_one = re.match(
+                        r"^/api/v1/(treatments|entries)/([0-9a-f]{24})\.json$", p,
+                    )
+                    if m_one:
+                        coll = m_one.group(1)
+                        rid = m_one.group(2)
+                        items = getattr(outer, coll, [])
+                        for rec in items:
+                            if rec.get("_id") == rid:
+                                return self._json(200, [rec])
+                        return self._json(200, [])
 
                 return self._json(404, {"message": "not found"})
 
@@ -214,6 +295,74 @@ class _NightscoutStandIn:
                         outer.treatments.append(rec)
                         inserted.append(rec)
                     return self._json(200, inserted)
+                if p == "/api/v1/food":
+                    inserted = []
+                    for rec in payload:
+                        rec["_id"] = _oid()
+                        outer.food.append(rec)
+                        inserted.append(rec)
+                    return self._json(200, inserted if len(inserted) > 1 else inserted[0])
+                if p in ("/api/v1/devicestatus", "/api/v1/devicestatus.json"):
+                    inserted = []
+                    for rec in payload:
+                        rec["_id"] = _oid()
+                        outer.devicestatus.append(rec)
+                        inserted.append(rec)
+                    return self._json(200, inserted if len(inserted) > 1 else inserted[0])
+                if p in ("/api/v1/profile", "/api/v1/profile.json"):
+                    inserted = []
+                    for rec in payload:
+                        rec["_id"] = _oid()
+                        outer.profile.append(rec)
+                        inserted.append(rec)
+                    return self._json(200, inserted if len(inserted) > 1 else inserted[0])
+                return self._json(404, {"message": "not found"})
+
+            def do_PUT(self):
+                self._record()
+                u = urlparse(self.path)
+                p = u.path
+                if not self._is_authed_v1():
+                    return self._json(401, {"message": "Unauthorized"})
+                body = self._read_body()
+                try:
+                    payload = json.loads(body) if body else {}
+                except json.JSONDecodeError:
+                    return self._json(400, {"message": "bad json"})
+                # v1 PUT endpoints replace by _id inside the body.
+                m_v1 = re.match(r"^/api/v1/(treatments|food|profile)(?:\.json)?$", p)
+                if m_v1:
+                    coll = m_v1.group(1)
+                    items = getattr(outer, coll)
+                    rid = payload.get("_id") if isinstance(payload, dict) else None
+                    if not rid:
+                        return self._json(400, {"message": "missing _id"})
+                    for i, rec in enumerate(items):
+                        if rec.get("_id") == rid:
+                            items[i] = payload
+                            return self._json(200, {"updated": 1, "_id": rid})
+                    return self._json(404, {"message": "not found"})
+                return self._json(404, {"message": "not found"})
+
+            def do_PATCH(self):
+                self._record()
+                u = urlparse(self.path)
+                p = u.path
+                m = re.match(r"^/api/v3/([a-z]+)/([\w-]+)$", p)
+                if not m:
+                    return self._json(404, {"message": "not found"})
+                coll = m.group(1)
+                rid = m.group(2)
+                body = self._read_body()
+                try:
+                    patch = json.loads(body) if body else {}
+                except json.JSONDecodeError:
+                    return self._json(400, {"message": "bad json"})
+                items = getattr(outer, coll, [])
+                for rec in items:
+                    if rec.get("_id") == rid:
+                        rec.update(patch)
+                        return self._json(200, {"status": 200, "result": rec})
                 return self._json(404, {"message": "not found"})
 
             def do_DELETE(self):
@@ -222,7 +371,7 @@ class _NightscoutStandIn:
                 p = u.path
                 if not self._is_authed_v1():
                     return self._json(401, {"message": "Unauthorized"})
-                m = re.match(r"^/api/v1/(entries|treatments|devicestatus)/([0-9a-f]{24})$", p)
+                m = re.match(r"^/api/v1/(entries|treatments|devicestatus|food|profile)/([0-9a-f]{24})(?:\.json)?$", p)
                 if m:
                     coll = m.group(1)
                     target = m.group(2)
@@ -496,3 +645,184 @@ class TestCLISubprocess:
         r = self._run(["--json", "session", "info"], env=env)
         after = json.loads(r.stdout)
         assert after["history_count"] == baseline["history_count"], "dry-run must not save"
+
+
+class TestRefineCLISubprocess:
+    """E2E subprocess tests for the refine-pass additions."""
+
+    CLI_BASE = _resolve_cli("cli-anything-nightscout")
+
+    def _run(self, args, env=None, check=True):
+        env_full = os.environ.copy()
+        if env:
+            env_full.update(env)
+        return subprocess.run(
+            self.CLI_BASE + list(args),
+            capture_output=True, text=True, check=check, env=env_full, timeout=30,
+        )
+
+    def _conn_env(self, server_url_and_secret, tmp_path):
+        url, secret = server_url_and_secret
+        return {
+            "NIGHTSCOUT_URL": url,
+            "NIGHTSCOUT_API_SECRET": secret,
+            "NIGHTSCOUT_TOKEN": "",
+            "CLI_ANYTHING_HOME": str(tmp_path),
+        }
+
+    # ---- properties / iob-cob ----
+
+    def test_properties_get_all(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "properties", "get"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        if not _is_live_mode():
+            assert "iob" in data and "cob" in data and "loop" in data
+
+    def test_properties_get_subset(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "properties", "get", "iob,cob"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        if not _is_live_mode():
+            assert set(data.keys()) == {"iob", "cob"}
+
+    def test_report_iob_cob_summary_shape(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "report", "iob-cob"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert "summary" in data and "raw" in data
+        if not _is_live_mode():
+            s = data["summary"]
+            assert "iob" in s and "cob" in s
+
+    # ---- status versions ----
+
+    def test_status_versions(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "status", "versions"], env=env)
+        assert r.returncode == 0, r.stderr
+        # Live servers may return empty objects; just check it parses.
+        json.loads(r.stdout)
+
+    # ---- entries: current / count / times ----
+
+    def test_entries_current(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        # Seed an entry first.
+        self._run(["--json", "entries", "add", "--sgv", "125",
+                    "--direction", "Flat"], env=env)
+        r = self._run(["--json", "entries", "current"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        rows = data if isinstance(data, list) else [data]
+        if not _is_live_mode():
+            assert any(e.get("sgv") == 125 for e in rows if isinstance(e, dict))
+
+    def test_entries_count_with_filter(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        # Seed an entry so count > 0 (stand-in only).
+        self._run(["--json", "entries", "add", "--sgv", "140"], env=env)
+        r = self._run(["--json", "entries", "count",
+                        "--field", "type", "--op", "eq", "--value", "sgv"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert "count" in data
+
+    # ---- food CRUD ----
+
+    def test_food_add_then_quickpicks(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "food", "add",
+                        "--food", "test-banana", "--carbs", "27",
+                        "--portion", "120", "--quickpick"], env=env)
+        assert r.returncode == 0, r.stderr
+        r = self._run(["--json", "food", "quickpicks"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        if not _is_live_mode():
+            names = [f.get("food") for f in data]
+            assert "test-banana" in names
+
+    # ---- notifications ----
+
+    def test_notifications_ack(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "notifications", "ack",
+                        "--level", "1", "--time-minutes", "30"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        # Stand-in echoes acked=True; live server returns 200 with no body or {}
+        if not _is_live_mode():
+            assert data.get("level") == 1
+
+    def test_notifications_admin(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "notifications", "admin"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert "notifyCount" in data
+
+    # ---- devicestatus add ----
+
+    def test_devicestatus_add_then_list(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "devicestatus", "add",
+                        "--device", "cli-anything-test"], env=env)
+        assert r.returncode == 0, r.stderr
+        r = self._run(["--json", "devicestatus", "list"], env=env)
+        assert r.returncode == 0, r.stderr
+
+    # ---- report sensor-life ----
+
+    def test_report_sensor_life(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        # Seed a sensor-change treatment so the report has something to chew on.
+        self._run(["--json", "treatments", "add",
+                    "--event-type", "Sensor Change",
+                    "--notes", "test"], env=env)
+        r = self._run(["--json", "report", "sensor-life",
+                        "--threshold-hours", "168"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert "threshold_hours" in data
+        assert data["threshold_hours"] == 168.0
+
+    # ---- treatments update (via stand-in) ----
+
+    def test_treatments_update_changes_carbs(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        # Add a meal bolus and capture its _id.
+        r = self._run(["--json", "treatments", "add",
+                        "--event-type", "Meal Bolus",
+                        "--carbs", "30", "--insulin", "3"], env=env)
+        assert r.returncode == 0, r.stderr
+        posted = json.loads(r.stdout)
+        recs = posted if isinstance(posted, list) else [posted]
+        rid = recs[0].get("_id") if recs else None
+        if rid is None:
+            pytest.skip("no _id returned by add (live server quirk)")
+        r = self._run(["--json", "treatments", "update", rid,
+                        "--carbs", "45"], env=env)
+        assert r.returncode == 0, r.stderr
+        # Verify by reading back.
+        r = self._run(["--json", "treatments", "get", rid], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        rows = data if isinstance(data, list) else [data]
+        if not _is_live_mode():
+            assert any(r.get("carbs") == 45 for r in rows if isinstance(r, dict))
+
+    # ---- v3 search ----
+
+    def test_v3_search_via_filter(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "v3", "search", "treatments",
+                        "--filter", "eventType$eq=Meal Bolus",
+                        "--limit", "5"], env=env)
+        assert r.returncode == 0, r.stderr
+        # Just confirm it returns a list (empty allowed).
+        data = json.loads(r.stdout)
+        assert isinstance(data, list)

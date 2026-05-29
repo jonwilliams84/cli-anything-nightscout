@@ -35,8 +35,25 @@ from __future__ import annotations
 import math
 import statistics
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from typing import Any, Iterable
+
+
+def _resolve_tz(tz: tzinfo | str | None) -> tzinfo:
+    """Resolve a tz hint into a tzinfo.
+
+    Accepts an IANA name (``"Europe/London"``), an already-built ``tzinfo``,
+    or ``None`` for UTC (library default; CLI passes local).
+    """
+    if tz is None:
+        return timezone.utc
+    if isinstance(tz, tzinfo):
+        return tz
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(tz)
+    except Exception:
+        return timezone.utc
 
 MMOL_TO_MGDL = 18.018
 
@@ -234,13 +251,19 @@ def daily(
     *,
     units: str = "mg/dl",
     input_units: str | None = None,
+    tz: tzinfo | str | None = None,
 ) -> list[dict[str, Any]]:
-    """Group entries by UTC date and compute summary stats per day."""
+    """Group entries by date and compute summary stats per day.
+
+    ``tz`` controls the day boundary. Default UTC; pass an IANA name (e.g.
+    ``"Europe/London"``) to match clinic-local "calendar day". This matters:
+    a 23:30 UTC reading on a BST evening belongs to *today*, not tomorrow.
+    """
     units, input_units = _resolve_units(units, input_units)
     by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for e in _filter_sgv(entries):
         ts = e.get("dateString") or e.get("date")
-        day = _date_key(ts)
+        day = _date_key(ts, tz=tz)
         if day:
             by_day[day].append(e)
     rows = []
@@ -275,6 +298,7 @@ def hourly_pattern(
     percentiles: tuple[int, ...] = (10, 25, 50, 75, 90),
     low: float | None = None,
     high: float | None = None,
+    tz: tzinfo | str | None = None,
 ) -> list[dict[str, Any]]:
     """AGP-style report: glucose statistics per hour of day across the window.
 
@@ -300,7 +324,7 @@ def hourly_pattern(
 
     by_hour: dict[int, list[float]] = defaultdict(list)
     for e in _filter_sgv(entries):
-        hr = _hour_key(e.get("dateString") or e.get("date"))
+        hr = _hour_key(e.get("dateString") or e.get("date"), tz=tz)
         if hr is None:
             continue
         v = _entry_mgdl(e, input_units)
@@ -438,34 +462,26 @@ def hypo_events(
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
-def _date_key(ts: Any) -> str | None:
-    if ts is None:
+def _date_key(ts: Any, tz: tzinfo | str | None = None) -> str | None:
+    """Date bucket (YYYY-MM-DD) at the requested timezone (default: UTC)."""
+    tzo = _resolve_tz(tz)
+    parsed = _parse_ts(ts)
+    if parsed is None:
         return None
-    if isinstance(ts, (int, float)) and not math.isnan(float(ts)):
-        try:
-            return datetime.fromtimestamp(float(ts) / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
-        except (OSError, ValueError, OverflowError):
-            return None
-    if isinstance(ts, str) and len(ts) >= 10:
-        return ts[:10]
-    return None
+    return parsed.astimezone(tzo).strftime("%Y-%m-%d")
 
 
-def _hour_key(ts: Any) -> int | None:
-    """Extract the hour-of-day (0–23, UTC) from an ISO string or epoch-ms."""
-    if ts is None:
+def _hour_key(ts: Any, tz: tzinfo | str | None = None) -> int | None:
+    """Hour-of-day (0–23) at the requested timezone (default: UTC).
+
+    Pass tz=ZoneInfo("Europe/London") or tz="Europe/London" so a 09:00 BST
+    breakfast bins in the 09:00 bucket, not 08:00.
+    """
+    tzo = _resolve_tz(tz)
+    parsed = _parse_ts(ts)
+    if parsed is None:
         return None
-    if isinstance(ts, (int, float)) and not math.isnan(float(ts)):
-        try:
-            return datetime.fromtimestamp(float(ts) / 1000.0, tz=timezone.utc).hour
-        except (OSError, ValueError, OverflowError):
-            return None
-    if isinstance(ts, str) and len(ts) >= 13:
-        try:
-            return int(ts[11:13])
-        except (ValueError, IndexError):
-            return None
-    return None
+    return parsed.astimezone(tzo).hour
 
 
 # ── MAGE (Mean Amplitude of Glycemic Excursions) ─────────────────────────
@@ -627,6 +643,7 @@ def day_of_week(
     *,
     units: str = "mg/dl",
     input_units: str | None = None,
+    tz: tzinfo | str | None = None,
 ) -> list[dict[str, Any]]:
     """Aggregate readings by day-of-week (Mon-Sun).
 
@@ -643,7 +660,7 @@ def day_of_week(
     by_dow: dict[int, list[float]] = defaultdict(list)
     for e in _filter_sgv(entries):
         ts = e.get("dateString") or e.get("date")
-        idx = _weekday_key(ts)
+        idx = _weekday_key(ts, tz=tz)
         if idx is None:
             continue
         v = _entry_mgdl(e, input_units)
@@ -686,24 +703,13 @@ def day_of_week(
     return rows
 
 
-def _weekday_key(ts: Any) -> int | None:
-    """Extract the weekday (0=Mon..6=Sun) from an ISO string or epoch-ms."""
-    if ts is None:
+def _weekday_key(ts: Any, tz: tzinfo | str | None = None) -> int | None:
+    """Weekday (0=Mon..6=Sun) at the requested timezone (default: UTC)."""
+    tzo = _resolve_tz(tz)
+    parsed = _parse_ts(ts)
+    if parsed is None:
         return None
-    if isinstance(ts, (int, float)) and not math.isnan(float(ts)):
-        try:
-            return datetime.fromtimestamp(float(ts) / 1000.0, tz=timezone.utc).weekday()
-        except (OSError, ValueError, OverflowError):
-            return None
-    if isinstance(ts, str) and len(ts) >= 10:
-        try:
-            return datetime.fromisoformat(ts[:19]).weekday()
-        except ValueError:
-            try:
-                return datetime.fromisoformat(ts[:10]).weekday()
-            except ValueError:
-                return None
-    return None
+    return parsed.astimezone(tzo).weekday()
 
 
 def _parse_ts(ts: Any) -> datetime | None:

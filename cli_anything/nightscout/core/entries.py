@@ -186,9 +186,89 @@ def add_sgv(
 
 
 def delete_entry(spec: str, *, conn: dict[str, Any]) -> Any:
-    """Delete an entry by id or by type-prefix spec."""
+    """Delete an entry by ``_id`` (24-hex ObjectId).
+
+    Nightscout's v1 API technically also accepts a type prefix (e.g. ``sgv``)
+    that mass-deletes every entry of that type — this is footgunny enough
+    that the CLI layer refuses non-ObjectId specs and provides a separate,
+    safety-gated ``entries delete-by-type`` for the rare intended use.
+    """
     return backend.delete(
-        f"/entries/{spec}",
+        f"/entries/{spec}.json",
+        base_url=conn["server_url"],
+        version="v1",
+        api_secret=conn.get("api_secret"),
+        token=conn.get("api_token"),
+    )
+
+
+def current(*, conn: dict[str, Any]) -> dict[str, Any] | list[dict[str, Any]]:
+    """Return the most recent sgv entry via ``GET /api/v1/entries/current``.
+
+    Lighter-weight than ``latest(count=1)`` because the server special-cases
+    this endpoint to return just the freshest reading rather than running a
+    full query.
+    """
+    return backend.get(
+        "/entries/current.json",
+        base_url=conn["server_url"],
+        version="v1",
+        api_secret=conn.get("api_secret"),
+        token=conn.get("api_token"),
+    )
+
+
+def count_records(
+    *,
+    storage: str = "entries",
+    field: str | None = None,
+    op: str | None = None,
+    value: str | None = None,
+    conn: dict[str, Any],
+) -> dict[str, Any]:
+    """Server-side record count via ``GET /api/v1/count/<storage>/where``.
+
+    ``field``/``op``/``value`` map to the ``where[field][$op]=value`` query
+    syntax. Example::
+
+        count_records(storage="entries", field="type", op="eq", value="sgv", conn=conn)
+    """
+    if not storage:
+        raise ValueError("storage is required")
+    params: dict[str, Any] = {}
+    if field and op and value is not None:
+        params[f"where[{field}][${op}]"] = value
+    res = backend.get(
+        f"/count/{storage}/where",
+        base_url=conn["server_url"],
+        version="v1",
+        api_secret=conn.get("api_secret"),
+        token=conn.get("api_token"),
+        params=params,
+    )
+    return res if isinstance(res, dict) else {"raw": res}
+
+
+def times_query(
+    *,
+    prefix: str,
+    regex: str | None = None,
+    conn: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Time-pattern query via ``GET /api/v1/times/<prefix>[/<regex>]``.
+
+    Sister to :func:`slice_query`. ``prefix`` is the date prefix (e.g.
+    ``"2025-01"``), ``regex`` is an optional tail pattern that lets you
+    isolate slices like "all entries at 3pm in January" with
+    ``prefix="2025-01", regex="T15"``.
+    """
+    if not prefix:
+        raise ValueError("prefix is required")
+    path = f"/times/{prefix}"
+    if regex:
+        path = f"{path}/{regex}"
+    return backend.get(
+        path + ".json",
         base_url=conn["server_url"],
         version="v1",
         api_secret=conn.get("api_secret"),

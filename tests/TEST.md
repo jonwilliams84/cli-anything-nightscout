@@ -231,14 +231,83 @@ cli_anything/nightscout/tests/test_full_e2e.py::TestCLISubprocess::test_dry_run_
 - **GUI round-trip** — Nightscout has a web dashboard; the CLI's
   responsibility ends at the JSON API and we do not screenshot or visually
   verify the dashboard.
-- **WebSocket / live alarms** — Nightscout exposes `socket.io` channels for
-  real-time updates; the CLI is request/response only. A future `watch`
-  subcommand would close this gap.
-- **API v3 history endpoints** — `/api/v3/{collection}/history[/<lastModified>]`
-  is not yet wired. The current focus is current-state queries plus mutations.
 - **Live Nightscout server** — Setting `NIGHTSCOUT_URL` and
   `NIGHTSCOUT_API_SECRET` switches the same E2E suite to LIVE mode and runs
   it against a real upstream. The repository ships `docker-compose.test.yml`
   so a contributor can boot one with
   `docker compose -f docker-compose.test.yml up -d` before running the suite.
+
+---
+
+## Refine Pass — 2026-05-25
+
+### Added coverage
+
+New command groups and commands (CLI surface expanded from ~14 to ~16 groups,
+adding ~25 commands):
+
+| Tier | Added | Where |
+|------|-------|-------|
+| A | `properties get [names]` (`/api/v2/properties`) | `core/properties.py` |
+| A | `v3 create / update / patch / search / history` | `core/v3.py` (`v3_patch`, `v3_history`, richer `v3_search`) |
+| A | `treatments update` (PUT /api/v1/treatments) | `core/treatments.py` |
+| A | `food add / update / delete / quickpicks / regular` | `core/food.py` |
+| B | `entries current / count / times / normalize` | `core/entries.py` |
+| B | `profile get-named / setting-at` (CLI wrappers for existing core fns) | `nightscout_cli.py` |
+| B | `status versions` | `core/status.py` |
+| C | `notifications ack / admin` | `core/notifications.py` |
+| C | `profile create / update / delete` (v1 POST/PUT/DELETE) | `core/profile.py` |
+| C | `devicestatus add` (v1 POST) | `core/devicestatus.py` |
+| C | `report sensor-life` (composes `sensors sessions` with age threshold) | `core/sensors.py` |
+| C | `report iob-cob` (composes properties for a single-call snapshot) | `core/properties.py` |
+
+Backend addition: `version="v2"` now uses v1-style auth (`api-secret` header)
+so the properties endpoint authorises correctly.
+
+### Test additions
+
+| File | New tests | Scope |
+|------|-----------|-------|
+| `test_refine.py` | 50 unit tests | Pure mocked-backend coverage of every new core function, including: v2 auth header propagation, properties path joins / name validation, v3 search field merging, v3 patch/history paths, treatments update merge semantics, food write paths, profile write merge, entries current/count/times/normalize, status versions, notifications ack params, devicestatus add validation, sensor-life thresholds (fresh / stale / replace-soon / ongoing-vs-closed). |
+| `test_full_e2e.py` (`TestRefineCLISubprocess`) | 13 subprocess E2E tests | Installed-binary tests for: `properties get [all/subset]`, `report iob-cob` summary shape, `status versions`, `entries current`, `entries count --field/--op/--value`, `food add → quickpicks`, `notifications ack / admin`, `devicestatus add → list`, `report sensor-life`, `treatments update` round-trip (add → update → get), `v3 search --filter`. |
+| stand-in server | +5 routes + PUT/PATCH handlers | Added `/api/v2/properties[/names]`, `/api/v1/versions`, `/api/v1/entries/current.json`, `/api/v1/food/quickpicks` + `/regular`, `/api/v1/notifications/ack`, `/api/v1/adminnotifies`, `/api/v1/count/<storage>/where`, `/api/v1/times/<prefix>[/regex].json`, `/api/v1/{coll}/<id>.json` (single-record GET), POST handlers for food/devicestatus/profile, full `do_PUT` for v1 collection edits, full `do_PATCH` for v3. |
+
+### Test results — 2026-05-25
+
+```text
+$ python3 -m pytest --no-header -q
+357 passed in 6.03s
+```
+
+Breakdown:
+
+- `test_backend_v2.py`: 31
+- `test_core.py`: ~119
+- `test_entries_normalize.py`: 12
+- `test_excursions.py`: 23
+- `test_profile.py`: 13
+- `test_refine.py`: **50** ← new
+- `test_report_metrics.py`: 18
+- `test_sensors.py`: 19
+- `test_treatments_validation.py`: 4
+- `test_v3.py`: 26
+- `test_watch.py`: 9
+- `test_full_e2e.py`: ~33 (including 13 new `TestRefineCLISubprocess`)
+
+No regressions; pre-existing 294 tests + 63 new = 357 total.
+
+### Notes on coverage gaps still open
+
+- **API v3 PATCH against live servers** — the stand-in implements PATCH but
+  some Nightscout deployments may not have v3 PATCH enabled (gated on
+  storage backend). The CLI surfaces the upstream 404 cleanly via
+  `NightscoutAPIError`.
+- **WebSocket / live alarms** — unchanged; `watch entries` still requires
+  the optional socket.io extra and is not exercised in CI.
+- **Alexa / Google Home intent endpoints** — `POST /api/v1/alexa` and
+  `POST /api/v1/googlehome` are explicitly out of scope (intent-shaped, not
+  useful for CLI agents).
+- **Smart insulin pen profile push** — `/api/v3/settings` is still reachable
+  through the generic `v3` group; a dedicated `settings` shortcut group has
+  not been added (low impact for the bridge use case).
 

@@ -181,9 +181,14 @@ def watch_entries(
         for entry in entries:
             try:
                 callback(entry)
-            except Exception:
-                # Don't let a buggy callback kill the socket.
-                pass
+            except Exception as exc:
+                # Don't let a buggy callback kill the socket — but surface
+                # the error to stderr so problems aren't swallowed silently.
+                print(
+                    f"watch_entries: callback raised "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
 
     _run_loop(
         conn=conn,
@@ -214,8 +219,12 @@ def watch_treatments(
         for t in treatments:
             try:
                 callback(t)
-            except Exception:
-                pass
+            except Exception as exc:
+                print(
+                    f"watch_treatments: callback raised "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
 
     _run_loop(
         conn=conn,

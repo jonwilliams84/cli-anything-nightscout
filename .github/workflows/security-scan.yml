@@ -21,10 +21,51 @@ jobs:
         run: |
           pip install bandit
           if [ -d cli_anything ]; then
-            bandit -r cli_anything/ -f sarif -o bandit.sarif || true
+            bandit -r cli_anything/ -f json -o bandit.json || true
           else
-            bandit -r . -f sarif -o bandit.sarif || true
+            bandit -r . -f json -o bandit.json || true
           fi
+      - name: Convert bandit JSON to SARIF
+        run: |
+          python3 -c "
+          import json, sys
+          with open('bandit.json') as f:
+              data = json.load(f)
+          sarif = {
+              'version': '2.1.0',
+              'runs': [{
+                  'tool': {
+                      'driver': {
+                          'name': 'Bandit',
+                          'rules': [
+                              {'id': r.get('test_id', 'unknown'),
+                               'shortDescription': {'text': r.get('test_name', r.get('test_id', 'unknown'))},
+                               'fullDescription': {'text': r.get('test_description', '')},
+                               'helpUri': r.get('issue_cwe', {}).get('link', '')}
+                              for r in data.get('results', [])
+                          ]
+                      }
+                  },
+                  'results': [
+                      {
+                          'ruleId': r.get('test_id', 'unknown'),
+                          'level': 'error' if r.get('issue_severity') in ('HIGH', 'MEDIUM') else 'warning',
+                          'message': {'text': r.get('issue_text', '')},
+                          'locations': [{
+                              'physicalLocation': {
+                                  'artifactLocation': {'uri': r.get('filename', 'unknown')},
+                                  'region': {'startLine': r.get('line_number', 0)}
+                              }
+                          }]
+                      }
+                      for r in data.get('results', [])
+                  ]
+              }]
+          }
+          with open('bandit.sarif', 'w') as f:
+              json.dump(sarif, f, indent=2)
+          print(f'Converted {len(data.get(\"results\", []))} bandit findings to SARIF')
+          "
       - name: Upload bandit SARIF
         uses: github/codeql-action/upload-sarif@v3
         with:
@@ -76,9 +117,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 - <<'PYEOF'
-          import json
-          import os
-          import glob
+          import json, os, glob, subprocess
           from datetime import datetime, timezone
 
           scan_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -117,53 +156,28 @@ jobs:
               return findings
 
           all_findings = []
-          all_findings.extend(parse_sarif("bandit.sarif"))
-          all_findings.extend(parse_sarif("semgrep.sarif"))
-
-          # Group by file
-          grouped = {}
-          for f in all_findings:
-              grouped.setdefault(f["file"], []).append(f)
-
-          summary = {
-              "scan_date": scan_date,
-              "total_findings": len(all_findings),
-              "by_file": grouped
-          }
-
-          with open("findings.json", "w") as out:
-              json.dump(summary, out, indent=2)
-
-          print(json.dumps(summary, indent=2))
-
-          # Create or find the issue
-          import subprocess
-
-          # Search for existing issue
-          result = subprocess.run(
-              ["gh", "issue", "list", "--search", "Security findings - auto-generated", "--json", "number,title", "--state", "open"],
-              capture_output=True, text=True
-          )
-          issues = json.loads(result.stdout) if result.stdout else []
-          issue_number = None
-          for issue in issues:
-              if "Security findings - auto-generated" in issue.get("title", ""):
-                  issue_number = issue["number"]
-                  break
+          for f in glob.glob("*.sarif"):
+              all_findings.extend(parse_sarif(f))
 
           if not all_findings:
-              body = f"✅ No security findings — last scan: {scan_date}"
+              body = f"\u2705 No security findings \u2014 last scan: {scan_date}"
           else:
-              body = f"## Security Findings Summary\n\nScan date: {scan_date}\nTotal findings: {len(all_findings)}\n\n```json\n{json.dumps(summary, indent=2)}\n```\n"
+              body = f"Last scan: {scan_date}\n\n```json\n{json.dumps(all_findings, indent=2)}\n```"
 
-          if issue_number:
-              subprocess.run(["gh", "issue", "edit", str(issue_number), "--body", body], check=True)
-              print(f"Updated issue #{issue_number}")
+          # Find or create the issue
+          result = subprocess.run(
+              ["gh", "issue", "list", "--search", "Security findings - auto-generated",
+               "--json", "number", "--limit", "1"],
+              capture_output=True, text=True
+          )
+          issues = json.loads(result.stdout) if result.stdout.strip() else []
+          if issues:
+              subprocess.run(["gh", "issue", "edit", str(issues[0]["number"]),
+                              "--body", body])
           else:
-              result = subprocess.run(
-                  ["gh", "issue", "create", "--title", "🔒 Security findings - auto-generated",
-                   "--body", body, "--label", "security-findings"],
-                  capture_output=True, text=True
-              )
-              print(f"Created issue: {result.stdout.strip()}")
+              subprocess.run(["gh", "issue", "create",
+                              "--title", "\U0001f512 Security findings - auto-generated",
+                              "--label", "security-findings",
+                              "--body", body])
+          print(f"Updated findings issue with {len(all_findings)} findings")
           PYEOF

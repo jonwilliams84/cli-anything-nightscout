@@ -12,6 +12,25 @@ permissions:
   issues: write
 
 jobs:
+  pytest:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install and run tests
+        run: |
+          pip install -e . pytest
+          if [ -d tests ]; then
+            python3 -m pytest tests/ -q
+          elif [ -d cli_anything ]; then
+            python3 -m pytest cli_anything/ -q
+          else
+            echo "No tests found"
+          fi
+
   bandit:
     name: Bandit Scan
     runs-on: ubuntu-latest
@@ -28,43 +47,45 @@ jobs:
       - name: Convert bandit JSON to SARIF
         run: |
           python3 -c "
-          import json, sys
+          import json
           with open('bandit.json') as f:
               data = json.load(f)
+          seen_rules = set()
+          rules = []
+          results = []
+          for r in data.get('results', []):
+              rid = r.get('test_id', 'unknown')
+              if rid not in seen_rules:
+                  seen_rules.add(rid)
+                  rules.append({
+                      'id': rid,
+                      'shortDescription': {'text': r.get('test_name', rid)},
+                      'fullDescription': {'text': r.get('test_description', '')},
+                      'helpUri': r.get('issue_cwe', {}).get('link', '')
+                  })
+              sev = r.get('issue_severity', 'LOW')
+              level = 'error' if sev in ('HIGH', 'MEDIUM') else 'warning'
+              results.append({
+                  'ruleId': rid,
+                  'level': level,
+                  'message': {'text': r.get('issue_text', '')},
+                  'locations': [{
+                      'physicalLocation': {
+                          'artifactLocation': {'uri': r.get('filename', 'unknown')},
+                          'region': {'startLine': r.get('line_number', 0)}
+                      }
+                  }]
+              })
           sarif = {
               'version': '2.1.0',
               'runs': [{
-                  'tool': {
-                      'driver': {
-                          'name': 'Bandit',
-                          'rules': [
-                              {'id': r.get('test_id', 'unknown'),
-                               'shortDescription': {'text': r.get('test_name', r.get('test_id', 'unknown'))},
-                               'fullDescription': {'text': r.get('test_description', '')},
-                               'helpUri': r.get('issue_cwe', {}).get('link', '')}
-                              for r in data.get('results', [])
-                          ]
-                      }
-                  },
-                  'results': [
-                      {
-                          'ruleId': r.get('test_id', 'unknown'),
-                          'level': 'error' if r.get('issue_severity') in ('HIGH', 'MEDIUM') else 'warning',
-                          'message': {'text': r.get('issue_text', '')},
-                          'locations': [{
-                              'physicalLocation': {
-                                  'artifactLocation': {'uri': r.get('filename', 'unknown')},
-                                  'region': {'startLine': r.get('line_number', 0)}
-                              }
-                          }]
-                      }
-                      for r in data.get('results', [])
-                  ]
+                  'tool': {'driver': {'name': 'Bandit', 'rules': rules}},
+                  'results': results
               }]
           }
           with open('bandit.sarif', 'w') as f:
               json.dump(sarif, f, indent=2)
-          print(f'Converted {len(data.get(\"results\", []))} bandit findings to SARIF')
+          print(f'Converted {len(results)} bandit findings to SARIF')
           "
       - name: Upload bandit SARIF
         uses: github/codeql-action/upload-sarif@v3
@@ -164,7 +185,6 @@ jobs:
           else:
               body = f"Last scan: {scan_date}\n\n```json\n{json.dumps(all_findings, indent=2)}\n```"
 
-          # Find or create the issue
           result = subprocess.run(
               ["gh", "issue", "list", "--search", "Security findings - auto-generated",
                "--json", "number", "--limit", "1"],

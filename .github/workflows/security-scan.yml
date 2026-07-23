@@ -16,7 +16,7 @@ jobs:
     name: Tests + Coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -41,7 +41,7 @@ jobs:
     name: Ruff Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -61,7 +61,7 @@ jobs:
     name: Bandit Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install bandit and scan
         run: |
           pip install bandit
@@ -128,7 +128,7 @@ jobs:
     name: Semgrep Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install semgrep and scan
         run: |
           pip install semgrep
@@ -152,7 +152,7 @@ jobs:
     name: Dependency Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -216,7 +216,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [bandit, semgrep, pip-audit, ruff, pytest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Download all artifacts
         uses: actions/download-artifact@v5
         with:

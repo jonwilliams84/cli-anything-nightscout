@@ -38,6 +38,24 @@ class TestBackend:
         assert self.backend.hash_api_secret(plain) == expected
         assert len(self.backend.hash_api_secret(plain)) == 40
 
+    def test_hash_api_secret_uses_usedforsecurity_false(self):
+        """Regression: hash_api_secret must pass usedforsecurity=False so the
+        SHA-1 call is not flagged as a cryptographic security use (B324 /
+        insecure-hash-algorithm-sha1).  The Nightscout v1 protocol requires
+        SHA-1, so we cannot switch algorithms — but we MUST mark the call as
+        non-security.  Verify the digest is unchanged and the call succeeds."""
+        plain = "my-secret-token"
+        # The expected digest is the standard SHA-1 hex (the
+        # usedforsecurity flag does NOT change the output).
+        expected = hashlib.sha1(plain.encode("utf-8")).hexdigest().lower()
+        result = self.backend.hash_api_secret(plain)
+        assert result == expected
+        assert len(result) == 40
+        # Verify the source actually contains usedforsecurity=False
+        import inspect
+        src = inspect.getsource(self.backend.hash_api_secret)
+        assert "usedforsecurity=False" in src
+
     def test_resolve_secret_passthrough_when_already_hashed(self):
         already = "a" * 40
         assert self.backend._resolve_secret_hash(already) == already.lower()
@@ -204,6 +222,23 @@ class TestProject:
         assert project.CONFIG_FILE.exists()
         project.clear_config()
         assert not project.CONFIG_FILE.exists()
+
+    def test_config_dir_has_owner_only_permissions(self, isolated_home):
+        """Regression: the config directory holds API secrets and must be
+        owner-only (0o700).  The scanner flagged 0o700 as 'too permissive' and
+        suggested 0o644, but 0o644 strips the execute bit and makes the
+        directory untraversable.  0o700 (rwx------) is the correct, most
+        restrictive standard directory mode."""
+        project, _ = isolated_home
+        # Trigger directory creation via save_config
+        project.save_config({"server_url": "https://x", "api_secret": "secret"})
+        config_dir = project.CONFIG_DIR
+        assert config_dir.exists(), "config dir should exist after save"
+        mode = config_dir.stat().st_mode & 0o777
+        # 0o700 = rwx------ (owner-only).  No group or other bits.
+        assert mode == 0o700, f"expected 0o700, got {oct(mode)}"
+        # Explicitly: no access for group or others
+        assert mode & 0o077 == 0, "group/other must have no permissions"
 
     def test_get_connection_precedence_args_over_env(self, isolated_home, monkeypatch):
         project, _ = isolated_home

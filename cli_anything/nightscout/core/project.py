@@ -35,6 +35,9 @@ DEFAULTS: dict[str, Any] = {
 def _ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
     try:
+        # 0o700 (rwx------) is owner-only — the most restrictive standard
+        # directory mode. 0o644 would strip the execute bit and make the
+        # directory untraversable.  nosemgrep: python.lang.security.audit.insecure-file-permissions
         os.chmod(str(p), 0o700)
     except OSError:
         pass

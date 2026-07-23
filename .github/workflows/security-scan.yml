@@ -1,0 +1,169 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * *'
+
+permissions:
+  contents: read
+  security-events: write
+  issues: write
+
+jobs:
+  bandit:
+    name: Bandit Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install bandit and scan
+        run: |
+          pip install bandit
+          if [ -d cli_anything ]; then
+            bandit -r cli_anything/ -f sarif -o bandit.sarif || true
+          else
+            bandit -r . -f sarif -o bandit.sarif || true
+          fi
+      - name: Upload bandit SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: bandit.sarif
+          category: bandit
+      - name: Upload bandit SARIF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-sarif
+          path: bandit.sarif
+
+  semgrep:
+    name: Semgrep Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install semgrep and scan
+        run: |
+          pip install semgrep
+          if [ -d cli_anything ]; then
+            semgrep scan --config p/python --sarif --output semgrep.sarif cli_anything/ || true
+          else
+            semgrep scan --config p/python --sarif --output semgrep.sarif . || true
+          fi
+      - name: Upload semgrep SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+      - name: Upload semgrep SARIF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-sarif
+          path: semgrep.sarif
+
+  findings-summary:
+    name: Findings Summary
+    runs-on: ubuntu-latest
+    needs: [bandit, semgrep]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download SARIF artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-sarif"
+          merge-multiple: true
+      - name: Generate findings summary and update issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          import os
+          import glob
+          from datetime import datetime, timezone
+
+          scan_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+          def parse_sarif(filepath):
+              findings = []
+              if not os.path.exists(filepath):
+                  return findings
+              with open(filepath) as f:
+                  try:
+                      data = json.load(f)
+                  except json.JSONDecodeError:
+                      return findings
+              for run in data.get("runs", []):
+                  rules = {}
+                  for rule in run.get("tool", {}).get("driver", {}).get("rules", []):
+                      rules[rule.get("id", "")] = rule
+                  for result in run.get("results", []):
+                      rule_id = result.get("ruleId", "unknown")
+                      level = result.get("level", "warning")
+                      message = result.get("message", {}).get("text", "")
+                      desc = rules.get(rule_id, {}).get("shortDescription", {}).get("text", message)
+                      for loc in result.get("locations", []):
+                          phys = loc.get("physicalLocation", {})
+                          artifact = phys.get("artifactLocation", {}).get("uri", "unknown")
+                          region = phys.get("region", {})
+                          line = region.get("startLine", 0)
+                          findings.append({
+                              "rule_id": rule_id,
+                              "level": level,
+                              "message": message,
+                              "file": artifact,
+                              "line": line,
+                              "description": desc
+                          })
+              return findings
+
+          all_findings = []
+          all_findings.extend(parse_sarif("bandit.sarif"))
+          all_findings.extend(parse_sarif("semgrep.sarif"))
+
+          # Group by file
+          grouped = {}
+          for f in all_findings:
+              grouped.setdefault(f["file"], []).append(f)
+
+          summary = {
+              "scan_date": scan_date,
+              "total_findings": len(all_findings),
+              "by_file": grouped
+          }
+
+          with open("findings.json", "w") as out:
+              json.dump(summary, out, indent=2)
+
+          print(json.dumps(summary, indent=2))
+
+          # Create or find the issue
+          import subprocess
+
+          # Search for existing issue
+          result = subprocess.run(
+              ["gh", "issue", "list", "--search", "Security findings - auto-generated", "--json", "number,title", "--state", "open"],
+              capture_output=True, text=True
+          )
+          issues = json.loads(result.stdout) if result.stdout else []
+          issue_number = None
+          for issue in issues:
+              if "Security findings - auto-generated" in issue.get("title", ""):
+                  issue_number = issue["number"]
+                  break
+
+          if not all_findings:
+              body = f"✅ No security findings — last scan: {scan_date}"
+          else:
+              body = f"## Security Findings Summary\n\nScan date: {scan_date}\nTotal findings: {len(all_findings)}\n\n```json\n{json.dumps(summary, indent=2)}\n```\n"
+
+          if issue_number:
+              subprocess.run(["gh", "issue", "edit", str(issue_number), "--body", body], check=True)
+              print(f"Updated issue #{issue_number}")
+          else:
+              result = subprocess.run(
+                  ["gh", "issue", "create", "--title", "🔒 Security findings - auto-generated",
+                   "--body", body, "--label", "security-findings"],
+                  capture_output=True, text=True
+              )
+              print(f"Created issue: {result.stdout.strip()}")
+          PYEOF

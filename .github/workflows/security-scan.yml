@@ -185,6 +185,9 @@ jobs:
           else:
               body = f"Last scan: {scan_date}\n\n```json\n{json.dumps(all_findings, indent=2)}\n```"
 
+          with open("/tmp/findings_body.md", "w") as bf:
+              bf.write(body)
+
           result = subprocess.run(
               ["gh", "issue", "list", "--search", "Security findings - auto-generated",
                "--json", "number", "--limit", "1"],
@@ -193,11 +196,11 @@ jobs:
           issues = json.loads(result.stdout) if result.stdout.strip() else []
           if issues:
               subprocess.run(["gh", "issue", "edit", str(issues[0]["number"]),
-                              "--body", body])
+                              "--body-file", "/tmp/findings_body.md"])
           else:
               subprocess.run(["gh", "issue", "create",
                               "--title", "\U0001f512 Security findings - auto-generated",
                               "--label", "security-findings",
-                              "--body", body])
+                              "--body-file", "/tmp/findings_body.md"])
           print(f"Updated findings issue with {len(all_findings)} findings")
           PYEOF

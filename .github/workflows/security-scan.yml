@@ -32,7 +32,7 @@ jobs:
           fi
       - name: Upload coverage artifact
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: coverage.xml
@@ -52,7 +52,7 @@ jobs:
           ruff check cli_anything/ --output-format=json -o ruff.json || true
       - name: Upload ruff artifact
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ruff-report
           path: ruff.json
@@ -119,7 +119,7 @@ jobs:
           sarif_file: bandit.sarif
           category: bandit
       - name: Upload bandit SARIF artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: bandit-sarif
           path: bandit.sarif
@@ -143,7 +143,7 @@ jobs:
           sarif_file: semgrep.sarif
           category: semgrep
       - name: Upload semgrep SARIF artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: semgrep-sarif
           path: semgrep.sarif
@@ -206,7 +206,7 @@ jobs:
           sarif_file: pip-audit.sarif
           category: pip-audit
       - name: Upload pip-audit artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: pip-audit-report
           path: pip-audit.json

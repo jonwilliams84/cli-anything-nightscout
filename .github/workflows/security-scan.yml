@@ -183,7 +183,15 @@ jobs:
           if not all_findings:
               body = f"\u2705 No security findings \u2014 last scan: {scan_date}"
           else:
-              body = f"Last scan: {scan_date}\n\n```json\n{json.dumps(all_findings, indent=2)}\n```"
+              # GitHub issue body limit is 65536 chars. Cap findings to fit.
+              max_findings = 200
+              truncated = len(all_findings) > max_findings
+              shown = all_findings[:max_findings]
+              body = f"Last scan: {scan_date}\n\n"
+              if truncated:
+                  body += f"Showing top {max_findings} of {len(all_findings)} "
+                  body += "findings (sorted by severity).\n\n"
+              body += f"```json\n{json.dumps(shown, indent=2)}\n```"
 
           with open("/tmp/findings_body.md", "w") as bf:
               bf.write(body)

@@ -218,16 +218,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           pattern: "*-sarif"
           merge-multiple: true
       - name: Download ruff report
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: ruff-report
       - name: Download coverage report
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: coverage-report
       - name: Generate findings summary and update issue

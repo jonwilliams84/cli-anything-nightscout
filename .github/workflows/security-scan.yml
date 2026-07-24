@@ -255,6 +255,14 @@ jobs:
                   for rule in run.get("tool", {}).get("driver", {}).get("rules", []):
                       rules[rule.get("id", "")] = rule
                   for result in run.get("results", []):
+                      # SARIF includes nosemgrep/nosec-suppressed results with a
+                      # `suppressions` marker rather than omitting them outright
+                      # (semgrep --sarif does this even though its own console
+                      # summary correctly reports "0 findings, 0 blocking") -
+                      # skip them or every justified suppression is reported as
+                      # an unfixed finding forever, regardless of scan freshness.
+                      if result.get("suppressions"):
+                          continue
                       rule_id = result.get("ruleId", "unknown")
                       level = result.get("level", "warning")
                       message = result.get("message", {}).get("text", "")

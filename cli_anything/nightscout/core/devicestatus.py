@@ -51,7 +51,7 @@ def add_devicestatus(
     a dict or a list and the server accepts both.
     """
     if not isinstance(payload, (dict, list)):
-        raise ValueError("payload must be a dict or list of dicts")
+        raise TypeError("payload must be a dict or list of dicts")
     if isinstance(payload, dict) and not payload:
         raise ValueError("payload dict is empty")
     return backend.post(

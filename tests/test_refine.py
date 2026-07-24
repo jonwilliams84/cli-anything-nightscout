@@ -477,8 +477,49 @@ class TestDevicestatusAdd:
             ds_mod.add_devicestatus({}, conn=CONN_V1)
 
     def test_add_rejects_wrong_type(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(TypeError):
             ds_mod.add_devicestatus("not a dict", conn=CONN_V1)
+
+
+# ─── Regression: add_devicestatus raises TypeError for non-dict/list ───────
+
+class TestAddDeviceStatusTypeError:
+    """Regression tests: add_devicestatus must raise TypeError for wrong types."""
+
+    def test_add_rejects_int_payload(self):
+        """Passing an int should raise TypeError, not ValueError."""
+        with pytest.raises(TypeError):
+            ds_mod.add_devicestatus(42, conn=CONN_V1)
+
+    def test_add_rejects_none_payload(self):
+        """Passing None should raise TypeError, not ValueError."""
+        with pytest.raises(TypeError):
+            ds_mod.add_devicestatus(None, conn=CONN_V1)  # type: ignore[arg-type]
+
+    def test_add_rejects_float_payload(self):
+        """Passing a float should raise TypeError, not ValueError."""
+        with pytest.raises(TypeError):
+            ds_mod.add_devicestatus(3.14, conn=CONN_V1)
+
+    def test_add_accepts_dict(self):
+        """Valid dict payload should still work (regression guard)."""
+        with mock.patch.object(ds_mod.backend, "post",
+                                  return_value={"ok": True}) as pm:
+            ds_mod.add_devicestatus(
+                {"device": "test", "uploader": {"battery": 80}},
+                conn=CONN_V1,
+            )
+        assert pm.call_args.args[0] == "/devicestatus.json"
+
+    def test_add_accepts_list(self):
+        """Valid list payload should still work (regression guard)."""
+        with mock.patch.object(ds_mod.backend, "post",
+                                  return_value={"ok": True}) as pm:
+            ds_mod.add_devicestatus(
+                [{"device": "test", "uploader": {"battery": 80}}],
+                conn=CONN_V1,
+            )
+        assert pm.call_args.args[0] == "/devicestatus.json"
 
 
 # ─── sensor-life ────────────────────────────────────────────────────────────

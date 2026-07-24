@@ -66,6 +66,20 @@ def _authorize_payload(conn: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _safe_disconnect(sio) -> None:
+    """Disconnect, ignoring any socket.io teardown errors.
+
+    Called from cleanup paths where the socket may already be closed or
+    in a broken state; raising here would mask the real reason for exit.
+    """
+    try:
+        sio.disconnect()
+    except Exception:  # nosec B110
+        # Socket teardown is best-effort; the caller only cares that we
+        # stop waiting and do not leak the connection.
+        pass
+
+
 def _run_loop(
     *,
     conn: dict[str, Any],
@@ -105,17 +119,11 @@ def _run_loop(
             while not stop_event.wait(0.1):
                 if not sio.connected:
                     return
-            try:
-                sio.disconnect()
-            except Exception:
-                pass
+            _safe_disconnect(sio)
 
         # If already set before we start, disconnect immediately and skip wait.
         if stop_event.is_set():
-            try:
-                sio.disconnect()
-            except Exception:
-                pass
+            _safe_disconnect(sio)
             return
         watchdog = threading.Thread(target=_watch_stop, daemon=True)
         watchdog.start()
@@ -126,11 +134,8 @@ def _run_loop(
         else:
             sio.wait()
     finally:
-        try:
-            if sio.connected:
-                sio.disconnect()
-        except Exception:
-            pass
+        if sio.connected:
+            _safe_disconnect(sio)
 
 
 def _wait_accepts_timeout(sio) -> bool:
@@ -149,10 +154,7 @@ def _wait_with_timeout(sio, timeout: float) -> None:
     t.start()
     t.join(timeout)
     if t.is_alive():
-        try:
-            sio.disconnect()
-        except Exception:
-            pass
+        _safe_disconnect(sio)
 
 
 def watch_entries(

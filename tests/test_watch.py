@@ -416,3 +416,56 @@ class TestStopEvent:
         )
         # disconnect called by either watchdog or the finally clause.
         assert instances[0].disconnect_calls >= 1
+
+
+# ─── regression tests for B110 try/except/pass cleanup ─────────────────────
+
+class TestSafeDisconnect:
+    def test_safe_disconnect_swallows_disconnect_exception(self, monkeypatch):
+        """_safe_disconnect must not propagate socket.io teardown errors."""
+        mod = _make_mock_socketio()
+        watch = _fresh_watch_module(monkeypatch, socketio_mod=mod)
+
+        class BadClient:
+            connected = True
+            def disconnect(self):
+                raise RuntimeError("socket exploded")
+
+        # Should not raise.
+        watch._safe_disconnect(BadClient())
+
+    def test_safe_disconnect_disconnects_when_healthy(self, monkeypatch):
+        """_safe_disconnect still calls disconnect on a well-behaved client."""
+        mod = _make_mock_socketio()
+        watch = _fresh_watch_module(monkeypatch, socketio_mod=mod)
+        client = mod.Client()
+        client.connected = True
+
+        watch._safe_disconnect(client)
+        assert client.disconnect_calls == 1
+        assert client.connected is False
+
+    def test_run_loop_uses_safe_disconnect_on_stop_event(self, monkeypatch):
+        """When stop_event is set before the call, _safe_disconnect is used."""
+        mod = MagicMock(name="socketio_module")
+        instances: list = []
+        template = _make_mock_socketio()
+        factory = template.Client.side_effect
+
+        def make_client():
+            inst = factory()
+            instances.append(inst)
+            return inst
+
+        mod.Client = MagicMock(side_effect=make_client)
+        watch = _fresh_watch_module(monkeypatch, socketio_mod=mod)
+
+        stop = threading.Event()
+        stop.set()
+
+        watch.watch_entries(
+            conn={"server_url": "https://x"},
+            callback=lambda e: None,
+            stop_event=stop,
+        )
+        assert instances[0].disconnect_calls >= 1

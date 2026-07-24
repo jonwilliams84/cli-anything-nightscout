@@ -225,3 +225,46 @@ class TestFetchHelpersNormalizeTo:
                     count=1, conn={"server_url": "https://x"},
                     normalize_to="parsecs",
                 )
+
+
+# ─── Regression: _canonical_units raises TypeError for non-string ──────────
+
+class TestCanonicalUnitsTypeError:
+    def test_canonical_units_rejects_int(self):
+        """Passing an int should raise TypeError, not ValueError."""
+        with pytest.raises(TypeError):
+            entries_mod._canonical_units(99)  # type: ignore[arg-type]
+
+    def test_canonical_units_rejects_none(self):
+        """Passing None should raise TypeError, not ValueError."""
+        with pytest.raises(TypeError):
+            entries_mod._canonical_units(None)  # type: ignore[arg-type]
+
+    def test_canonical_units_rejects_list(self):
+        """Passing a list should raise TypeError, not ValueError."""
+        with pytest.raises(TypeError):
+            entries_mod._canonical_units(["mg/dl"])  # type: ignore[arg-type]
+
+    def test_canonical_units_accepts_valid_strings(self):
+        """Valid unit strings should still work (regression guard)."""
+        assert entries_mod._canonical_units("mg/dl") == "mg/dl"
+        assert entries_mod._canonical_units("mgdl") == "mg/dl"
+        assert entries_mod._canonical_units("mmol") == "mmol/l"
+        assert entries_mod._canonical_units("mmol/L") == "mmol/l"
+        assert entries_mod._canonical_units("  MG/DL  ") == "mg/dl"
+
+
+class TestNormalizeEntriesTypeValidation:
+    def test_normalize_entries_rejects_invalid_from_units_type(self):
+        """normalize_entries with non-string from_units raises TypeError."""
+        with pytest.raises(TypeError):
+            entries_mod.normalize_entries(
+                [_sgv(99)], to_units="mmol", from_units=99  # type: ignore[arg-type]
+            )
+
+    def test_normalize_entries_rejects_invalid_to_units_type(self):
+        """normalize_entries with non-string to_units raises TypeError."""
+        with pytest.raises(TypeError):
+            entries_mod.normalize_entries(
+                [_sgv(99)], to_units=99  # type: ignore[arg-type]
+            )

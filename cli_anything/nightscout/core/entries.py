@@ -7,7 +7,6 @@ from typing import Any
 
 from cli_anything.nightscout.utils import nightscout_backend as backend
 
-
 VALID_TYPES = {"sgv", "mbg", "cal", "etr"}
 
 # Nightscout always stores `sgv` / `mbg` in mg/dL on the wire, even when the
@@ -24,7 +23,7 @@ def _canonical_units(units: str) -> str:
     Returns ``"mg/dl"`` or ``"mmol/l"``. Raises ``ValueError`` for anything else.
     """
     if not isinstance(units, str):
-        raise ValueError(f"units must be a string; got {type(units).__name__}")
+        raise TypeError(f"units must be a string; got {type(units).__name__}")
     u = units.strip().lower().replace(" ", "")
     if u in {"mg/dl", "mgdl", "mg"}:
         return "mg/dl"

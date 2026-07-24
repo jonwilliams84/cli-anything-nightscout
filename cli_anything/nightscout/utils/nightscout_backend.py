@@ -81,7 +81,7 @@ class NightscoutAPIError(RuntimeError):
 
 def hash_api_secret(plaintext: str) -> str:
     """Return the lowercase SHA-1 hex digest expected by Nightscout v1 auth."""
-    return hashlib.sha1(plaintext.encode("utf-8"), usedforsecurity=False).hexdigest().lower()
+    return hashlib.sha1(plaintext.encode("utf-8"), usedforsecurity=False).hexdigest().lower()  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1 — SHA-1 is required by the Nightscout v1 protocol (api-secret header, see NIGHTSCOUT.md §Auth); usedforsecurity=False marks it as non-cryptographic.
 
 
 def normalize_url(url: str) -> str:

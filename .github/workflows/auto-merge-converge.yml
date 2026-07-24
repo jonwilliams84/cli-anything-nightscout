@@ -46,4 +46,4 @@ jobs:
         run: |
           gh workflow run security-scan.yml \
             --repo ${{ github.repository }} \
-            --ref main
+            --ref main# conflict-probe-A

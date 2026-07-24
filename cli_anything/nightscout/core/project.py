@@ -26,8 +26,10 @@ DEFAULT_SESSION_FILE = CONFIG_DIR / "session.json"
 
 DEFAULTS: dict[str, Any] = {
     "server_url": "",
-    "api_secret": "",
-    "api_token": "",
+    # empty default placeholder, not a real password; populated from env/CLI flags at runtime
+    "api_secret": "",  # nosec B105
+    # empty default placeholder, not a real token; populated from env/CLI flags at runtime
+    "api_token": "",  # nosec B105
     "units": "mg/dl",
 }
 
@@ -37,8 +39,9 @@ def _ensure_dir(p: Path) -> None:
     try:
         # 0o700 (rwx------) is owner-only — the most restrictive standard
         # directory mode. 0o644 would strip the execute bit and make the
-        # directory untraversable.  nosemgrep: python.lang.security.audit.insecure-file-permissions
-        os.chmod(str(p), 0o700)
+        # directory untraversable, so 0o700 is the correct, most-restrictive
+        # mode for a directory.
+        os.chmod(str(p), 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions — 0o700 is owner-only (rwx------); 0o644 would be more permissive AND break directory traversal (no execute bit).
     except OSError:
         pass
 
@@ -102,8 +105,10 @@ EMPTY_SESSION: dict[str, Any] = {
     "version": 1,
     "name": "default",
     "server_url": "",
-    "api_token_set": False,
-    "api_secret_set": False,
+    # boolean flag, not a password; tracks whether a token/secret was set
+    "api_token_set": False,  # nosec B105
+    # boolean flag, not a password; tracks whether a token/secret was set
+    "api_secret_set": False,  # nosec B105
     "units": "mg/dl",
     "modified": False,
     "history": [],

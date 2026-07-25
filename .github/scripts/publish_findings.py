@@ -150,10 +150,63 @@ def build_body(findings: list[dict], scan_date: str, kind: str) -> str:
     return "\n".join(lines)
 
 
-def publish(title: str, label: str, body: str) -> None:
+def _run(cmd: list[str], what: str) -> subprocess.CompletedProcess:
+    """Run a gh command and REPORT failure instead of swallowing it.
+
+    Every call here used to pass check=False with the result ignored, so the
+    script printed "created issue" and exited 0 whether or not anything was
+    created. That is exactly how the code-quality split silently never landed:
+    `gh issue create --label code-quality` fails when the label does not exist,
+    the scan reported success, and no code-quality issue was ever published in
+    any of the six repos (found 2026-07-26).
+    """
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"::error::{what} failed (exit {res.returncode}): "
+              f"{(res.stderr or res.stdout).strip()[:400]}")
+    return res
+
+
+def ensure_label(label: str, description: str, colour: str) -> bool:
+    """Make sure `label` exists before an issue tries to use it.
+
+    `gh issue create --label X` is a hard failure when X is missing - it does not
+    create the label on the fly.
+    """
+    res = subprocess.run(
+        ["gh", "label", "list", "--json", "name", "--limit", "200"],
+        capture_output=True, text=True,
+    )
+    try:
+        existing = {item["name"] for item in json.loads(res.stdout or "[]")}
+    except json.JSONDecodeError:
+        existing = set()
+    if label in existing:
+        return True
+    created = _run(
+        ["gh", "label", "create", label, "--description", description, "--color", colour],
+        f"creating label {label!r}",
+    )
+    if created.returncode == 0:
+        print(f"created missing label {label!r}")
+        return True
+    return False
+
+
+def publish(title: str, label: str, body: str) -> bool:
+    """Create or update the issue for `label`. Returns True on success."""
     body_file = f"/tmp/findings_{label}.md"
     with open(body_file, "w") as fh:
         fh.write(body)
+
+    if not ensure_label(
+        label,
+        "Automated scanner findings" if label == "security-findings"
+        else "Automated code-quality (lint/style) findings",
+        "d93f0b" if label == "security-findings" else "0e8a16",
+    ):
+        print(f"::error::cannot publish {label} findings - label missing and could not be created")
+        return False
 
     # Match on label, not a free-text search: `gh issue list --search` matched on
     # title words and could pick up an unrelated issue.
@@ -168,14 +221,18 @@ def publish(title: str, label: str, body: str) -> None:
 
     if issues:
         num = str(issues[0]["number"])
-        subprocess.run(["gh", "issue", "edit", num, "--body-file", body_file], check=False)
-        print(f"updated issue #{num} ({label})")
+        done = _run(["gh", "issue", "edit", num, "--body-file", body_file],
+                    f"updating issue #{num} ({label})")
+        if done.returncode == 0:
+            print(f"updated issue #{num} ({label})")
     else:
-        subprocess.run(
+        done = _run(
             ["gh", "issue", "create", "--title", title, "--label", label, "--body-file", body_file],
-            check=False,
+            f"creating {label} issue",
         )
-        print(f"created issue ({label})")
+        if done.returncode == 0:
+            print(f"created issue ({label})")
+    return done.returncode == 0
 
 
 def main() -> int:
@@ -188,8 +245,16 @@ def main() -> int:
     quality = parse_ruff("ruff-advisory.json")
 
     print(f"security findings: {len(security)} | quality findings: {len(quality)}")
-    publish(SECURITY_TITLE, SECURITY_LABEL, build_body(security, scan_date, "security"))
-    publish(QUALITY_TITLE, QUALITY_LABEL, build_body(quality, scan_date, "code quality"))
+    ok_sec = publish(SECURITY_TITLE, SECURITY_LABEL, build_body(security, scan_date, "security"))
+    ok_qual = publish(QUALITY_TITLE, QUALITY_LABEL, build_body(quality, scan_date, "code quality"))
+
+    # Exit non-zero if either issue could not be published. The advisory scan
+    # must never block a merge, but a publisher that quietly does nothing is
+    # worse than one that fails: converge dispatches off these issues, so a
+    # silent failure starves the fix loop while every job shows green.
+    if not (ok_sec and ok_qual):
+        print("::error::one or more findings issues could not be published")
+        return 1
     return 0
 
 

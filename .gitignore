@@ -35,3 +35,6 @@ session.json
 .idea/
 .vscode/
 *~
+coverage.xml
+.coverage.*
+htmlcov/

@@ -167,3 +167,205 @@ class TestUP035V3CollectionsAbc:
         assert result.returncode == 0, (
             f"UP035 still present in v3.py:\n{result.stdout}\n{result.stderr}"
         )
+
+
+
+WATCH_PY = ROOT / "cli_anything" / "nightscout" / "core" / "watch.py"
+
+
+
+def _get_try_except_handlers(path: Path) -> list[tuple[int, list[str]]]:
+    """Return (line_number, exception_names) for every `except` handler in *path*."""
+    src = path.read_text()
+    handlers: list[tuple[int, list[str]]] = []
+
+    class ExceptVisitor(ast.NodeVisitor):
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+            if node.type is None:
+                handlers.append((node.lineno, ["<bare>"]))
+            elif isinstance(node.type, ast.Tuple):
+                names = [e.id for e in node.type.elts if isinstance(e, ast.Name)]
+                handlers.append((node.lineno, names))
+            elif isinstance(node.type, ast.Name):
+                handlers.append((node.lineno, [node.type.id]))
+            self.generic_visit(node)
+
+    ExceptVisitor().visit(ast.parse(src))
+    return handlers
+
+
+class TestI001WatchImportOrder:
+    """I001: watch.py import block must be isort-compliant.
+
+    The import block must be sorted with no stray blank lines between
+    groups. Specifically: `from __future__`, stdlib, third-party, local.
+    """
+
+    def test_watch_imports_isort_compliant(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "isort", "--check-only", str(WATCH_PY)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"isort --check-only failed for watch.py:\n"
+            f"  stdout: {result.stdout}\n"
+            f"  stderr: {result.stderr}"
+        )
+
+    def test_watch_no_import_suppression_without_justification(self):
+        """No `# noqa: I001` without a concrete spec or reason."""
+        content = WATCH_PY.read_text()
+        lines = content.splitlines()
+        for i, line in enumerate(lines, 1):
+            if "# noqa" in line and "I001" in line:
+                assert False, (
+                    f"watch.py line {i} has an I001 noqa without justification: {line!r}"
+                )
+
+
+class TestUP035WatchCallable:
+    """UP035: Callable must be imported from collections.abc, not typing.
+
+    PEP 585 generalized the stdlib: Callable, Iterable, etc. live in
+    collections.abc. Importing from typing is deprecated in Python 3.9+.
+    """
+
+    def test_watch_callable_from_collections_abc(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check",
+             "--select=UP035", str(WATCH_PY)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"ruff UP035 check failed for watch.py:\n"
+            f"  stdout: {result.stdout}\n"
+            f"  stderr: {result.stderr}"
+        )
+
+    def test_watch_no_up035_suppression_without_justification(self):
+        """No `# noqa: UP035` without a concrete spec or reason."""
+        content = WATCH_PY.read_text()
+        lines = content.splitlines()
+        for i, line in enumerate(lines, 1):
+            if "# noqa" in line and "UP035" in line:
+                assert False, (
+                    f"watch.py line {i} has a UP035 noqa without justification: {line!r}"
+                )
+
+
+class TestS110WatchSafeDisconnect:
+    """S110: _safe_disconnect must catch (OSError, RuntimeError), not bare Exception.
+
+    socketio.disconnect() can only raise OS-level errors (already closed)
+    or RuntimeError (event loop state). Catching bare Exception is over-broad
+    and would silently swallow KeyboardInterrupt / SystemExit / AssertionError
+    from the underlying library.
+
+    The narrowing is safe because python-socketio disconnects do not emit
+    any other exception types that callers must handle.
+    """
+
+    def test_safe_disconnect_catches_only_oserror_runtimeerror(self):
+        """Verify the except handler in _safe_disconnect names only OSError + RuntimeError."""
+        handlers = _get_try_except_handlers(WATCH_PY)
+        # Find the _safe_disconnect function's handler (~line 77)
+        safe_disconnect_handlers = [
+            (ln, names) for ln, names in handlers
+            if ln == 77
+        ]
+        assert safe_disconnect_handlers, (
+            f"Expected _safe_disconnect except handler at line 77; found: {handlers}"
+        )
+        ln, names = safe_disconnect_handlers[0]
+        assert set(names) == {"OSError", "RuntimeError"}, (
+            f"_safe_disconnect must catch (OSError, RuntimeError), got {names}"
+        )
+
+    def test_safe_disconnect_no_bare_exception(self):
+        """Regression: _safe_disconnect must not have a bare `except:` handler."""
+        handlers = _get_try_except_handlers(WATCH_PY)
+        bare = [(ln, names) for ln, names in handlers if names == ["<bare>"]]
+        assert not bare, (
+            f"Found bare `except:` in watch.py at lines: {[ln for ln, _ in bare]}"
+        )
+
+    def test_safe_disconnect_no_s110_nosec_without_justification(self):
+        """No `# noqa: S110` without a concrete spec or reason."""
+        content = WATCH_PY.read_text()
+        lines = content.splitlines()
+        for i, line in enumerate(lines, 1):
+            if "# noqa" in line and "S110" in line:
+                assert False, (
+                    f"watch.py line {i} has an S110 noqa without justification: {line!r}"
+                )
+
+    def test_safe_disconnect_behavior_oserror_is_swallowed(self):
+        """Regression: OSError from disconnect() must not propagate."""
+        import importlib
+        import sys
+        from unittest.mock import MagicMock
+
+        mock_mod = MagicMock(name="socketio")
+        fake_client = MagicMock(name="FakeClient")
+        fake_client.disconnect.side_effect = OSError("already closed")
+        mock_mod.Client.return_value = fake_client
+
+        sys.modules["socketio"] = mock_mod
+        if "cli_anything.nightscout.core.watch" in sys.modules:
+            del sys.modules["cli_anything.nightscout.core.watch"]
+        watch = importlib.import_module("cli_anything.nightscout.core.watch")
+
+        # Must NOT raise — OSError should be silently swallowed
+        watch._safe_disconnect(fake_client)
+
+        assert fake_client.disconnect.call_count == 1
+
+    def test_safe_disconnect_behavior_runtimeerror_is_swallowed(self):
+        """Regression: RuntimeError from disconnect() must not propagate."""
+        import importlib
+        import sys
+        from unittest.mock import MagicMock
+
+        mock_mod = MagicMock(name="socketio")
+        fake_client = MagicMock(name="FakeClient")
+        fake_client.disconnect.side_effect = RuntimeError("event loop not running")
+        mock_mod.Client.return_value = fake_client
+
+        sys.modules["socketio"] = mock_mod
+        if "cli_anything.nightscout.core.watch" in sys.modules:
+            del sys.modules["cli_anything.nightscout.core.watch"]
+        watch = importlib.import_module("cli_anything.nightscout.core.watch")
+
+        # Must NOT raise — RuntimeError should be silently swallowed
+        watch._safe_disconnect(fake_client)
+
+        assert fake_client.disconnect.call_count == 1
+
+    def test_safe_disconnect_does_not_swallow_keyboard_interrupt(self):
+        """Regression: KeyboardInterrupt must NOT be caught by _safe_disconnect.
+
+        This is the key S110 safety property: narrowing to (OSError, RuntimeError)
+        means KeyboardInterrupt (subclass of BaseException) will propagate.
+        """
+        import importlib
+        import sys
+        from unittest.mock import MagicMock
+
+        mock_mod = MagicMock(name="socketio")
+        fake_client = MagicMock(name="FakeClient")
+        fake_client.disconnect.side_effect = KeyboardInterrupt()
+        mock_mod.Client.return_value = fake_client
+
+        sys.modules["socketio"] = mock_mod
+        if "cli_anything.nightscout.core.watch" in sys.modules:
+            del sys.modules["cli_anything.nightscout.core.watch"]
+        watch = importlib.import_module("cli_anything.nightscout.core.watch")
+
+        # KeyboardInterrupt must propagate — it is NOT caught by (OSError, RuntimeError)
+        import pytest
+        with pytest.raises(KeyboardInterrupt):
+            watch._safe_disconnect(fake_client)
+
+        assert fake_client.disconnect.call_count == 1

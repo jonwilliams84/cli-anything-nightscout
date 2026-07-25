@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import sys
 import threading
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from cli_anything.nightscout.utils import nightscout_backend as backend
-
 
 _INSTALL_HINT = (
     "watch requires 'python-socketio[client]'. "
@@ -74,9 +74,9 @@ def _safe_disconnect(sio) -> None:
     """
     try:
         sio.disconnect()
-    except Exception:  # nosec B110
-        # Socket teardown is best-effort; the caller only cares that we
-        # stop waiting and do not leak the connection.
+    except (OSError, RuntimeError):
+        # Socket teardown is best-effort; OS-level errors (e.g. already closed)
+        # are harmless and do not affect the caller's control flow.
         pass
 
 

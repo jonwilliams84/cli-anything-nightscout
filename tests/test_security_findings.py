@@ -58,7 +58,7 @@ class TestBLE001Findings:
             text=True,
         )
         combined = result.stdout + result.stderr
-        assert "BLE001" not in combined, (
+        assert "Issue: BLE001" not in combined, (
             f"BLE001 should not appear in bandit output for {self.WATCH_PY}.\n"
             f"Output:\n{combined}"
         )

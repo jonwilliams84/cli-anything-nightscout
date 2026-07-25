@@ -69,10 +69,17 @@ jobs:
       - name: Install bandit and scan
         run: |
           pip install bandit
+          # Exclude test files: bandit's B101 (assert_used) fires on every assert
+          # in a test suite, which is what tests are made of. Left in, it buried
+          # the genuine findings (1173 of 1233 findings in one repo were test
+          # asserts) and starved the findings window that converge dispatches on.
+          # Severity floor is deliberately NOT set - real LOW findings in prod
+          # code (try/except/pass, subprocess use) should still be reported.
+          BANDIT_EXCLUDE='*/tests/*,*/test_*.py,*/conftest.py'
           if [ -d cli_anything ]; then
-            bandit -r cli_anything/ -f json -o bandit.json || true
+            bandit -r cli_anything/ -x "$BANDIT_EXCLUDE" -f json -o bandit.json || true
           else
-            bandit -r . -f json -o bandit.json || true
+            bandit -r . -x "$BANDIT_EXCLUDE" -f json -o bandit.json || true
           fi
       - name: Convert bandit JSON to SARIF
         run: |
@@ -136,10 +143,14 @@ jobs:
       - name: Install semgrep and scan
         run: |
           pip install semgrep
+          # --exclude tests for the same reason bandit does: test-file findings
+          # are noise that crowds real prod findings out of the reported window.
           if [ -d cli_anything ]; then
-            semgrep scan --config p/python --sarif --output semgrep.sarif cli_anything/ || true
+            semgrep scan --config p/python --exclude tests --exclude 'test_*.py' \
+              --sarif --output semgrep.sarif cli_anything/ || true
           else
-            semgrep scan --config p/python --sarif --output semgrep.sarif . || true
+            semgrep scan --config p/python --exclude tests --exclude 'test_*.py' \
+              --sarif --output semgrep.sarif . || true
           fi
       - name: Upload semgrep SARIF
         uses: github/codeql-action/upload-sarif@v4
@@ -333,6 +344,28 @@ jobs:
           for f in glob.glob("*.sarif"):
               all_findings.extend(parse_sarif(f))
           all_findings.extend(parse_ruff("ruff.json"))
+
+          # The summary has always claimed "sorted by severity" while doing no
+          # sorting at all - the top-200 window was raw insertion order, so
+          # whichever scanner happened to emit first (bandit, alphabetically
+          # first by SARIF glob) filled the window with its own noise. Sort for
+          # real: severity first, then prod code ahead of test code, so the
+          # window converge dispatches from always leads with what matters.
+          _LEVEL_RANK = {"error": 0, "warning": 1, "note": 2, "none": 3}
+
+          def _is_test_path(path):
+              base = os.path.basename(path)
+              return "/tests/" in path or base.startswith("test_") or base == "conftest.py"
+
+          def _sort_key(f):
+              return (
+                  _LEVEL_RANK.get(str(f.get("level", "warning")).lower(), 1),
+                  1 if _is_test_path(f.get("file", "")) else 0,
+                  str(f.get("file", "")),
+                  int(f.get("line", 0) or 0),
+              )
+
+          all_findings.sort(key=_sort_key)
 
           cov = parse_coverage("coverage.xml")
           cov_str = ""

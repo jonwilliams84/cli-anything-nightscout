@@ -14,7 +14,6 @@ from __future__ import annotations
 import datetime as _dt
 from typing import Any
 
-
 SENSOR_MARKER_EVENT_TYPES = ("Sensor Start", "Sensor Change")
 
 

@@ -7,7 +7,6 @@ from typing import Any
 
 from cli_anything.nightscout.utils import nightscout_backend as backend
 
-
 COMMON_EVENT_TYPES = (
     "BG Check",
     "Snack Bolus",

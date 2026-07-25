@@ -53,7 +53,7 @@ def _resolve_tz(tz: tzinfo | str | None) -> tzinfo:
     try:
         from zoneinfo import ZoneInfo
         return ZoneInfo(tz)
-    except Exception:
+    except (KeyError, ValueError, ImportError):
         return timezone.utc
 
 MMOL_TO_MGDL = 18.018

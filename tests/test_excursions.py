@@ -306,3 +306,53 @@ class TestExcursionSummary:
     def test_summary_invalid_bucket_raises(self):
         with pytest.raises(ValueError):
             self.excursions.excursion_summary([], bucket="month")
+
+
+# -------------------------------------------------------------------------- #
+# Regression tests for scanner findings
+# -------------------------------------------------------------------------- #
+
+class TestResolveTzRegression:
+    """Regression: BLE001 — _resolve_tz must catch only ImportError and KeyError.
+
+    Previously the code used bare ``except Exception``, which is a BLE001
+    blind-exception violation. The fix narrows it to the two specific
+    exceptions that ZoneInfo can raise when given a bad identifier:
+    - ImportError  — ZoneInfo unavailable (Python <3.9 with no fallback)
+    - KeyError     — invalid tz string not in the IANA database
+
+    Any *other* unexpected exception (e.g. TypeError, AttributeError from
+    future stdlib changes) must propagate so bugs are not silently swallowed.
+    See: https://docs.python.org/3/library/zoneinfo.html#zoneinfo.ZoneInfo
+    """
+
+    def setup_method(self):
+        from cli_anything.nightscout.core import excursions
+        self.excursions = excursions
+
+    def test_invalid_zone_string_returns_utc_not_crash(self):
+        """Regression: invalid zone string must not raise — returns UTC."""
+        tz = self.excursions._resolve_tz("Not/A/Real/Zone")
+        import datetime
+        assert tz == datetime.timezone.utc
+
+    def test_none_tz_returns_utc(self):
+        """None input should always return UTC."""
+        import datetime
+        tz = self.excursions._resolve_tz(None)
+        assert tz == datetime.timezone.utc
+
+    def test_non_string_non_tzinfo_raises_properly(self):
+        """Non-string, non-tzinfo inputs should raise TypeError.
+
+        This verifies that narrowing the except clause to (ImportError,
+        KeyError) does not accidentally swallow unexpected but legitimate
+        exceptions from other code paths.  (Only ZoneInfo import/key errors
+        are expected here, not arbitrary objects.)
+        """
+        import pytest
+        # Passing an integer should raise TypeError from the isinstance
+        # checks in _resolve_tz — it is NOT an ImportError or KeyError and
+        # must propagate, proving the BLE001 fix is narrow.
+        with pytest.raises(TypeError):
+            self.excursions._resolve_tz(42)  # type: ignore

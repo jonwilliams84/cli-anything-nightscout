@@ -45,8 +45,9 @@ from __future__ import annotations
 import math
 import statistics
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone, tzinfo
-from typing import Any, Iterable
+from typing import Any
 
 
 def _resolve_tz(tz: tzinfo | str | None) -> tzinfo:
@@ -57,7 +58,7 @@ def _resolve_tz(tz: tzinfo | str | None) -> tzinfo:
     try:
         from zoneinfo import ZoneInfo
         return ZoneInfo(tz)
-    except Exception:
+    except (ImportError, KeyError):
         return timezone.utc
 
 MMOL_TO_MGDL = 18.018
@@ -215,7 +216,7 @@ def postprandial_responses(
         baseline_mgdl: float | None
         if baseline_candidates:
             # closest in time to meal_ts
-            baseline_ts, baseline_mgdl = max(
+            _, baseline_mgdl = max(
                 baseline_candidates, key=lambda x: x[0]
             )
         else:

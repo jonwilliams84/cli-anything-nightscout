@@ -1,9 +1,13 @@
-"""Regression tests for import ordering (isort I001 findings)."""
+"""Regression tests for import ordering (isort I001 findings).
 
-import ast
+These tests verify that the import blocks in the targeted files are correctly
+sorted according to isort's default configuration. Each test calls isort in
+check mode; a non-zero exit code means the imports are not properly sorted.
+"""
+
+import subprocess
 import sys
 from pathlib import Path
-
 
 # Target files that had I001 import ordering issues
 TARGET_FILES = [
@@ -12,79 +16,79 @@ TARGET_FILES = [
     Path("cli_anything/nightscout/core/project.py"),
 ]
 
-
-def _parse_imports(file_path: Path) -> tuple[list[str], list[str], list[str]]:
-    """Parse a Python file and return (future_imports, stdlib_imports, local_imports)."""
-    source = file_path.read_text()
-    tree = ast.parse(source)
-    
-    future_imports: list[str] = []
-    stdlib_imports: list[str] = []
-    local_imports: list[str] = []
-    
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            if node.module == "__future__":
-                future_imports.append(ast.unparse(node))
-            elif node.level == 0 and node.module and not node.module.startswith("cli_anything"):
-                stdlib_imports.append(ast.unparse(node))
-            elif node.level > 0 or (node.module and node.module.startswith("cli_anything")):
-                local_imports.append(ast.unparse(node))
-        elif isinstance(node, ast.Import):
-            stdlib_imports.append(ast.unparse(node))
-    
-    return future_imports, stdlib_imports, local_imports
+# isort: skip markers are not allowed — they suppress findings without justification.
+# After the fix, these files must NOT contain any isort: skip directives.
+SKIP_COMMENTS = [
+    "isort:skip",
+    "isort: skip",
+]
 
 
-def _is_sorted_alphabetically(imports: list[str]) -> bool:
-    """Check if imports are sorted alphabetically."""
-    return imports == sorted(imports, key=str.lower)
-
-
-class TestImportOrder:
-    """Regression tests: import blocks must be sorted alphabetically."""
+class TestImportOrderRegression:
+    """Regression tests: import blocks must be isort-compliant (I001)."""
 
     @staticmethod
-    def test_food_imports_sorted():
-        """food.py: imports must be alphabetically sorted within each block."""
-        future, stdlib, local = _parse_imports(TARGET_FILES[0])
-        assert _is_sorted_alphabetically(stdlib), f"stdlib imports not sorted: {stdlib}"
-        assert _is_sorted_alphabetically(local), f"local imports not sorted: {local}"
+    def test_food_imports_isort_compliant():
+        """food.py: isort must pass (I001 must be resolved, not suppressed)."""
+        result = subprocess.run(
+            [sys.executable, "-m", "isort", "--check-only", str(TARGET_FILES[0])],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"isort --check-only failed for food.py:\n{result.stdout}\n{result.stderr}"
+        )
 
     @staticmethod
-    def test_notifications_imports_sorted():
-        """notifications.py: imports must be alphabetically sorted within each block."""
-        future, stdlib, local = _parse_imports(TARGET_FILES[1])
-        assert _is_sorted_alphabetically(stdlib), f"stdlib imports not sorted: {stdlib}"
-        assert _is_sorted_alphabetically(local), f"local imports not sorted: {local}"
+    def test_notifications_imports_isort_compliant():
+        """notifications.py: isort must pass (I001 must be resolved, not suppressed)."""
+        result = subprocess.run(
+            [sys.executable, "-m", "isort", "--check-only", str(TARGET_FILES[1])],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"isort --check-only failed for notifications.py:\n{result.stdout}\n{result.stderr}"
+        )
 
     @staticmethod
-    def test_project_imports_sorted():
-        """project.py: stdlib imports must be alphabetically sorted."""
-        future, stdlib, local = _parse_imports(TARGET_FILES[2])
-        # project.py has no local imports, only stdlib
-        assert _is_sorted_alphabetically(stdlib), f"stdlib imports not sorted: {stdlib}"
+    def test_project_imports_isort_compliant():
+        """project.py: isort must pass (I001 must be resolved, not suppressed)."""
+        result = subprocess.run(
+            [sys.executable, "-m", "isort", "--check-only", str(TARGET_FILES[2])],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"isort --check-only failed for project.py:\n{result.stdout}\n{result.stderr}"
+        )
 
     @staticmethod
-    def test_food_import_block_order():
-        """food.py: import blocks must follow correct order (future, stdlib, local)."""
-        future, stdlib, local = _parse_imports(TARGET_FILES[0])
-        assert len(future) >= 1, "food.py should have __future__ import"
-        assert len(stdlib) >= 1, "food.py should have typing import"
-        assert len(local) >= 1, "food.py should have local import"
+    def test_food_no_isort_skip_without_justification():
+        """food.py: bare 'isort:skip' with no justification is not allowed."""
+        content = TARGET_FILES[0].read_text()
+        for line in content.splitlines():
+            for marker in SKIP_COMMENTS:
+                assert marker not in line or "#" in line and marker in line and ("spec" in line or "protocol" in line or "nosec" in line.lower()), (
+                    f"Unjustified isort:skip in food.py: {line.strip()}"
+                )
 
     @staticmethod
-    def test_notifications_import_block_order():
-        """notifications.py: import blocks must follow correct order (future, stdlib, local)."""
-        future, stdlib, local = _parse_imports(TARGET_FILES[1])
-        assert len(future) >= 1, "notifications.py should have __future__ import"
-        assert len(stdlib) >= 1, "notifications.py should have typing import"
-        assert len(local) >= 1, "notifications.py should have local import"
+    def test_notifications_no_isort_skip_without_justification():
+        """notifications.py: bare 'isort:skip' with no justification is not allowed."""
+        content = TARGET_FILES[1].read_text()
+        for line in content.splitlines():
+            for marker in SKIP_COMMENTS:
+                assert marker not in line or "#" in line and marker in line and ("spec" in line or "protocol" in line or "nosec" in line.lower()), (
+                    f"Unjustified isort:skip in notifications.py: {line.strip()}"
+                )
 
     @staticmethod
-    def test_project_import_block_order():
-        """project.py: import blocks must follow correct order (future, stdlib)."""
-        future, stdlib, local = _parse_imports(TARGET_FILES[2])
-        # project.py has __future__ + stdlib only, no local imports
-        assert len(future) >= 1, "project.py should have __future__ import"
-        assert len(stdlib) >= 1, "project.py should have stdlib imports"
+    def test_project_no_isort_skip_without_justification():
+        """project.py: bare 'isort:skip' with no justification is not allowed."""
+        content = TARGET_FILES[2].read_text()
+        for line in content.splitlines():
+            for marker in SKIP_COMMENTS:
+                assert marker not in line or "#" in line and marker in line and ("spec" in line or "protocol" in line or "nosec" in line.lower()), (
+                    f"Unjustified isort:skip in project.py: {line.strip()}"
+                )

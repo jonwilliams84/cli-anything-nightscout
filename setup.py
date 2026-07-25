@@ -41,6 +41,12 @@ setup(
         "dev": [
             "pytest>=7",
             "pytest-cov>=4",
+            # tests/test_import_order.py shells out to `python -m isort`, so the
+            # tool must exist in the SAME interpreter the tests run under. It was
+            # never declared, so CI's `pip install -e . pytest pytest-cov` left it
+            # absent and the subprocess exited 1 — reported as an import-order
+            # failure when nothing was actually mis-sorted.
+            "isort>=5.12",
         ],
         "watch": [
             "python-socketio[client]>=5",

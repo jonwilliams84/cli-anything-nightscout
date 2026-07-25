@@ -23,7 +23,7 @@ jobs:
           python-version: '3.12'
       - name: Install and run tests with coverage
         run: |
-          pip install -e . pytest pytest-cov
+          pip install -e ".[dev]" pytest pytest-cov
           if [ -d tests ]; then
             python3 -m pytest tests/ -q --cov=cli_anything --cov-report=term-missing --cov-report=xml
           elif [ -d cli_anything ]; then

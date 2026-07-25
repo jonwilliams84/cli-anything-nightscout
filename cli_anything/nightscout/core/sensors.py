@@ -19,6 +19,7 @@ SENSOR_MARKER_EVENT_TYPES = ("Sensor Start", "Sensor Change")
 
 # ── timestamp helpers ──────────────────────────────────────────────────────
 
+
 def _parse_iso(ts: str) -> _dt.datetime:
     """Parse an ISO 8601 timestamp (Nightscout uses ``...Z`` form).
 
@@ -72,6 +73,7 @@ def _to_iso_z(dt: _dt.datetime) -> str:
 
 
 # ── public API ─────────────────────────────────────────────────────────────
+
 
 def sensor_sessions(
     treatments: list[dict],
@@ -131,25 +133,24 @@ def sensor_sessions(
         entries_first: str | None = None
         entries_last: str | None = None
         if entries is not None:
-            in_session = [
-                d for d in entry_dts
-                if d >= start_dt and (end_dt is None or d < end_dt)
-            ]
+            in_session = [d for d in entry_dts if d >= start_dt and (end_dt is None or d < end_dt)]
             entries_count = len(in_session)
             if in_session:
                 entries_first = _to_iso_z(in_session[0])
                 entries_last = _to_iso_z(in_session[-1])
 
-        sessions.append({
-            "session_index": session_index,
-            "start": _to_iso_z(start_dt),
-            "end": _to_iso_z(end_dt) if end_dt is not None else None,
-            "duration_days": duration_days,
-            "marker_event_type": event_type,
-            "entries_count": entries_count,
-            "entries_first": entries_first,
-            "entries_last": entries_last,
-        })
+        sessions.append(
+            {
+                "session_index": session_index,
+                "start": _to_iso_z(start_dt),
+                "end": _to_iso_z(end_dt) if end_dt is not None else None,
+                "duration_days": duration_days,
+                "marker_event_type": event_type,
+                "entries_count": entries_count,
+                "entries_first": entries_first,
+                "entries_last": entries_last,
+            }
+        )
 
     # Newest first.
     sessions.reverse()

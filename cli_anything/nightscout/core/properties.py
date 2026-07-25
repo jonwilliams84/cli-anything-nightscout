@@ -32,9 +32,7 @@ def _validate_names(names: Iterable[str]) -> list[str]:
         if not isinstance(n, str) or not n:
             raise ValueError(f"property name must be non-empty string; got {n!r}")
         if not _NAME_RE.match(n):
-            raise ValueError(
-                f"invalid property name {n!r}: must match ^[a-zA-Z][a-zA-Z0-9_]*$"
-            )
+            raise ValueError(f"invalid property name {n!r}: must match ^[a-zA-Z][a-zA-Z0-9_]*$")
         cleaned.append(n)
     return cleaned
 
@@ -72,13 +70,16 @@ def iob_cob_report(*, conn: dict[str, Any]) -> dict[str, Any]:
     can read directly.
     """
     raw = properties(
-        conn=conn, names=("iob", "cob", "bgnow", "delta", "loop"),
+        conn=conn,
+        names=("iob", "cob", "bgnow", "delta", "loop"),
     )
     return {"summary": _extract_iob_cob(raw), "raw": raw}
 
 
 def properties(
-    *, conn: dict[str, Any], names: Iterable[str] | None = None,
+    *,
+    conn: dict[str, Any],
+    names: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Fetch derived-state properties from ``/api/v2/properties``.
 

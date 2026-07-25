@@ -29,10 +29,7 @@ def _canonical_units(units: str) -> str:
         return "mg/dl"
     if u in {"mmol", "mmol/l", "mmoll", "mmol/L".lower()}:
         return "mmol/l"
-    raise ValueError(
-        f"unsupported units {units!r}; expected one of "
-        "'mg/dl', 'mmol', 'mmol/l'"
-    )
+    raise ValueError(f"unsupported units {units!r}; expected one of 'mg/dl', 'mmol', 'mmol/l'")
 
 
 def normalize_entries(
@@ -166,14 +163,16 @@ def add_sgv(
     if type_ not in VALID_TYPES:
         raise ValueError(f"type must be one of {sorted(VALID_TYPES)}; got {type_!r}")
     ts = int(date_ms) if date_ms is not None else int(time.time() * 1000)
-    payload = [{
-        "type": type_,
-        "sgv": float(sgv),
-        "date": ts,
-        "dateString": _epoch_ms_to_iso(ts),
-        "direction": direction,
-        "device": device,
-    }]
+    payload = [
+        {
+            "type": type_,
+            "sgv": float(sgv),
+            "date": ts,
+            "dateString": _epoch_ms_to_iso(ts),
+            "direction": direction,
+            "device": device,
+        }
+    ]
     return backend.post(
         "/entries.json",
         data=payload,
@@ -300,5 +299,6 @@ def slice_query(
 
 def _epoch_ms_to_iso(ms: int) -> str:
     import datetime as _dt
+
     dt = _dt.datetime.fromtimestamp(ms / 1000.0, tz=_dt.timezone.utc)
     return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")

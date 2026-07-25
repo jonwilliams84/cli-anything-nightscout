@@ -25,8 +25,7 @@ from typing import Any
 from cli_anything.nightscout.utils import nightscout_backend as backend
 
 _INSTALL_HINT = (
-    "watch requires 'python-socketio[client]'. "
-    "Install: pip install 'python-socketio[client]'"
+    "watch requires 'python-socketio[client]'. Install: pip install 'python-socketio[client]'"
 )
 
 
@@ -114,6 +113,7 @@ def _run_loop(
     # return promptly.
     watchdog: threading.Thread | None = None
     if stop_event is not None:
+
         def _watch_stop() -> None:
             # Poll modestly — we want to be responsive but not burn CPU.
             while not stop_event.wait(0.1):
@@ -130,7 +130,9 @@ def _run_loop(
 
     try:
         if timeout is not None:
-            sio.wait(timeout=timeout) if _wait_accepts_timeout(sio) else _wait_with_timeout(sio, timeout)
+            sio.wait(timeout=timeout) if _wait_accepts_timeout(sio) else _wait_with_timeout(
+                sio, timeout
+            )
         else:
             sio.wait()
     finally:
@@ -142,6 +144,7 @@ def _wait_accepts_timeout(sio) -> bool:
     """Best-effort introspection: does this sio.wait support a timeout kwarg?"""
     try:
         import inspect
+
         sig = inspect.signature(sio.wait)
         return "timeout" in sig.parameters
     except (TypeError, ValueError):
@@ -175,6 +178,7 @@ def watch_entries(
     The socketio dep is optional — if ``python-socketio`` isn't importable,
     raises ``ImportError`` with the install command.
     """
+
     def on_data(payload: Any) -> None:
         if not isinstance(payload, dict):
             return
@@ -190,8 +194,7 @@ def watch_entries(
                 # intentional defensive programming; the callback is not a
                 # security boundary.
                 print(
-                    f"watch_entries: callback raised "
-                    f"{type(exc).__name__}: {exc}",
+                    f"watch_entries: callback raised {type(exc).__name__}: {exc}",
                     file=sys.stderr,
                 )
 
@@ -217,6 +220,7 @@ def watch_treatments(
     Each new treatment pushed by the server is delivered to
     ``callback(treatment)``. Otherwise identical to ``watch_entries``.
     """
+
     def on_data(payload: Any) -> None:
         if not isinstance(payload, dict):
             return
@@ -231,8 +235,7 @@ def watch_treatments(
                 # intentional defensive programming; the callback is not a
                 # security boundary.
                 print(
-                    f"watch_treatments: callback raised "
-                    f"{type(exc).__name__}: {exc}",
+                    f"watch_treatments: callback raised {type(exc).__name__}: {exc}",
                     file=sys.stderr,
                 )
 

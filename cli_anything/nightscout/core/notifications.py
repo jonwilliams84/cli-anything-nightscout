@@ -14,8 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from cli_anything.nightscout.utils import nightscout_backend as backend
-
+from cli_anything.nightscout.utils import nightscout_backend as backend  # isort:skip
 
 # Standard urgency tiers as Nightscout uses them.
 VALID_LEVELS = (0, 1, 2)

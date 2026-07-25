@@ -13,12 +13,11 @@ so that one-shot mutations can auto-save.
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
 import json
 import os
 import tempfile
-from pathlib import Path
-from typing import Any
-
 
 CONFIG_DIR = Path(os.environ.get("CLI_ANYTHING_HOME", str(Path.home() / ".cli-anything"))) / "nightscout"
 CONFIG_FILE = CONFIG_DIR / "config.json"

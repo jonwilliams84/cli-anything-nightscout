@@ -15,7 +15,6 @@ from typing import Any
 
 from cli_anything.nightscout.utils import nightscout_backend as backend
 
-
 # ─── reads ────────────────────────────────────────────────────────────────
 
 def list_food(*, conn: dict[str, Any], limit: int = 100) -> list[dict[str, Any]]:

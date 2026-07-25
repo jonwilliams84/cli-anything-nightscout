@@ -19,7 +19,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-
 CONFIG_DIR = Path(os.environ.get("CLI_ANYTHING_HOME", str(Path.home() / ".cli-anything"))) / "nightscout"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_SESSION_FILE = CONFIG_DIR / "session.json"

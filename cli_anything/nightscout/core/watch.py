@@ -183,9 +183,12 @@ def watch_entries(
         for entry in entries:
             try:
                 callback(entry)
-            except Exception as exc:
-                # Don't let a buggy callback kill the socket — but surface
-                # the error to stderr so problems aren't swallowed silently.
+            except Exception as exc:  # nosec BLE001
+                # User callbacks are untrusted. Catching all exceptions here
+                # prevents a buggy callback from tearing down the socket. Errors
+                # are surfaced to stderr so operators notice failures. This is
+                # intentional defensive programming; the callback is not a
+                # security boundary.
                 print(
                     f"watch_entries: callback raised "
                     f"{type(exc).__name__}: {exc}",
@@ -221,7 +224,12 @@ def watch_treatments(
         for t in treatments:
             try:
                 callback(t)
-            except Exception as exc:
+            except Exception as exc:  # nosec BLE001
+                # User callbacks are untrusted. Catching all exceptions here
+                # prevents a buggy callback from tearing down the socket. Errors
+                # are surfaced to stderr so operators notice failures. This is
+                # intentional defensive programming; the callback is not a
+                # security boundary.
                 print(
                     f"watch_treatments: callback raised "
                     f"{type(exc).__name__}: {exc}",

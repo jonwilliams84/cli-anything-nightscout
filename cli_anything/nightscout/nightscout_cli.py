@@ -15,26 +15,23 @@ from typing import Any
 
 import click
 
-from cli_anything.nightscout.core import (
-    activity as activity_mod,
-    devicestatus as ds_mod,
-    entries as entries_mod,
-    excursions as excursions_mod,
-    food as food_mod,
-    notifications as notifications_mod,
-    profile as profile_mod,
-    project,
-    properties as properties_mod,
-    report as report_mod,
-    sensors as sensors_mod,
-    status as status_mod,
-    treatments as treatments_mod,
-    v3 as v3_mod,
-    watch as watch_mod,
-)
+from cli_anything.nightscout.core import activity as activity_mod
+from cli_anything.nightscout.core import devicestatus as ds_mod
+from cli_anything.nightscout.core import entries as entries_mod
+from cli_anything.nightscout.core import excursions as excursions_mod
+from cli_anything.nightscout.core import food as food_mod
+from cli_anything.nightscout.core import notifications as notifications_mod
+from cli_anything.nightscout.core import profile as profile_mod
+from cli_anything.nightscout.core import project
+from cli_anything.nightscout.core import properties as properties_mod
+from cli_anything.nightscout.core import report as report_mod
+from cli_anything.nightscout.core import sensors as sensors_mod
+from cli_anything.nightscout.core import status as status_mod
+from cli_anything.nightscout.core import treatments as treatments_mod
+from cli_anything.nightscout.core import v3 as v3_mod
+from cli_anything.nightscout.core import watch as watch_mod
 from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
-
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 VERSION = "2.1.0"
@@ -133,7 +130,8 @@ def _default_tz_name() -> str:
     informational for help text + the JSON `tz_used` field.
     """
     try:
-        from datetime import datetime, timezone as _tz
+        from datetime import datetime
+        from datetime import timezone as _tz
         from time import tzname
         local = datetime.now().astimezone().tzinfo
         if local is not None:

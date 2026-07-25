@@ -18,10 +18,10 @@ no slashes, no dots. This blocks accidental or malicious path traversal
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from cli_anything.nightscout.utils import nightscout_backend as backend
-
 
 _COLLECTION_RE = re.compile(r"^[a-z]+$")
 

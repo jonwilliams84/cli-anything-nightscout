@@ -105,3 +105,65 @@ class TestI001TreatmentsImportOrder:
             f"  stdout: {result.stdout}\n"
             f"  stderr: {result.stderr}"
         )
+
+
+class TestTRY004TreatmentsTypeError:
+    """TRY004: treatments.py must raise TypeError for wrong type, not ValueError."""
+
+    @staticmethod
+    def test_typeerror_raised_on_wrong_type():
+        """Line 191 must raise TypeError, not ValueError."""
+        import ast
+        with open(TREATMENTS_PY) as f:
+            src = f.read()
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Raise):
+                if node.exc and isinstance(node.exc, ast.Call):
+                    func = node.exc.func
+                    if isinstance(func, ast.Name) and func.id == "TypeError":
+                        # Check line 191 context
+                        if hasattr(node, 'lineno') and node.lineno == 191:
+                            return  # found it
+        raise AssertionError("TypeError not raised at line 191 of treatments.py")
+
+    @staticmethod
+    def test_no_valueerror_on_type_mismatch():
+        """Line 191 must NOT raise ValueError (type mismatch → TypeError)."""
+        import re
+        content = TREATMENTS_PY.read_text()
+        # At line ~191, check it's TypeError not ValueError
+        lines = content.splitlines()
+        target_lines = [l.strip() for l in lines[188:193]]
+        for line in target_lines:
+            if "unexpected response type" in line:
+                assert "TypeError" in line, f"Expected TypeError, got: {line}"
+                assert "ValueError" not in line, f"Unexpected ValueError: {line}"
+
+
+class TestI001V3ImportOrder:
+    """I001: v3.py must be isort-compliant."""
+
+    def test_v3_imports_isort_compliant(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=I001",
+             str(ROOT / "cli_anything" / "nightscout" / "core" / "v3.py")],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 0, (
+            f"I001 still present in v3.py:\n{result.stdout}\n{result.stderr}"
+        )
+
+
+class TestUP035V3CollectionsAbc:
+    """UP035: v3.py must import Iterable from collections.abc."""
+
+    def test_v3_iterable_from_collections_abc(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=UP035",
+             str(ROOT / "cli_anything" / "nightscout" / "core" / "v3.py")],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 0, (
+            f"UP035 still present in v3.py:\n{result.stdout}\n{result.stderr}"
+        )

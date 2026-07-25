@@ -188,7 +188,7 @@ def update_treatment(
                 f"exact _id of the intended record."
             )
     if not isinstance(existing, dict):
-        raise ValueError(f"unexpected response type for treatment {spec!r}")
+        raise TypeError(f"unexpected response type for treatment {spec!r}")
     merged = dict(existing)
     merged.update(fields)
     if "_id" not in merged:

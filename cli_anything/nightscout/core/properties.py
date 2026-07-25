@@ -18,10 +18,10 @@ Auth: same model as v1 (``api-secret`` header or ``?token=``).
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from cli_anything.nightscout.utils import nightscout_backend as backend
-
 
 _NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
 

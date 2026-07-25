@@ -35,8 +35,9 @@ from __future__ import annotations
 import math
 import statistics
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import datetime, timezone, tzinfo
-from typing import Any, Iterable
+from typing import Any
 
 
 def _resolve_tz(tz: tzinfo | str | None) -> tzinfo:

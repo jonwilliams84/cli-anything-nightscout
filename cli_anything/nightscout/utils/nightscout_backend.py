@@ -81,7 +81,9 @@ class NightscoutAPIError(RuntimeError):
 
 def hash_api_secret(plaintext: str) -> str:
     """Return the lowercase SHA-1 hex digest expected by Nightscout v1 auth."""
-    return hashlib.sha1(plaintext.encode("utf-8"), usedforsecurity=False).hexdigest().lower()  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1 — SHA-1 is required by the Nightscout v1 protocol (api-secret header, see NIGHTSCOUT.md §Auth); usedforsecurity=False marks it as non-cryptographic.
+    return (
+        hashlib.sha1(plaintext.encode("utf-8"), usedforsecurity=False).hexdigest().lower()
+    )  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1 — SHA-1 is required by the Nightscout v1 protocol (api-secret header, see NIGHTSCOUT.md §Auth); usedforsecurity=False marks it as non-cryptographic.
 
 
 def normalize_url(url: str) -> str:
@@ -169,7 +171,12 @@ def _handle_response(resp: requests.Response) -> Any:
     if not (200 <= code < 300):
         try:
             body = resp.json()
-            msg = body.get("message") or body.get("status", {}).get("message") or text or "request failed"
+            msg = (
+                body.get("message")
+                or body.get("status", {}).get("message")
+                or text
+                or "request failed"
+            )
         except (ValueError, json.JSONDecodeError):
             body = {"raw": text}
             msg = text or "request failed"
@@ -265,12 +272,11 @@ def request(
                     f"Underlying error: {exc}",
                 ) from exc
             raise  # already disabled and still failed — surface raw error
-        except (requests.exceptions.ConnectionError,
-                requests.exceptions.Timeout) as exc:
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
             last_exc = exc
             last_retry_error = None
             if attempt < total_attempts - 1:
-                time.sleep(0.5 * 4 ** attempt)
+                time.sleep(0.5 * 4**attempt)
                 continue
             raise
 
@@ -285,7 +291,7 @@ def request(
             except NightscoutAPIError as api_exc:
                 last_retry_error = api_exc
                 last_exc = api_exc
-            time.sleep(0.5 * 4 ** attempt)
+            time.sleep(0.5 * 4**attempt)
             continue
 
         return _handle_response(resp)

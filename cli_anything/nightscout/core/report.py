@@ -52,9 +52,11 @@ def _resolve_tz(tz: tzinfo | str | None) -> tzinfo:
         return tz
     try:
         from zoneinfo import ZoneInfo
+
         return ZoneInfo(tz)
     except (KeyError, ValueError, ImportError):
         return timezone.utc
+
 
 MMOL_TO_MGDL = 18.018
 
@@ -159,14 +161,16 @@ def time_in_range(
     in_range = sum(1 for v in values_mgdl if low_mgdl <= v <= high_mgdl)
     below = sum(1 for v in values_mgdl if v < low_mgdl)
     above = sum(1 for v in values_mgdl if v > high_mgdl)
-    base_out.update({
-        "tir_pct": round(in_range / total * 100, 2),
-        "tbr_pct": round(below / total * 100, 2),
-        "tar_pct": round(above / total * 100, 2),
-        "in_range_count": in_range,
-        "below_count": below,
-        "above_count": above,
-    })
+    base_out.update(
+        {
+            "tir_pct": round(in_range / total * 100, 2),
+            "tbr_pct": round(below / total * 100, 2),
+            "tar_pct": round(above / total * 100, 2),
+            "in_range_count": in_range,
+            "below_count": below,
+            "above_count": above,
+        }
+    )
     return base_out
 
 
@@ -176,16 +180,23 @@ def time_in_range(
 def _summary_none(units: str) -> dict[str, Any]:
     base = {
         "count": 0,
-        "mean_mgdl": None, "stdev_mgdl": None,
-        "min_mgdl": None, "max_mgdl": None,
-        "cv_pct": None, "gmi_pct": None,
+        "mean_mgdl": None,
+        "stdev_mgdl": None,
+        "min_mgdl": None,
+        "max_mgdl": None,
+        "cv_pct": None,
+        "gmi_pct": None,
         "units": "mmol/l" if _is_mmol(units) else "mg/dl",
     }
     if _is_mmol(units):
-        base.update({
-            "mean_mmol": None, "stdev_mmol": None,
-            "min_mmol": None, "max_mmol": None,
-        })
+        base.update(
+            {
+                "mean_mmol": None,
+                "stdev_mmol": None,
+                "min_mmol": None,
+                "max_mmol": None,
+            }
+        )
     return base
 
 
@@ -346,10 +357,15 @@ def hourly_pattern(
                 row[f"p{p}_mgdl"] = None
                 if mmol:
                     row[f"p{p}_mmol"] = None
-            row.update({
-                "mean_mgdl": None, "tir_pct": 0.0,
-                "in_range_count": 0, "below_count": 0, "above_count": 0,
-            })
+            row.update(
+                {
+                    "mean_mgdl": None,
+                    "tir_pct": 0.0,
+                    "in_range_count": 0,
+                    "below_count": 0,
+                    "above_count": 0,
+                }
+            )
             if mmol:
                 row["mean_mmol"] = None
             rows.append(row)
@@ -367,12 +383,14 @@ def hourly_pattern(
         in_range = sum(1 for v in vals if low_mgdl <= v <= high_mgdl)
         below = sum(1 for v in vals if v < low_mgdl)
         above = sum(1 for v in vals if v > high_mgdl)
-        row.update({
-            "tir_pct": round(in_range / len(vals) * 100, 2),
-            "in_range_count": in_range,
-            "below_count": below,
-            "above_count": above,
-        })
+        row.update(
+            {
+                "tir_pct": round(in_range / len(vals) * 100, 2),
+                "in_range_count": in_range,
+                "below_count": below,
+                "above_count": above,
+            }
+        )
         rows.append(row)
     return rows
 
@@ -582,8 +600,7 @@ def risk_indices(
     units, input_units = _resolve_units(units, input_units)
     sgv_entries = _filter_sgv(entries)
     values = [
-        v for v in (_entry_mgdl(e, input_units) for e in sgv_entries)
-        if v is not None and v > 0
+        v for v in (_entry_mgdl(e, input_units) for e in sgv_entries) if v is not None and v > 0
     ]
 
     def _lbgi_band(x: float) -> str:
@@ -679,10 +696,14 @@ def day_of_week(
             "units": "mmol/l" if mmol else "mg/dl",
         }
         if not vals:
-            row.update({
-                "mean_mgdl": None,
-                "tir_pct": 0.0, "tbr_pct": 0.0, "tar_pct": 0.0,
-            })
+            row.update(
+                {
+                    "mean_mgdl": None,
+                    "tir_pct": 0.0,
+                    "tbr_pct": 0.0,
+                    "tar_pct": 0.0,
+                }
+            )
             if mmol:
                 row["mean_mmol"] = None
             rows.append(row)
@@ -692,12 +713,14 @@ def day_of_week(
         below = sum(1 for v in vals if v < low_mgdl)
         above = sum(1 for v in vals if v > high_mgdl)
         total = len(vals)
-        row.update({
-            "mean_mgdl": round(mean, 2),
-            "tir_pct": round(in_range / total * 100, 2),
-            "tbr_pct": round(below / total * 100, 2),
-            "tar_pct": round(above / total * 100, 2),
-        })
+        row.update(
+            {
+                "mean_mgdl": round(mean, 2),
+                "tir_pct": round(in_range / total * 100, 2),
+                "tbr_pct": round(below / total * 100, 2),
+                "tar_pct": round(above / total * 100, 2),
+            }
+        )
         if mmol:
             row["mean_mmol"] = _round_mmol(mean)
         rows.append(row)

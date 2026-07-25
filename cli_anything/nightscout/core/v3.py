@@ -37,8 +37,7 @@ def _validate_collection(collection: str) -> None:
         raise ValueError("collection is required")
     if not _COLLECTION_RE.match(collection):
         raise ValueError(
-            f"invalid collection name {collection!r}: "
-            "must match ^[a-z]+$ (lowercase letters only)"
+            f"invalid collection name {collection!r}: must match ^[a-z]+$ (lowercase letters only)"
         )
 
 
@@ -109,9 +108,7 @@ def v3_get(collection: str, identifier: str, *, conn: dict[str, Any]) -> dict[st
     return _unwrap_one(res)
 
 
-def v3_create(
-    collection: str, payload: dict[str, Any], *, conn: dict[str, Any]
-) -> Any:
+def v3_create(collection: str, payload: dict[str, Any], *, conn: dict[str, Any]) -> Any:
     """POST a new record into a v3 collection."""
     _validate_collection(collection)
     return backend.post(
@@ -191,7 +188,11 @@ def v3_search(
     if filter:
         merged.update(filter)
     return v3_list(
-        collection, conn=conn, limit=limit, sort=sort, filter=merged,
+        collection,
+        conn=conn,
+        limit=limit,
+        sort=sort,
+        filter=merged,
     )
 
 

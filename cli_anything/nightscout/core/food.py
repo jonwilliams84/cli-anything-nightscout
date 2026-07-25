@@ -17,6 +17,7 @@ from cli_anything.nightscout.utils import nightscout_backend as backend
 
 # ─── reads ────────────────────────────────────────────────────────────────
 
+
 def list_food(*, conn: dict[str, Any], limit: int = 100) -> list[dict[str, Any]]:
     """List entries in the food collection (via v3)."""
     res = backend.get(
@@ -56,6 +57,7 @@ def regular(*, conn: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 # ─── writes ────────────────────────────────────────────────────────────────
+
 
 def add_food(
     *,

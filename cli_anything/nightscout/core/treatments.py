@@ -175,8 +175,7 @@ def update_treatment(
         # pick a single record when there's no ambiguity OR exactly one entry
         # has a matching _id — otherwise refuse rather than silently editing
         # the wrong record.
-        matching = [t for t in existing
-                    if isinstance(t, dict) and t.get("_id") == spec]
+        matching = [t for t in existing if isinstance(t, dict) and t.get("_id") == spec]
         if len(matching) == 1:
             existing = matching[0]
         elif len(existing) == 1:

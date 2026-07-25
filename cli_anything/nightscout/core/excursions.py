@@ -57,9 +57,11 @@ def _resolve_tz(tz: tzinfo | str | None) -> tzinfo:
         return tz
     try:
         from zoneinfo import ZoneInfo
+
         return ZoneInfo(tz)
     except (ImportError, KeyError):
         return timezone.utc
+
 
 MMOL_TO_MGDL = 18.018
 
@@ -209,26 +211,17 @@ def postprandial_responses(
             continue
 
         # Baseline = closest entry within lookback BEFORE the meal.
-        baseline_candidates = [
-            (ts, v) for (ts, v) in typed
-            if meal_ts - lookback <= ts < meal_ts
-        ]
+        baseline_candidates = [(ts, v) for (ts, v) in typed if meal_ts - lookback <= ts < meal_ts]
         baseline_mgdl: float | None
         if baseline_candidates:
             # closest in time to meal_ts
-            _, baseline_mgdl = max(
-                baseline_candidates, key=lambda x: x[0]
-            )
+            _, baseline_mgdl = max(baseline_candidates, key=lambda x: x[0])
         else:
             baseline_mgdl = None
 
         peak_ts, peak_mgdl = max(in_window, key=lambda x: x[1])
-        time_to_peak_min = round(
-            (peak_ts - meal_ts).total_seconds() / 60.0, 1
-        )
-        delta_mgdl = (
-            peak_mgdl - baseline_mgdl if baseline_mgdl is not None else None
-        )
+        time_to_peak_min = round((peak_ts - meal_ts).total_seconds() / 60.0, 1)
+        delta_mgdl = peak_mgdl - baseline_mgdl if baseline_mgdl is not None else None
 
         icr: float | None
         if insulin and insulin > 0:
@@ -282,10 +275,7 @@ def excursion_summary(
     if bucket not in ("hour", "weekday"):
         raise ValueError(f"bucket must be 'hour' or 'weekday'; got {bucket!r}")
 
-    mmol = any(
-        r.get("units") == "mmol/l" or "baseline_mmol" in r
-        for r in responses
-    )
+    mmol = any(r.get("units") == "mmol/l" or "baseline_mmol" in r for r in responses)
 
     tzo = _resolve_tz(tz)
     grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
@@ -308,11 +298,16 @@ def excursion_summary(
             row["weekday"] = _WEEKDAY_NAMES[k]
             row["weekday_index"] = k
 
-        baselines = [r["baseline_mgdl"] for r in rows_in_bucket if r.get("baseline_mgdl") is not None]
+        baselines = [
+            r["baseline_mgdl"] for r in rows_in_bucket if r.get("baseline_mgdl") is not None
+        ]
         peaks = [r["peak_mgdl"] for r in rows_in_bucket if r.get("peak_mgdl") is not None]
         deltas = [r["delta_mgdl"] for r in rows_in_bucket if r.get("delta_mgdl") is not None]
-        icrs = [r["ICR_effective_g_per_u"] for r in rows_in_bucket
-                if r.get("ICR_effective_g_per_u") is not None]
+        icrs = [
+            r["ICR_effective_g_per_u"]
+            for r in rows_in_bucket
+            if r.get("ICR_effective_g_per_u") is not None
+        ]
 
         row["count"] = len(rows_in_bucket)
         row["mean_baseline_mgdl"] = round(statistics.mean(baselines), 2) if baselines else None
@@ -320,7 +315,9 @@ def excursion_summary(
         row["mean_delta_mgdl"] = round(statistics.mean(deltas), 2) if deltas else None
         row["mean_ICR_effective_g_per_u"] = round(statistics.mean(icrs), 2) if icrs else None
         if mmol:
-            row["mean_baseline_mmol"] = _round_mmol(statistics.mean(baselines)) if baselines else None
+            row["mean_baseline_mmol"] = (
+                _round_mmol(statistics.mean(baselines)) if baselines else None
+            )
             row["mean_peak_mmol"] = _round_mmol(statistics.mean(peaks)) if peaks else None
             row["mean_delta_mmol"] = _round_mmol(statistics.mean(deltas)) if deltas else None
         out.append(row)

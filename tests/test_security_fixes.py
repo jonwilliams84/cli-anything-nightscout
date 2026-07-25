@@ -51,16 +51,18 @@ class TestBLE001NoBareException:
 
     def test_zoneinfo_block_only_catches_specific_exceptions(self):
         """BLE001 fix: ZoneInfo can raise KeyError, ValueError, or ImportError."""
-        handlers = self._get_try_except_handlers(REPORT_PY)
-        # Check the _resolve_tz function's except handler (around line 56)
+        # Resolved by enclosing function rather than an absolute line number:
+        # the handler was previously pinned to `ln == 56`, so reformatting the
+        # file by a single line failed this test while the code was still right.
         zoneinfo_handlers = [
-            (ln, names) for ln, names in handlers
-            if ln == 56 and set(names) == {"KeyError", "ValueError", "ImportError"}
+            (ln, names)
+            for ln, names in _handlers_in_function(REPORT_PY, "_resolve_tz")
+            if set(names) == {"KeyError", "ValueError", "ImportError"}
         ]
         assert zoneinfo_handlers, (
-            "Expected _resolve_tz except handler at line 56 to catch "
+            "Expected the _resolve_tz except handler to catch "
             "(KeyError, ValueError, ImportError); found: "
-            f"{[h for h in handlers if h[0] == 56]}"
+            f"{_handlers_in_function(REPORT_PY, '_resolve_tz')}"
         )
 
     def test_report_py_has_no_generic_exception_catch(self):
@@ -74,6 +76,35 @@ class TestBLE001NoBareException:
             f"report.py still has `except Exception` at lines: {any_exception}"
         )
 
+
+
+def _handlers_in_function(path: Path, func_name: str) -> list[tuple[int, list[str]]]:
+    """Return (line_no, exception_names) for except handlers inside *func_name*.
+
+    Resolves the enclosing function by walking the AST rather than matching an
+    absolute line number: pinning a test to `lineno == 77` means any edit or
+    reformat above that point breaks the test while the code under test is still
+    correct, which in practice made this repo un-formattable.
+    """
+    with open(path) as fh:
+        tree = ast.parse(fh.read())
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name:
+            found: list[tuple[int, list[str]]] = []
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Try):
+                    for handler in inner.handlers:
+                        names: list[str] = []
+                        if handler.type is None:
+                            names = ["<bare>"]
+                        elif isinstance(handler.type, ast.Name):
+                            names = [handler.type.id]
+                        elif isinstance(handler.type, ast.Tuple):
+                            names = [e.id for e in handler.type.elts if isinstance(e, ast.Name)]
+                        found.append((handler.lineno, names))
+            return found
+    raise AssertionError(f"function {func_name!r} not found in {path}")
 
 class TestI001SensorsImportOrder:
     """I001: sensors.py must be isort-compliant."""
@@ -112,20 +143,27 @@ class TestTRY004TreatmentsTypeError:
 
     @staticmethod
     def test_typeerror_raised_on_wrong_type():
-        """Line 191 must raise TypeError, not ValueError."""
+        """update_treatment must raise TypeError (not ValueError) for a wrong type."""
         import ast
+
+        # Located by enclosing function, not by `node.lineno == 191`. The raise
+        # is correct but sits at line 190 after formatting, and pinning the
+        # assertion to an absolute line made the file un-reformattable.
         with open(TREATMENTS_PY) as f:
-            src = f.read()
-        tree = ast.parse(src)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Raise):
-                if node.exc and isinstance(node.exc, ast.Call):
-                    func = node.exc.func
-                    if isinstance(func, ast.Name) and func.id == "TypeError":
-                        # Check line 191 context
-                        if hasattr(node, 'lineno') and node.lineno == 191:
-                            return  # found it
-        raise AssertionError("TypeError not raised at line 191 of treatments.py")
+            tree = ast.parse(f.read())
+
+        for fn in ast.walk(tree):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.name == "update_treatment":
+                for node in ast.walk(fn):
+                    if (
+                        isinstance(node, ast.Raise)
+                        and isinstance(node.exc, ast.Call)
+                        and isinstance(node.exc.func, ast.Name)
+                        and node.exc.func.id == "TypeError"
+                    ):
+                        return  # found it
+                raise AssertionError("update_treatment does not raise TypeError")
+        raise AssertionError("update_treatment not found in treatments.py")
 
     @staticmethod
     def test_no_valueerror_on_type_mismatch():
@@ -269,14 +307,11 @@ class TestS110WatchSafeDisconnect:
 
     def test_safe_disconnect_catches_only_oserror_runtimeerror(self):
         """Verify the except handler in _safe_disconnect names only OSError + RuntimeError."""
-        handlers = _get_try_except_handlers(WATCH_PY)
-        # Find the _safe_disconnect function's handler (~line 77)
-        safe_disconnect_handlers = [
-            (ln, names) for ln, names in handlers
-            if ln == 77
-        ]
+        # Resolve by function name, not line number: `ruff format` shifting a
+        # line by one used to fail this test while the handler was still correct.
+        safe_disconnect_handlers = _handlers_in_function(WATCH_PY, "_safe_disconnect")
         assert safe_disconnect_handlers, (
-            f"Expected _safe_disconnect except handler at line 77; found: {handlers}"
+            "Expected an except handler inside _safe_disconnect; found none"
         )
         ln, names = safe_disconnect_handlers[0]
         assert set(names) == {"OSError", "RuntimeError"}, (

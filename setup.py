@@ -47,6 +47,7 @@ setup(
             # absent and the subprocess exited 1 — reported as an import-order
             # failure when nothing was actually mis-sorted.
             "isort>=5.12",
+            "ruff>=0.16.0",  # test_security_fixes.py shells out to ruff
         ],
         "watch": [
             "python-socketio[client]>=5",

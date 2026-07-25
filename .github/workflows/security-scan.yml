@@ -23,7 +23,10 @@ jobs:
           python-version: '3.12'
       - name: Install and run tests with coverage
         run: |
-          pip install -e ".[dev]" pytest pytest-cov
+          # ruff is needed by tests/test_collections_abc_regression.py, which shells
+          # out to it to prove the UP035/I001 findings are genuinely fixed rather
+          # than suppressed. Without it here those tests can only skip.
+          pip install -e ".[dev]" pytest pytest-cov ruff
           if [ -d tests ]; then
             python3 -m pytest tests/ -q --cov=cli_anything --cov-report=term-missing --cov-report=xml
           elif [ -d cli_anything ]; then
@@ -216,6 +219,13 @@ jobs:
     name: Findings Summary
     runs-on: ubuntu-latest
     needs: [bandit, semgrep, pip-audit, ruff, pytest]
+    # always(): publish the findings issue even when an upstream job failed.
+    # Without this, ANY unrelated test failure silently stops findings publishing:
+    # the issue goes stale, and the converge fleet — which dispatches off that
+    # issue and skips repos whose findings predate the last merge — drops this repo
+    # entirely. That is exactly what happened here: 3 failing tests took the
+    # scanners' results down with them even though all four scanners passed.
+    if: always()
     steps:
       - uses: actions/checkout@v7
       - name: Download all artifacts

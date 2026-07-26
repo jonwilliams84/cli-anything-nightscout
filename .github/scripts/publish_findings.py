@@ -120,9 +120,29 @@ def parse_ruff(filepath: str) -> list[dict]:
     return out
 
 
+def parse_coverage(filepath: str = "coverage.xml") -> str:
+    """Coverage summary line for the issue body, '' when unavailable.
+
+    The old inline publisher reported this and converge's report consumes it, so
+    dropping it on the rewrite would have been a silent regression.
+    """
+    try:
+        import xml.etree.ElementTree as ET
+
+        root = ET.parse(filepath).getroot()
+        rate = float(root.get("line-rate", 0)) * 100
+        covered = int(root.get("lines-covered", 0))
+        valid = int(root.get("lines-valid", 0))
+        return f"**Coverage:** {rate:.1f}% ({covered}/{valid} lines)"
+    except Exception:  # noqa: BLE001 - absent/!parseable coverage must not fail the publish
+        return ""
+
+
 def build_body(findings: list[dict], scan_date: str, kind: str) -> str:
+    cov = parse_coverage()
     if not findings:
-        return f"\u2705 No {kind} findings \u2014 last scan: {scan_date}"
+        body = f"\u2705 No {kind} findings \u2014 last scan: {scan_date}"
+        return f"{body}\n\n{cov}" if cov else body
 
     findings.sort(key=sort_key)
     by_tool: dict[str, int] = {}
@@ -135,6 +155,8 @@ def build_body(findings: list[dict], scan_date: str, kind: str) -> str:
     lines.append(f"**Total:** {len(findings)}  ")
     lines.append("**By severity:** " + ", ".join(f"{k}={v}" for k, v in sorted(by_level.items())) + "  ")
     lines.append("**By tool:** " + ", ".join(f"{k}={v}" for k, v in sorted(by_tool.items())))
+    if cov:
+        lines.append(cov)
     lines.append("")
 
     shown = findings[:MAX_SHOWN]
@@ -242,7 +264,7 @@ def main() -> int:
     for path in sorted(glob.glob("*.sarif")):
         security.extend(parse_sarif(path))
 
-    quality = parse_ruff("ruff-advisory.json")
+    quality = parse_ruff("ruff.json")   # matches the ruff job's upload-artifact name
 
     print(f"security findings: {len(security)} | quality findings: {len(quality)}")
     ok_sec = publish(SECURITY_TITLE, SECURITY_LABEL, build_body(security, scan_date, "security"))

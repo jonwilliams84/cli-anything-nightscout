@@ -52,8 +52,17 @@ jobs:
       - name: Install ruff and lint
         run: |
           pip install ruff
+          # ADVISORY scope, deliberately WIDER than the blocking gate in ci.yml.
+          # Running bare `ruff check` here honours pyproject.toml, i.e. exactly the
+          # rules the gate already enforces - so this job reported 0 findings and
+          # the code-quality issue was empty by construction while ~430 deferred
+          # items per repo sat untracked. --select the deferred families explicitly
+          # so the backlog is visible without ever blocking a merge.
           ruff check cli_anything/ --output-format=github || true
-          ruff check cli_anything/ --output-format=json -o ruff.json || true
+          ruff check cli_anything/ \
+            --select B904,E402,E741,S110,S112,BLE001,UP,I001,SIM,RUF005,C4,PTH,RET,ARG,FURB,TRY \
+            --ignore RUF100 \
+            --output-format=json -o ruff.json || true
       - name: Upload ruff artifact
         if: always()
         uses: actions/upload-artifact@v7

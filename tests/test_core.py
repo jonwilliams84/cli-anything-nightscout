@@ -56,6 +56,19 @@ class TestBackend:
         src = inspect.getsource(self.backend.hash_api_secret)
         assert "usedforsecurity=False" in src
 
+    def test_hash_api_secret_matches_nightscout_v1_protocol(self):
+        """Regression: the Nightscout v1 protocol requires SHA-1 for the
+        api-secret header.  The scanner flagged SHA-1 as insecure, but it is
+        a protocol requirement — not a cryptographic signature.  Verify the
+        function still produces the exact SHA-1 hex digest the protocol
+        demands, so a future 'fix' that switches to SHA-256 would be caught."""
+        # Known SHA-1 test vector: SHA1("abc") = a9993e36...
+        assert self.backend.hash_api_secret("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d"
+        # Verify it is 40 hex chars (SHA-1 output length)
+        result = self.backend.hash_api_secret("any-secret-value")
+        assert len(result) == 40
+        assert all(c in "0123456789abcdef" for c in result)
+
     def test_resolve_secret_passthrough_when_already_hashed(self):
         already = "a" * 40
         assert self.backend._resolve_secret_hash(already) == already.lower()
@@ -238,6 +251,23 @@ class TestProject:
         # 0o700 = rwx------ (owner-only).  No group or other bits.
         assert mode == 0o700, f"expected 0o700, got {oct(mode)}"
         # Explicitly: no access for group or others
+        assert mode & 0o077 == 0, "group/other must have no permissions"
+
+    def test_config_dir_permissions_are_owner_only_and_traversable(self, isolated_home):
+        """Regression: the scanner flagged 0o700 as 'too permissive' and
+        suggested 0o644.  But 0o644 strips the execute bit from a directory,
+        making it untraversable.  Verify the directory is created with 0o700
+        (owner rwx, no group/other access) AND remains traversable (execute
+        bit set), so a future 'fix' to 0o644 would be caught."""
+        project, _ = isolated_home
+        project.save_config({"server_url": "https://x", "api_secret": "s"})
+        config_dir = project.CONFIG_DIR
+        mode = config_dir.stat().st_mode & 0o777
+        # 0o700 = rwx------ — owner-only, execute bit set (traversable)
+        assert mode == 0o700, f"expected 0o700, got {oct(mode)}"
+        # Execute bit must be set for the owner (directory must be traversable)
+        assert mode & 0o100, "owner execute bit must be set for directory traversal"
+        # No group or other access
         assert mode & 0o077 == 0, "group/other must have no permissions"
 
     def test_get_connection_precedence_args_over_env(self, isolated_home, monkeypatch):

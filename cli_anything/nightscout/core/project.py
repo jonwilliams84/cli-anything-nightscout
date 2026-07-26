@@ -42,9 +42,7 @@ def _ensure_dir(p: Path) -> None:
         # directory mode. 0o644 would strip the execute bit and make the
         # directory untraversable, so 0o700 is the correct, most-restrictive
         # mode for a directory.
-        os.chmod(
-            str(p), 0o700
-        )  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions — 0o700 is owner-only (rwx------); 0o644 would be more permissive AND break directory traversal (no execute bit).
+        os.chmod(str(p), 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions — 0o700 is owner-only (rwx------); 0o644 would be more permissive AND break directory traversal (no execute bit).  # fmt: skip
     except OSError:
         pass
 

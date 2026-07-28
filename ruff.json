@@ -1,0 +1,1843 @@
+[
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 51,
+      "row": 82
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/activity.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 82
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 82,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 51,
+      "row": 111
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/activity.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 111
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 111,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 51,
+      "row": 135
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/activity.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 135
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 135,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 67,
+      "row": 54
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/devicestatus.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 54
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 54,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 50,
+      "row": 56
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/devicestatus.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 56
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 56,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 79,
+      "row": 26
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/entries.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 26
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 26,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 96,
+      "row": 32
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/entries.py",
+    "fix": null,
+    "location": {
+      "column": 11,
+      "row": 32
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 32,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 75,
+      "row": 72
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/entries.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 72
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 72,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 86,
+      "row": 164
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/entries.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 164
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 164,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 48,
+      "row": 235
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/entries.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 235
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 235,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 47,
+      "row": 264
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/entries.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 264
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 264,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "SIM108",
+    "end_location": {
+      "column": 23,
+      "row": 230
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/excursions.py",
+    "fix": {
+      "applicability": "unsafe",
+      "edits": [
+        {
+          "content": "icr = round(carbs / insulin, 2) if insulin and insulin > 0 else None",
+          "end_location": {
+            "column": 23,
+            "row": 230
+          },
+          "location": {
+            "column": 9,
+            "row": 227
+          }
+        }
+      ],
+      "message": "Replace `if`-`else`-block with `icr = round(carbs / insulin, 2) if insulin and insulin > 0 else None`"
+    },
+    "location": {
+      "column": 9,
+      "row": 227
+    },
+    "message": "Use ternary operator `icr = round(carbs / insulin, 2) if insulin and insulin > 0 else None` instead of `if`-`else`-block",
+    "name": "if-else-block-instead-of-if-exp",
+    "noqa_row": 227,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/if-else-block-instead-of-if-exp"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 80,
+      "row": 276
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/excursions.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 276
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 276,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 50,
+      "row": 78
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/food.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 78
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 78,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 48,
+      "row": 114
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/food.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 114
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 114,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 60,
+      "row": 116
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/food.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 116
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 116,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 48,
+      "row": 132
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/food.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 132
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 132,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 80,
+      "row": 41
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/notifications.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 41
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 41,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 76,
+      "row": 86
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/profile.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 86
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 86,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 51,
+      "row": 108
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/profile.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 108
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 108,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 71,
+      "row": 110
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/profile.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 110
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 110,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 74,
+      "row": 118
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/profile.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 118
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 118,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 51,
+      "row": 136
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/profile.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 136
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 136,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 45,
+      "row": 153
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/profile.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 153
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 153,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "SIM105",
+    "end_location": {
+      "column": 13,
+      "row": 47
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/project.py",
+    "fix": null,
+    "location": {
+      "column": 5,
+      "row": 40
+    },
+    "message": "Use `contextlib.suppress(OSError)` instead of `try`-`except`-`pass`",
+    "name": "suppressible-exception",
+    "noqa_row": 40,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/suppressible-exception"
+  },
+  {
+    "cell": null,
+    "code": "PTH101",
+    "end_location": {
+      "column": 17,
+      "row": 45
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/project.py",
+    "fix": null,
+    "location": {
+      "column": 9,
+      "row": 45
+    },
+    "message": "`os.chmod()` should be replaced by `Path.chmod()`",
+    "name": "os-chmod",
+    "noqa_row": 45,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/os-chmod"
+  },
+  {
+    "cell": null,
+    "code": "PTH123",
+    "end_location": {
+      "column": 22,
+      "row": 55
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/project.py",
+    "fix": null,
+    "location": {
+      "column": 18,
+      "row": 55
+    },
+    "message": "`open()` should be replaced by `Path.open()`",
+    "name": "builtin-open",
+    "noqa_row": 55,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/builtin-open"
+  },
+  {
+    "cell": null,
+    "code": "PTH123",
+    "end_location": {
+      "column": 14,
+      "row": 73
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/project.py",
+    "fix": null,
+    "location": {
+      "column": 10,
+      "row": 73
+    },
+    "message": "`open()` should be replaced by `Path.open()`",
+    "name": "builtin-open",
+    "noqa_row": 73,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/builtin-open"
+  },
+  {
+    "cell": null,
+    "code": "SIM105",
+    "end_location": {
+      "column": 13,
+      "row": 78
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/project.py",
+    "fix": {
+      "applicability": "unsafe",
+      "edits": [
+        {
+          "content": "import contextlib\n",
+          "end_location": {
+            "column": 1,
+            "row": 21
+          },
+          "location": {
+            "column": 1,
+            "row": 21
+          }
+        },
+        {
+          "content": "with contextlib.suppress(OSError)",
+          "end_location": {
+            "column": 8,
+            "row": 75
+          },
+          "location": {
+            "column": 5,
+            "row": 75
+          }
+        },
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 79
+          },
+          "location": {
+            "column": 1,
+            "row": 77
+          }
+        }
+      ],
+      "message": "Replace `try`-`except`-`pass` with `with contextlib.suppress(OSError): ...`"
+    },
+    "location": {
+      "column": 5,
+      "row": 75
+    },
+    "message": "Use `contextlib.suppress(OSError)` instead of `try`-`except`-`pass`",
+    "name": "suppressible-exception",
+    "noqa_row": 75,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/suppressible-exception"
+  },
+  {
+    "cell": null,
+    "code": "PTH101",
+    "end_location": {
+      "column": 17,
+      "row": 76
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/project.py",
+    "fix": null,
+    "location": {
+      "column": 9,
+      "row": 76
+    },
+    "message": "`os.chmod()` should be replaced by `Path.chmod()`",
+    "name": "os-chmod",
+    "noqa_row": 76,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/os-chmod"
+  },
+  {
+    "cell": null,
+    "code": "PTH123",
+    "end_location": {
+      "column": 18,
+      "row": 143
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/project.py",
+    "fix": null,
+    "location": {
+      "column": 14,
+      "row": 143
+    },
+    "message": "`open()` should be replaced by `Path.open()`",
+    "name": "builtin-open",
+    "noqa_row": 143,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/builtin-open"
+  },
+  {
+    "cell": null,
+    "code": "PTH105",
+    "end_location": {
+      "column": 19,
+      "row": 161
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/project.py",
+    "fix": null,
+    "location": {
+      "column": 9,
+      "row": 161
+    },
+    "message": "`os.replace()` should be replaced by `Path.replace()`",
+    "name": "os-replace",
+    "noqa_row": 161,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/os-replace"
+  },
+  {
+    "cell": null,
+    "code": "SIM105",
+    "end_location": {
+      "column": 17,
+      "row": 166
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/project.py",
+    "fix": {
+      "applicability": "unsafe",
+      "edits": [
+        {
+          "content": "import contextlib\n",
+          "end_location": {
+            "column": 1,
+            "row": 21
+          },
+          "location": {
+            "column": 1,
+            "row": 21
+          }
+        },
+        {
+          "content": "with contextlib.suppress(OSError)",
+          "end_location": {
+            "column": 12,
+            "row": 163
+          },
+          "location": {
+            "column": 9,
+            "row": 163
+          }
+        },
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 167
+          },
+          "location": {
+            "column": 1,
+            "row": 165
+          }
+        }
+      ],
+      "message": "Replace `try`-`except`-`pass` with `with contextlib.suppress(OSError): ...`"
+    },
+    "location": {
+      "column": 9,
+      "row": 163
+    },
+    "message": "Use `contextlib.suppress(OSError)` instead of `try`-`except`-`pass`",
+    "name": "suppressible-exception",
+    "noqa_row": 163,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/suppressible-exception"
+  },
+  {
+    "cell": null,
+    "code": "PTH108",
+    "end_location": {
+      "column": 22,
+      "row": 164
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/project.py",
+    "fix": null,
+    "location": {
+      "column": 13,
+      "row": 164
+    },
+    "message": "`os.unlink()` should be replaced by `Path.unlink()`",
+    "name": "os-unlink",
+    "noqa_row": 164,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/os-unlink"
+  },
+  {
+    "cell": null,
+    "code": "SIM105",
+    "end_location": {
+      "column": 13,
+      "row": 171
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/project.py",
+    "fix": {
+      "applicability": "unsafe",
+      "edits": [
+        {
+          "content": "import contextlib\n",
+          "end_location": {
+            "column": 1,
+            "row": 21
+          },
+          "location": {
+            "column": 1,
+            "row": 21
+          }
+        },
+        {
+          "content": "with contextlib.suppress(OSError)",
+          "end_location": {
+            "column": 8,
+            "row": 168
+          },
+          "location": {
+            "column": 5,
+            "row": 168
+          }
+        },
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 172
+          },
+          "location": {
+            "column": 1,
+            "row": 170
+          }
+        }
+      ],
+      "message": "Replace `try`-`except`-`pass` with `with contextlib.suppress(OSError): ...`"
+    },
+    "location": {
+      "column": 5,
+      "row": 168
+    },
+    "message": "Use `contextlib.suppress(OSError)` instead of `try`-`except`-`pass`",
+    "name": "suppressible-exception",
+    "noqa_row": 168,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/suppressible-exception"
+  },
+  {
+    "cell": null,
+    "code": "PTH101",
+    "end_location": {
+      "column": 17,
+      "row": 169
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/project.py",
+    "fix": null,
+    "location": {
+      "column": 9,
+      "row": 169
+    },
+    "message": "`os.chmod()` should be replaced by `Path.chmod()`",
+    "name": "os-chmod",
+    "noqa_row": 169,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/os-chmod"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 83,
+      "row": 33
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/properties.py",
+    "fix": null,
+    "location": {
+      "column": 19,
+      "row": 33
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 33,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 97,
+      "row": 35
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/properties.py",
+    "fix": null,
+    "location": {
+      "column": 19,
+      "row": 35
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 35,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 14,
+      "row": 102
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/treatments.py",
+    "fix": null,
+    "location": {
+      "column": 19,
+      "row": 99
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 99,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 76,
+      "row": 104
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/treatments.py",
+    "fix": null,
+    "location": {
+      "column": 19,
+      "row": 104
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 104,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 61,
+      "row": 167
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/treatments.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 167
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 167,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 71,
+      "row": 169
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/treatments.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 169
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 169,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 68,
+      "row": 173
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/treatments.py",
+    "fix": null,
+    "location": {
+      "column": 19,
+      "row": 173
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 173,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 14,
+      "row": 188
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/treatments.py",
+    "fix": null,
+    "location": {
+      "column": 19,
+      "row": 184
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 184,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 76,
+      "row": 190
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/treatments.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 190
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 190,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 51,
+      "row": 37
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/v3.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 37
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 37,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 10,
+      "row": 41
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/v3.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 39
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 39,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 51,
+      "row": 46
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/v3.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 46
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 46,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 75,
+      "row": 181
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/v3.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 181
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 181,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "SIM105",
+    "end_location": {
+      "column": 13,
+      "row": 79
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/watch.py",
+    "fix": null,
+    "location": {
+      "column": 5,
+      "row": 74
+    },
+    "message": "Use `contextlib.suppress(OSError, RuntimeError)` instead of `try`-`except`-`pass`",
+    "name": "suppressible-exception",
+    "noqa_row": 74,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/suppressible-exception"
+  },
+  {
+    "cell": null,
+    "code": "TRY300",
+    "end_location": {
+      "column": 43,
+      "row": 149
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/watch.py",
+    "fix": null,
+    "location": {
+      "column": 9,
+      "row": 149
+    },
+    "message": "Consider moving this statement to an `else` block",
+    "name": "try-consider-else",
+    "noqa_row": 149,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/try-consider-else"
+  },
+  {
+    "cell": null,
+    "code": "BLE001",
+    "end_location": {
+      "column": 29,
+      "row": 190
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/watch.py",
+    "fix": null,
+    "location": {
+      "column": 20,
+      "row": 190
+    },
+    "message": "Do not catch blind exception: `Exception`",
+    "name": "blind-except",
+    "noqa_row": 190,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/blind-except"
+  },
+  {
+    "cell": null,
+    "code": "BLE001",
+    "end_location": {
+      "column": 29,
+      "row": 231
+    },
+    "filename": "/work/repo/cli_anything/nightscout/core/watch.py",
+    "fix": null,
+    "location": {
+      "column": 20,
+      "row": 231
+    },
+    "message": "Do not catch blind exception: `Exception`",
+    "name": "blind-except",
+    "noqa_row": 231,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/blind-except"
+  },
+  {
+    "cell": null,
+    "code": "ARG001",
+    "end_location": {
+      "column": 51,
+      "row": 103
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 48,
+      "row": 103
+    },
+    "message": "Unused function argument: `ctx`",
+    "name": "unused-function-argument",
+    "noqa_row": 103,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-function-argument"
+  },
+  {
+    "cell": null,
+    "code": "RET504",
+    "end_location": {
+      "column": 24,
+      "row": 138
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": {
+      "applicability": "unsafe",
+      "edits": [
+        {
+          "content": "return",
+          "end_location": {
+            "column": 19,
+            "row": 137
+          },
+          "location": {
+            "column": 13,
+            "row": 137
+          }
+        },
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 139
+          },
+          "location": {
+            "column": 1,
+            "row": 138
+          }
+        }
+      ],
+      "message": "Remove unnecessary assignment"
+    },
+    "location": {
+      "column": 20,
+      "row": 138
+    },
+    "message": "Unnecessary assignment to `name` before `return` statement",
+    "name": "unnecessary-assign",
+    "noqa_row": 138,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unnecessary-assign"
+  },
+  {
+    "cell": null,
+    "code": "BLE001",
+    "end_location": {
+      "column": 21,
+      "row": 140
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 12,
+      "row": 140
+    },
+    "message": "Do not catch blind exception: `Exception`",
+    "name": "blind-except",
+    "noqa_row": 140,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/blind-except"
+  },
+  {
+    "cell": null,
+    "code": "ARG001",
+    "end_location": {
+      "column": 17,
+      "row": 144
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 14,
+      "row": 144
+    },
+    "message": "Unused function argument: `ctx`",
+    "name": "unused-function-argument",
+    "noqa_row": 144,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-function-argument"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 10,
+      "row": 164
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 161
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 161,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "BLE001",
+    "end_location": {
+      "column": 25,
+      "row": 331
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 16,
+      "row": 331
+    },
+    "message": "Do not catch blind exception: `Exception`",
+    "name": "blind-except",
+    "noqa_row": 331,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/blind-except"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 10,
+      "row": 632
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 628
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 628,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 10,
+      "row": 693
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 690
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 690,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "BLE001",
+    "end_location": {
+      "column": 25,
+      "row": 733
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 16,
+      "row": 733
+    },
+    "message": "Do not catch blind exception: `Exception`",
+    "name": "blind-except",
+    "noqa_row": 733,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/blind-except"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 88,
+      "row": 1834
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 19,
+      "row": 1834
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 1834,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 87,
+      "row": 2001
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 2001
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 2001,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "PTH123",
+    "end_location": {
+      "column": 22,
+      "row": 2004
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 18,
+      "row": 2004
+    },
+    "message": "`open()` should be replaced by `Path.open()`",
+    "name": "builtin-open",
+    "noqa_row": 2004,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/builtin-open"
+  },
+  {
+    "cell": null,
+    "code": "UP015",
+    "end_location": {
+      "column": 37,
+      "row": 2004
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 37,
+            "row": 2004
+          },
+          "location": {
+            "column": 32,
+            "row": 2004
+          }
+        }
+      ],
+      "message": "Remove mode argument"
+    },
+    "location": {
+      "column": 34,
+      "row": 2004
+    },
+    "message": "Unnecessary mode argument",
+    "name": "redundant-open-modes",
+    "noqa_row": 2004,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/redundant-open-modes"
+  },
+  {
+    "cell": null,
+    "code": "B904",
+    "end_location": {
+      "column": 80,
+      "row": 2007
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 13,
+      "row": 2007
+    },
+    "message": "Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling",
+    "name": "raise-without-from-inside-except",
+    "noqa_row": 2007,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-without-from-inside-except"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 80,
+      "row": 2007
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 19,
+      "row": 2007
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 2007,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "B904",
+    "end_location": {
+      "column": 80,
+      "row": 2012
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 13,
+      "row": 2012
+    },
+    "message": "Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling",
+    "name": "raise-without-from-inside-except",
+    "noqa_row": 2012,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-without-from-inside-except"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 80,
+      "row": 2012
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 19,
+      "row": 2012
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 2012,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 100,
+      "row": 2014
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 2014
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 2014,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 10,
+      "row": 2020
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 2016
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 2016,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 81,
+      "row": 2166
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 19,
+      "row": 2166
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 2166,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 10,
+      "row": 2238
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 2236
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 2236,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 58,
+      "row": 2360
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 15,
+      "row": 2360
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 2360,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "TRY003",
+    "end_location": {
+      "column": 90,
+      "row": 2608
+    },
+    "filename": "/work/repo/cli_anything/nightscout/nightscout_cli.py",
+    "fix": null,
+    "location": {
+      "column": 19,
+      "row": 2608
+    },
+    "message": "Avoid specifying long messages outside the exception class",
+    "name": "raise-vanilla-args",
+    "noqa_row": 2608,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/raise-vanilla-args"
+  },
+  {
+    "cell": null,
+    "code": "I001",
+    "end_location": {
+      "column": 16,
+      "row": 27
+    },
+    "filename": "/work/repo/cli_anything/nightscout/utils/nightscout_backend.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from __future__ import annotations\n\nimport hashlib\nimport json\nimport os\nimport time\nfrom typing import Any\nfrom urllib.parse import urlparse\n\nimport requests\n\n",
+          "end_location": {
+            "column": 1,
+            "row": 30
+          },
+          "location": {
+            "column": 1,
+            "row": 18
+          }
+        }
+      ],
+      "message": "Organize imports"
+    },
+    "location": {
+      "column": 1,
+      "row": 18
+    },
+    "message": "Import block is un-sorted or un-formatted",
+    "name": "unsorted-imports",
+    "noqa_row": 18,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unsorted-imports"
+  },
+  {
+    "cell": null,
+    "code": "SIM102",
+    "end_location": {
+      "column": 63,
+      "row": 65
+    },
+    "filename": "/work/repo/cli_anything/nightscout/utils/nightscout_backend.py",
+    "fix": {
+      "applicability": "unsafe",
+      "edits": [
+        {
+          "content": "    if raw is not None and raw.strip().lower() in (\"0\", \"false\", \"no\", \"off\"):\n        return False",
+          "end_location": {
+            "column": 25,
+            "row": 66
+          },
+          "location": {
+            "column": 1,
+            "row": 64
+          }
+        }
+      ],
+      "message": "Combine `if` statements using `and`"
+    },
+    "location": {
+      "column": 5,
+      "row": 64
+    },
+    "message": "Use a single `if` statement instead of nested `if` statements",
+    "name": "collapsible-if",
+    "noqa_row": 64,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/collapsible-if"
+  },
+  {
+    "cell": null,
+    "code": "BLE001",
+    "end_location": {
+      "column": 21,
+      "row": 328
+    },
+    "filename": "/work/repo/cli_anything/nightscout/utils/nightscout_backend.py",
+    "fix": null,
+    "location": {
+      "column": 12,
+      "row": 328
+    },
+    "message": "Do not catch blind exception: `Exception`",
+    "name": "blind-except",
+    "noqa_row": 328,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/blind-except"
+  },
+  {
+    "cell": null,
+    "code": "I001",
+    "end_location": {
+      "column": 68,
+      "row": 501
+    },
+    "filename": "/work/repo/cli_anything/nightscout/utils/repl_skin.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "            from prompt_toolkit import PromptSession\n            from prompt_toolkit.auto_suggest import AutoSuggestFromHistory\n            from prompt_toolkit.formatted_text import FormattedText\n            from prompt_toolkit.history import FileHistory\n",
+          "end_location": {
+            "column": 1,
+            "row": 502
+          },
+          "location": {
+            "column": 1,
+            "row": 498
+          }
+        }
+      ],
+      "message": "Organize imports"
+    },
+    "location": {
+      "column": 13,
+      "row": 498
+    },
+    "message": "Import block is un-sorted or un-formatted",
+    "name": "unsorted-imports",
+    "noqa_row": 498,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unsorted-imports"
+  },
+  {
+    "cell": null,
+    "code": "TRY300",
+    "end_location": {
+      "column": 27,
+      "row": 511
+    },
+    "filename": "/work/repo/cli_anything/nightscout/utils/repl_skin.py",
+    "fix": null,
+    "location": {
+      "column": 13,
+      "row": 511
+    },
+    "message": "Consider moving this statement to an `else` block",
+    "name": "try-consider-else",
+    "noqa_row": 511,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/try-consider-else"
+  },
+  {
+    "cell": null,
+    "code": "RET504",
+    "end_location": {
+      "column": 27,
+      "row": 511
+    },
+    "filename": "/work/repo/cli_anything/nightscout/utils/repl_skin.py",
+    "fix": {
+      "applicability": "unsafe",
+      "edits": [
+        {
+          "content": "return",
+          "end_location": {
+            "column": 22,
+            "row": 505
+          },
+          "location": {
+            "column": 13,
+            "row": 505
+          }
+        },
+        {
+          "content": "",
+          "end_location": {
+            "column": 1,
+            "row": 512
+          },
+          "location": {
+            "column": 1,
+            "row": 511
+          }
+        }
+      ],
+      "message": "Remove unnecessary assignment"
+    },
+    "location": {
+      "column": 20,
+      "row": 511
+    },
+    "message": "Unnecessary assignment to `session` before `return` statement",
+    "name": "unnecessary-assign",
+    "noqa_row": 511,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unnecessary-assign"
+  },
+  {
+    "cell": null,
+    "code": "RET505",
+    "end_location": {
+      "column": 13,
+      "row": 534
+    },
+    "filename": "/work/repo/cli_anything/nightscout/utils/repl_skin.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "        raw_prompt = self.prompt(project_name, modified, context)\n        return input(raw_prompt).strip()",
+          "end_location": {
+            "column": 45,
+            "row": 536
+          },
+          "location": {
+            "column": 1,
+            "row": 534
+          }
+        }
+      ],
+      "message": "Remove unnecessary `else`"
+    },
+    "location": {
+      "column": 9,
+      "row": 534
+    },
+    "message": "Unnecessary `else` after `return` statement",
+    "name": "superfluous-else-return",
+    "noqa_row": 534,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/superfluous-else-return"
+  }
+]

@@ -42,7 +42,7 @@ jobs:
         run: |
           python -m pytest tests \
             --cov=cli_anything --cov-report=term-missing \
-            --cov-report=xml --cov-fail-under=73 \
+            --cov-report=xml --cov-fail-under=78 \
             -q --durations=10
       - name: Upload coverage
         if: always() && matrix.python-version == '3.12'

@@ -78,6 +78,70 @@ stored on the server — the same events Nightscout uses for its sensor-age
 pill in the web UI. This is the canonical answer for "when did Sophie last
 change her sensor?".
 
+### Care Portal event types (v2.2.0+)
+
+`treatments add` posts a generic record. Event types with *structured*
+semantics get dedicated verbs that validate the field combinations before
+anything is sent — a Temp Basal with no rate, or a Temporary Target with
+swapped bounds, is a record the server stores happily and every consumer
+silently misreads.
+
+```bash
+# Temp basal: relative (-50 = half the profile basal) or absolute (U/hr)
+cli-anything-nightscout treatments temp-basal --duration 30 --percent -50
+cli-anything-nightscout treatments temp-basal --duration 45 --absolute 0.85
+cli-anything-nightscout treatments temp-basal --duration 0          # cancel
+
+# Temporary target (loop/AAPS override target)
+cli-anything-nightscout treatments temp-target \
+    --target-top 120 --target-bottom 100 --duration 60 --reason Activity
+cli-anything-nightscout treatments temp-target --duration 0         # cancel
+
+# Profile switch, combo (dual-wave) bolus, exercise, notes, announcements
+cli-anything-nightscout treatments profile-switch --profile Weekend --duration 180
+cli-anything-nightscout treatments combo-bolus --insulin 6 --split-now 60 --duration 90
+cli-anything-nightscout treatments exercise --duration 45 --notes "5k run"
+cli-anything-nightscout treatments note --message "felt low" --duration 15
+cli-anything-nightscout treatments announcement --message "pump failure"
+
+# Timestamp-only care events — validated against the Care Portal list, since
+# these exact strings drive the CAGE/SAGE/IAGE age counters
+cli-anything-nightscout treatments care-event "Site Change"
+cli-anything-nightscout treatments event-types --json     # what's accepted
+
+# Anything else: arbitrary fields on the generic add
+cli-anything-nightscout treatments add --event-type "Meal Bolus" --insulin 4 \
+    --pre-bolus 15 --field isSMB=true --field programmed=4.0
+```
+
+`combo-bolus` follows Nightscout's model: `--insulin` is the **total** dose,
+`splitNow`/`splitExt` are percentages that must sum to 100, the immediate
+portion lands in `insulin` and the whole dose in `enteredinsulin` (what the
+IOB plugin reads), so IOB is not double-counted.
+
+### Is an override running right now?
+
+```bash
+# Duration-bearing treatments still in effect (temp basal, temp target,
+# profile switch, exercise…) with remaining minutes
+cli-anything-nightscout treatments active --json
+cli-anything-nightscout treatments active --event-type "Temp Basal"
+```
+
+Check this *before* stacking another override. Zero-duration records are
+cancels in Nightscout's model and never report as active.
+
+### Insulin + carb totals
+
+```bash
+cli-anything-nightscout report tdd --days 14 --tz Europe/London
+```
+
+Per-day bolus insulin, bolus count, carbs and carb events, plus averages and
+an observed g-per-unit ratio. **Bolus only** — a `Temp Basal` is a *rate*, not
+a dose, so basal delivery is excluded and the JSON says
+`"includes_basal": false` rather than passing the number off as a true TDD.
+
 ### Dry-run is network-safe (v2.1.0+)
 
 `--dry-run` now describes the request without sending it — every mutating
@@ -129,7 +193,7 @@ cli-anything-nightscout session info
 | `config` | Manage server URL + API secret/token (`set`, `show`, `clear`, `test`) |
 | `status` | Server identity (`info`, `version`, `versions`, `last-modified`, `verifyauth`) |
 | `entries` | CGM entries (`latest`, `current`, `list`, `get`, `add`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize`) |
-| `treatments` | Treatment events incl. boluses, meals, site/sensor changes (`latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`) |
+| `treatments` | Treatment events incl. boluses, meals, site/sensor changes (`latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`, `active`, `event-types`) plus validated Care Portal verbs (`temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`) |
 | `profile` | Profile records (`active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `create`, `update`, `delete`) |
 | `devicestatus` | Pump/CGM status (`latest`, `list`, `add`, `delete`) |
 | `sensors` | CGM sensor-session detection from `Sensor Start` / `Sensor Change` treatments (`sessions`) |
@@ -137,7 +201,7 @@ cli-anything-nightscout session info
 | `notifications` | Alarm `ack` + `admin` notices |
 | `activity` | Activity / exercise records — API v3 (`latest`, `list`, `get`, `add`, `delete`) |
 | `food` | Food database (`list`, `quickpicks`, `regular`, `add`, `update`, `delete`) |
-| `report` | Computed reports: `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, plus composed snapshots `sensor-life` and `iob-cob` |
+| `report` | Computed reports: `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `tdd`, plus composed snapshots `sensor-life` and `iob-cob` |
 | `v3` | Generic CRUD + sync over any v3 collection (`list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history`) |
 | `watch` | Real-time entries/treatments via socket.io (needs `pip install '.[watch]'`) |
 | `session` | Session state (`info`, `save`, `load`, `clear`) |

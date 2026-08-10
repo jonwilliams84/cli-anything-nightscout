@@ -815,6 +815,106 @@ class TestRefineCLISubprocess:
         if not _is_live_mode():
             assert any(r.get("carbs") == 45 for r in rows if isinstance(r, dict))
 
+    # ---- Care Portal event types (temp basal / temp target / …) ----
+
+    def test_temp_basal_then_active(self, server_url_and_secret, tmp_path):
+        """Post a running Temp Basal, then see it in `treatments active`."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "treatments", "temp-basal",
+                        "--duration", "45", "--percent", "-50",
+                        "--reason", "e2e"], env=env)
+        assert r.returncode == 0, r.stderr
+        posted = json.loads(r.stdout)
+        recs = posted if isinstance(posted, list) else [posted]
+        assert recs and recs[0].get("eventType") == "Temp Basal"
+        assert recs[0].get("percent") == -50
+        assert recs[0].get("duration") == 45
+
+        r = self._run(["--json", "treatments", "active", "--hours", "2"], env=env)
+        assert r.returncode == 0, r.stderr
+        rows = json.loads(r.stdout)
+        assert isinstance(rows, list)
+        if not _is_live_mode():
+            temps = [x for x in rows if x.get("eventType") == "Temp Basal"]
+            assert temps, f"posted temp basal not reported active: {rows}"
+            assert 0 < temps[0]["remaining_minutes"] <= 45
+            assert temps[0]["is_override"] is True
+
+    def test_temp_target_roundtrip_and_cancel(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "treatments", "temp-target",
+                        "--target-top", "120", "--target-bottom", "100",
+                        "--duration", "60", "--reason", "Activity",
+                        "--units", "mg/dl"], env=env)
+        assert r.returncode == 0, r.stderr
+        rec = json.loads(r.stdout)
+        rec = rec[0] if isinstance(rec, list) else rec
+        assert rec.get("eventType") == "Temporary Target"
+        assert rec.get("targetTop") == 120
+        assert rec.get("targetBottom") == 100
+        # duration 0 with no targets is the canonical cancel record.
+        r = self._run(["--json", "treatments", "temp-target", "--duration", "0"], env=env)
+        assert r.returncode == 0, r.stderr
+        cancel = json.loads(r.stdout)
+        cancel = cancel[0] if isinstance(cancel, list) else cancel
+        assert cancel.get("duration") == 0
+        assert cancel.get("targetTop") == 0
+
+    def test_care_event_and_event_types(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "treatments", "event-types"], env=env)
+        assert r.returncode == 0, r.stderr
+        assert "Site Change" in json.loads(r.stdout)["care_events"]
+        r = self._run(["--json", "treatments", "care-event", "Site Change",
+                        "--notes", "e2e"], env=env)
+        assert r.returncode == 0, r.stderr
+        rec = json.loads(r.stdout)
+        rec = rec[0] if isinstance(rec, list) else rec
+        assert rec.get("eventType") == "Site Change"
+
+    def test_temp_basal_validation_fails_without_rate(self, server_url_and_secret, tmp_path):
+        """A Temp Basal with no percent/absolute must be refused client-side."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "treatments", "temp-basal", "--duration", "30"],
+                       env=env, check=False)
+        assert r.returncode != 0
+        assert "percent or absolute" in (r.stderr + r.stdout)
+
+    def test_report_tdd_after_bolus(self, server_url_and_secret, tmp_path):
+        """Post a meal bolus, then confirm `report tdd` counts it."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "treatments", "add",
+                        "--event-type", "Meal Bolus",
+                        "--carbs", "42", "--insulin", "4.2"], env=env)
+        assert r.returncode == 0, r.stderr
+        # A Temp Basal must NOT be summed into the bolus total.
+        self._run(["--json", "treatments", "temp-basal",
+                    "--duration", "30", "--absolute", "0.9"], env=env)
+        r = self._run(["--json", "report", "tdd", "--days", "2", "--tz", "UTC"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["includes_basal"] is False
+        assert isinstance(data["days"], list)
+        if not _is_live_mode():
+            assert data["totals"]["insulin_units"] >= 4.2
+            assert data["totals"]["carbs_g"] >= 42
+            assert data["totals"]["bolus_count"] >= 1
+
+    def test_add_field_passthrough(self, server_url_and_secret, tmp_path):
+        """`--field k=v` reaches the server as a real record field."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "treatments", "add",
+                        "--event-type", "Meal Bolus", "--insulin", "1",
+                        "--pre-bolus", "15",
+                        "--field", "isSMB=true",
+                        "--field", "programmed=1.5"], env=env)
+        assert r.returncode == 0, r.stderr
+        rec = json.loads(r.stdout)
+        rec = rec[0] if isinstance(rec, list) else rec
+        assert rec.get("preBolus") == 15
+        assert rec.get("isSMB") is True
+        assert rec.get("programmed") == 1.5
+
     # ---- v3 search ----
 
     def test_v3_search_via_filter(self, server_url_and_secret, tmp_path):

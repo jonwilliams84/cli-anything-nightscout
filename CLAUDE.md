@@ -6,7 +6,7 @@ APIs (v1 + v3). It is a structured HTTP client only — it runs no server/DB and
 data; analytic reports (TIR, GMI, AGP, MAGE…) are computed locally from server responses.
 
 ## Layout
-- `cli_anything/nightscout/nightscout_cli.py` — Click entrypoint (`main`), wires all command groups (~2250 lines).
+- `cli_anything/nightscout/nightscout_cli.py` — Click entrypoint (`main`), wires all command groups (~3270 lines).
 - `cli_anything/nightscout/core/*.py` — one module per domain (entries, treatments, profile, devicestatus, sensors, properties, notifications, activity, food, report, excursions, v3, watch) + `project.py` (session/config state).
 - `cli_anything/nightscout/utils/nightscout_backend.py` — HTTP transport, auth, retries; `repl_skin.py` — REPL UI.
 - `tests/` — unit tests + `test_full_e2e.py` (needs a live server). `scripts/` — standalone HA→Nightscout sensor-change bridge cron scripts (not part of the package).
@@ -27,6 +27,7 @@ data; analytic reports (TIR, GMI, AGP, MAGE…) are computed locally from server
 - Every destructive verb needs `--yes` for non-interactive use; without a TTY and without `--yes` it aborts (never blocks).
 - `entries delete <id>` takes only a 24-hex ObjectId. Bulk delete is `entries delete-by-type <type> --before <iso> --apply --yes` (requires `--before`/`--after`, lists matched IDs first).
 - Against production, prefer a **read-only token** unless mutations are required.
+- Structured Care Portal verbs (v2.2.0+): `treatments temp-basal|temp-target|profile-switch|combo-bolus|announcement|note|exercise|care-event` validate field combos client-side (`--duration 0` = cancel for temp basal/target; `combo-bolus --insulin` is the TOTAL dose and splits must sum to 100). `treatments active` = which duration-bearing overrides are running now; `report tdd` = per-day **bolus-only** insulin/carbs (`includes_basal: false`). Escape hatch: `treatments add --field KEY=VALUE` (repeatable).
 - All commands accept `--json`. Transport env knobs: `NIGHTSCOUT_TIMEOUT`, `NIGHTSCOUT_RETRIES`, `NIGHTSCOUT_VERIFY_SSL`, `NIGHTSCOUT_CA_BUNDLE`, `NIGHTSCOUT_UNITS`.
 
 ## Conventions

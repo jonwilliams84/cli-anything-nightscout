@@ -32,7 +32,7 @@ from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -849,6 +849,17 @@ def treatments_get(ctx: click.Context, spec: str) -> None:
 @click.option("--notes", default=None)
 @click.option("--entered-by", default="cli-anything-nightscout")
 @click.option("--created-at", default=None, help="ISO timestamp (default: now)")
+@click.option("--duration", type=float, default=None, help="Duration in minutes (event-dependent)")
+@click.option("--pre-bolus", type=int, default=None, help="Pre-bolus lead time in minutes")
+@click.option("--reason", default=None, help="Free-text reason (used by loop event types)")
+@click.option(
+    "--field",
+    "fields",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help="Extra Care Portal field, repeatable (e.g. --field targetTop=120). "
+    "Values are coerced to int/float/bool/null when they look like one.",
+)
 @click.pass_context
 def treatments_add(
     ctx: click.Context,
@@ -860,9 +871,32 @@ def treatments_add(
     notes: str | None,
     entered_by: str,
     created_at: str | None,
+    duration: float | None,
+    pre_bolus: int | None,
+    reason: str | None,
+    fields: tuple[str, ...],
 ) -> None:
+    """Post a treatment record.
+
+    For event types with structured semantics (Temp Basal, Temporary Target,
+    Profile Switch, Combo Bolus) prefer the dedicated verbs — they validate
+    the field combinations. Use `--field` here for anything else.
+    """
     conn = _conn(ctx)
     _require_url(conn)
+    extra = _parse_field_pairs(fields)
+    if duration is not None:
+        extra["duration"] = duration
+    if pre_bolus is not None:
+        extra["preBolus"] = pre_bolus
+    if reason is not None:
+        extra["reason"] = reason
+    if event_type not in treatments_mod.KNOWN_EVENT_TYPES:
+        click.echo(
+            f"  ⚠ '{event_type}' is not a known Care Portal event type; the server will "
+            f"store it but plugins may ignore it. See `treatments event-types`.",
+            err=True,
+        )
     if _dry_run_block(
         ctx,
         "POST /treatments.json",
@@ -873,20 +907,25 @@ def treatments_add(
             "glucose": glucose,
             "glucoseType": glucose_type,
             "notes": notes,
+            **extra,
         },
     ):
         return
-    res = treatments_mod.add_treatment(
-        event_type=event_type,
-        carbs=carbs,
-        insulin=insulin,
-        glucose=glucose,
-        glucose_type=glucose_type,
-        notes=notes,
-        entered_by=entered_by,
-        created_at=created_at,
-        conn=conn,
-    )
+    try:
+        res = treatments_mod.add_treatment(
+            event_type=event_type,
+            carbs=carbs,
+            insulin=insulin,
+            glucose=glucose,
+            glucose_type=glucose_type,
+            notes=notes,
+            entered_by=entered_by,
+            created_at=created_at,
+            extra=extra or None,
+            conn=conn,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
     _maybe_save_session(ctx, action="treatments.add", detail=event_type)
     _emit(ctx, res, human=f"posted treatment: {event_type}")
 
@@ -2737,6 +2776,491 @@ def report_iob_cob(ctx: click.Context) -> None:
             f"  Δ5min:      {s.get('delta_5min') if s.get('delta_5min') is not None else '—'}"
         )
         click.echo(f"  Loop:       {s.get('loop_label') or '—'}")
+
+
+# ─── treatments: Care Portal event builders ────────────────────────────────
+#
+# `treatments add` posts a generic record. These verbs cover the Care Portal
+# event types that need *structured, validated* extra fields — a Temp Basal
+# with no percent/absolute, or a Temporary Target with swapped bounds, is a
+# record the server happily stores and every consumer silently misreads.
+
+
+def _parse_field_pairs(pairs: tuple[str, ...]) -> dict[str, Any]:
+    """Parse repeated ``--field key=value`` into a payload dict.
+
+    Values are coerced: ints/floats stay numeric, ``true``/``false`` become
+    booleans, ``null`` becomes None, everything else stays a string. Quote the
+    value to force a string (``--field percent="50"`` is still numeric — use
+    ``--field notes='50'`` semantics only where the field is textual).
+    """
+    out: dict[str, Any] = {}
+    for raw in pairs or ():
+        if "=" not in raw:
+            raise click.ClickException(f"--field expects key=value (got {raw!r})")
+        key, _, value = raw.partition("=")
+        key = key.strip()
+        if not key:
+            raise click.ClickException(f"--field has an empty key (got {raw!r})")
+        val = value.strip()
+        low = val.lower()
+        parsed: Any
+        if low in ("true", "false"):
+            parsed = low == "true"
+        elif low in ("null", "none"):
+            parsed = None
+        else:
+            try:
+                parsed = int(val)
+            except ValueError:
+                try:
+                    parsed = float(val)
+                except ValueError:
+                    parsed = val
+        out[key] = parsed
+    return out
+
+
+def _post_treatment(
+    ctx: click.Context,
+    builder: Any,
+    *,
+    event_type: str,
+    action: str,
+    preview: dict[str, Any],
+    pass_event_type: bool = False,
+    **kwargs: Any,
+) -> None:
+    """Shared plumbing for the Care Portal verbs: dry-run, POST, save, emit.
+
+    ``pass_event_type`` forwards ``event_type`` to the builder as well (needed
+    by the generic care-event builder, which validates the string itself).
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    if _dry_run_block(
+        ctx,
+        "POST /treatments.json",
+        payload={"eventType": event_type, **preview},
+    ):
+        return
+    if pass_event_type:
+        kwargs["event_type"] = event_type
+    try:
+        res = builder(conn=conn, **kwargs)
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+    _maybe_save_session(ctx, action=action, detail=event_type)
+    _emit(ctx, res, human=f"posted treatment: {event_type}")
+
+
+@treatments_grp.command("temp-basal")
+@click.option("--duration", required=True, type=float, help="Minutes; 0 cancels a running temp.")
+@click.option(
+    "--percent",
+    type=float,
+    default=None,
+    help="Relative delta vs profile basal (-50 = half basal, 0 = no change).",
+)
+@click.option("--absolute", type=float, default=None, help="Flat rate in U/hr.")
+@click.option("--reason", default=None, help="Free-text reason (loop algorithms set this).")
+@click.option("--notes", default=None)
+@click.option("--entered-by", default="cli-anything-nightscout")
+@click.option("--created-at", default=None, help="ISO timestamp (default: now)")
+@click.pass_context
+def treatments_temp_basal(
+    ctx: click.Context,
+    duration: float,
+    percent: float | None,
+    absolute: float | None,
+    reason: str | None,
+    notes: str | None,
+    entered_by: str,
+    created_at: str | None,
+) -> None:
+    """Record a Temp Basal (--percent OR --absolute; --duration 0 cancels)."""
+    _post_treatment(
+        ctx,
+        treatments_mod.add_temp_basal,
+        event_type="Temp Basal",
+        action="treatments.temp_basal",
+        preview={"duration": duration, "percent": percent, "absolute": absolute},
+        duration=duration,
+        percent=percent,
+        absolute=absolute,
+        reason=reason,
+        notes=notes,
+        entered_by=entered_by,
+        created_at=created_at,
+    )
+
+
+@treatments_grp.command("temp-target")
+@click.option("--target-top", type=float, default=None, help="Upper bound of the override target.")
+@click.option("--target-bottom", type=float, default=None, help="Lower bound.")
+@click.option(
+    "--duration", required=True, type=float, help="Minutes; 0 cancels a running temp target."
+)
+@click.option("--reason", default=None, help="e.g. 'Activity', 'Eating Soon', 'Hypo'.")
+@click.option(
+    "--units",
+    "target_units",
+    default=None,
+    type=click.Choice(["mg/dl", "mmol"]),
+    help="Units the targets are expressed in (stored on the record).",
+)
+@click.option("--notes", default=None)
+@click.option("--entered-by", default="cli-anything-nightscout")
+@click.option("--created-at", default=None, help="ISO timestamp (default: now)")
+@click.pass_context
+def treatments_temp_target(
+    ctx: click.Context,
+    target_top: float | None,
+    target_bottom: float | None,
+    duration: float,
+    reason: str | None,
+    target_units: str | None,
+    notes: str | None,
+    entered_by: str,
+    created_at: str | None,
+) -> None:
+    """Record a Temporary Target (--duration 0 with no targets cancels)."""
+    _post_treatment(
+        ctx,
+        treatments_mod.add_temp_target,
+        event_type="Temporary Target",
+        action="treatments.temp_target",
+        preview={
+            "duration": duration,
+            "targetTop": target_top,
+            "targetBottom": target_bottom,
+            "reason": reason,
+        },
+        target_top=target_top,
+        target_bottom=target_bottom,
+        duration=duration,
+        reason=reason,
+        units=target_units,
+        notes=notes,
+        entered_by=entered_by,
+        created_at=created_at,
+    )
+
+
+@treatments_grp.command("profile-switch")
+@click.option("--profile", required=True, help="Name of the profile to switch to.")
+@click.option("--duration", type=float, default=None, help="Minutes; omit for open-ended.")
+@click.option("--percentage", type=float, default=None, help="Scale the profile (100 = unchanged).")
+@click.option("--timeshift", type=float, default=None, help="Shift the profile by N hours.")
+@click.option("--notes", default=None)
+@click.option("--entered-by", default="cli-anything-nightscout")
+@click.option("--created-at", default=None, help="ISO timestamp (default: now)")
+@click.pass_context
+def treatments_profile_switch(
+    ctx: click.Context,
+    profile: str,
+    duration: float | None,
+    percentage: float | None,
+    timeshift: float | None,
+    notes: str | None,
+    entered_by: str,
+    created_at: str | None,
+) -> None:
+    """Record a Profile Switch treatment."""
+    _post_treatment(
+        ctx,
+        treatments_mod.add_profile_switch,
+        event_type="Profile Switch",
+        action="treatments.profile_switch",
+        preview={"profile": profile, "duration": duration, "percentage": percentage},
+        profile=profile,
+        duration=duration,
+        percentage=percentage,
+        timeshift=timeshift,
+        notes=notes,
+        entered_by=entered_by,
+        created_at=created_at,
+    )
+
+
+@treatments_grp.command("combo-bolus")
+@click.option("--insulin", required=True, type=float, help="TOTAL dose in units.")
+@click.option("--split-now", required=True, type=float, help="Percent delivered immediately.")
+@click.option("--split-ext", type=float, default=None, help="Percent extended (default: 100-now).")
+@click.option("--duration", type=float, default=0.0, help="Minutes over which the tail is spread.")
+@click.option("--carbs", type=float, default=None)
+@click.option("--notes", default=None)
+@click.option("--entered-by", default="cli-anything-nightscout")
+@click.option("--created-at", default=None, help="ISO timestamp (default: now)")
+@click.pass_context
+def treatments_combo_bolus(
+    ctx: click.Context,
+    insulin: float,
+    split_now: float,
+    split_ext: float | None,
+    duration: float,
+    carbs: float | None,
+    notes: str | None,
+    entered_by: str,
+    created_at: str | None,
+) -> None:
+    """Record a Combo Bolus (dual-wave: part now, part extended)."""
+    _post_treatment(
+        ctx,
+        treatments_mod.add_combo_bolus,
+        event_type="Combo Bolus",
+        action="treatments.combo_bolus",
+        preview={
+            "enteredinsulin": insulin,
+            "splitNow": split_now,
+            "splitExt": split_ext,
+            "duration": duration,
+        },
+        insulin=insulin,
+        split_now=split_now,
+        split_ext=split_ext,
+        duration=duration,
+        carbs=carbs,
+        notes=notes,
+        entered_by=entered_by,
+        created_at=created_at,
+    )
+
+
+@treatments_grp.command("announcement")
+@click.option(
+    "--message", "notes", required=True, help="Announcement body (broadcast to watchers)."
+)
+@click.option("--entered-by", default="cli-anything-nightscout")
+@click.option("--created-at", default=None, help="ISO timestamp (default: now)")
+@click.pass_context
+def treatments_announcement(
+    ctx: click.Context, notes: str, entered_by: str, created_at: str | None
+) -> None:
+    """Post an Announcement (isAnnouncement=1 — alarms/pushes to watchers)."""
+    _post_treatment(
+        ctx,
+        treatments_mod.add_announcement,
+        event_type="Announcement",
+        action="treatments.announcement",
+        preview={"notes": notes, "isAnnouncement": 1},
+        notes=notes,
+        entered_by=entered_by,
+        created_at=created_at,
+    )
+
+
+@treatments_grp.command("note")
+@click.option("--message", "notes", required=True, help="Note text.")
+@click.option("--duration", type=float, default=None, help="Optional span in minutes.")
+@click.option("--entered-by", default="cli-anything-nightscout")
+@click.option("--created-at", default=None, help="ISO timestamp (default: now)")
+@click.pass_context
+def treatments_note(
+    ctx: click.Context,
+    notes: str,
+    duration: float | None,
+    entered_by: str,
+    created_at: str | None,
+) -> None:
+    """Record a plain Note treatment."""
+    _post_treatment(
+        ctx,
+        treatments_mod.add_note,
+        event_type="Note",
+        action="treatments.note",
+        preview={"notes": notes, "duration": duration},
+        notes=notes,
+        duration=duration,
+        entered_by=entered_by,
+        created_at=created_at,
+    )
+
+
+@treatments_grp.command("exercise")
+@click.option("--duration", required=True, type=float, help="Minutes of activity.")
+@click.option("--notes", default=None)
+@click.option("--entered-by", default="cli-anything-nightscout")
+@click.option("--created-at", default=None, help="ISO timestamp (default: now)")
+@click.pass_context
+def treatments_exercise(
+    ctx: click.Context,
+    duration: float,
+    notes: str | None,
+    entered_by: str,
+    created_at: str | None,
+) -> None:
+    """Record an Exercise event lasting --duration minutes."""
+    _post_treatment(
+        ctx,
+        treatments_mod.add_exercise,
+        event_type="Exercise",
+        action="treatments.exercise",
+        preview={"duration": duration},
+        duration=duration,
+        notes=notes,
+        entered_by=entered_by,
+        created_at=created_at,
+    )
+
+
+@treatments_grp.command("care-event")
+@click.argument("event_type", type=click.Choice(list(treatments_mod.CARE_EVENT_TYPES)))
+@click.option("--notes", default=None)
+@click.option("--entered-by", default="cli-anything-nightscout")
+@click.option("--created-at", default=None, help="ISO timestamp (default: now)")
+@click.pass_context
+def treatments_care_event(
+    ctx: click.Context,
+    event_type: str,
+    notes: str | None,
+    entered_by: str,
+    created_at: str | None,
+) -> None:
+    """Record a timestamp-only care event (Site Change, Sensor Start, …).
+
+    These exact strings drive the CAGE/SAGE/IAGE age counters, so the event
+    type is validated against the Care Portal list.
+    """
+    _post_treatment(
+        ctx,
+        treatments_mod.add_care_event,
+        event_type=event_type,
+        action="treatments.care_event",
+        preview={"notes": notes},
+        pass_event_type=True,
+        notes=notes,
+        entered_by=entered_by,
+        created_at=created_at,
+    )
+
+
+@treatments_grp.command("event-types")
+@click.pass_context
+def treatments_event_types(ctx: click.Context) -> None:
+    """List the Care Portal event types this CLI knows about."""
+    payload = {
+        "common": list(treatments_mod.COMMON_EVENT_TYPES),
+        "care_events": list(treatments_mod.CARE_EVENT_TYPES),
+        "known": list(treatments_mod.KNOWN_EVENT_TYPES),
+        "glucose_types": list(treatments_mod.VALID_GLUCOSE_TYPES),
+    }
+    if _is_json(ctx):
+        _emit(ctx, payload)
+    else:
+        click.echo("  care events (timestamp-only):")
+        for e in payload["care_events"]:
+            click.echo(f"    {e}")
+        click.echo("  other known event types:")
+        for e in payload["known"]:
+            if e not in payload["care_events"]:
+                click.echo(f"    {e}")
+
+
+@treatments_grp.command("active")
+@click.option("--hours", default=24, type=int, help="Look-back window for candidate records.")
+@click.option(
+    "--event-type",
+    "event_types",
+    multiple=True,
+    help="Restrict to these eventTypes (repeatable).",
+)
+@click.pass_context
+def treatments_active(ctx: click.Context, hours: int, event_types: tuple[str, ...]) -> None:
+    """Duration-bearing treatments still in effect right now.
+
+    Answers "is a temp basal / temp target / profile switch running?" — the
+    thing an agent must check before stacking another override.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    conn = _conn(ctx)
+    _require_url(conn)
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(hours=hours)
+    txs = treatments_mod.list_treatments(
+        conn=conn,
+        count=5000,
+        date_gte=start.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+    )
+    rows = report_mod.active_treatments(
+        txs if isinstance(txs, list) else [],
+        now=end,
+        include_types=list(event_types) or None,
+    )
+    if _is_json(ctx):
+        _emit(ctx, rows)
+    elif not rows:
+        click.echo("  nothing active")
+    else:
+        for r in rows:
+            detail = []
+            for key in ("percent", "absolute", "targetBottom", "targetTop", "profile", "reason"):
+                if r.get(key) is not None:
+                    detail.append(f"{key}={r[key]}")
+            click.echo(
+                f"  {r['eventType']:<18} {r['remaining_minutes']:>6.1f}min left  "
+                f"(of {r['duration_minutes']:g})  {' '.join(detail)}"
+            )
+
+
+@report_grp.command("tdd")
+@click.option("--days", default=7, type=int, help="Window size in days (default 7).")
+@click.option("--from", "date_gte", default=None, help="ISO date lower bound (overrides --days).")
+@click.option("--to", "date_lte", default=None)
+@click.option(
+    "--tz", "tz_name", default=None, help="Day-boundary timezone (default: local system tz)."
+)
+@click.pass_context
+def report_tdd(
+    ctx: click.Context,
+    days: int,
+    date_gte: str | None,
+    date_lte: str | None,
+    tz_name: str | None,
+) -> None:
+    """Per-day bolus insulin + carbs totals from treatment records.
+
+    Basal delivery is NOT included (a Temp Basal is a rate, not a dose), so
+    the JSON payload carries ``includes_basal: false``.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    conn = _conn(ctx)
+    _require_url(conn)
+    tz = tz_name or _default_tz_name()
+    if not date_gte:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+        date_gte = start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        date_lte = date_lte or end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    limit = 50000
+    txs = treatments_mod.list_treatments(
+        conn=conn,
+        count=limit,
+        date_gte=date_gte,
+        date_lte=date_lte,
+    )
+    _warn_truncation(txs, limit=limit, ctx=ctx)
+    res = report_mod.treatment_totals(txs if isinstance(txs, list) else [], tz=tz)
+    if _is_json(ctx):
+        _emit(ctx, res)
+    elif not res["days"]:
+        click.echo("  no treatments in window")
+    else:
+        click.echo("  date          insulin   boluses    carbs   carb events")
+        for d in res["days"]:
+            click.echo(
+                f"  {d['date']}  {d['insulin_units']:>8.2f}  {d['bolus_count']:>7d}  "
+                f"{d['carbs_g']:>7.1f}  {d['carb_event_count']:>11d}"
+            )
+        t = res["totals"]
+        click.echo(
+            f"  ── {res['day_count']} day(s): {t['insulin_units']:.2f}U bolus, "
+            f"{t['carbs_g']:.0f}g carbs; avg/day "
+            f"{res['avg_daily_insulin_units']:.2f}U / {res['avg_daily_carbs_g']:.0f}g"
+        )
+        click.echo("  (bolus only — basal delivery is not included)")
 
 
 if __name__ == "__main__":

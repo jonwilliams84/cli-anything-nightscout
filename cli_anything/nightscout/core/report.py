@@ -36,7 +36,7 @@ import math
 import statistics
 from collections import defaultdict
 from collections.abc import Iterable
-from datetime import datetime, timezone, tzinfo
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any
 
 
@@ -756,3 +756,200 @@ def _parse_ts(ts: Any) -> datetime | None:
             except ValueError:
                 return None
     return None
+
+
+# ── Treatment-side analytics (insulin / carbs / active overrides) ─────────
+
+# Event types whose `insulin` field is a bolus the user actually took. A
+# "Temp Basal" also carries insulin-ish fields but represents a *rate*, so it
+# must never be summed into a bolus total.
+_BOLUS_EVENT_TYPES = frozenset(
+    {
+        "Bolus",
+        "Meal Bolus",
+        "Snack Bolus",
+        "Correction Bolus",
+        "Combo Bolus",
+        "Bolus Wizard",
+        "External Insulin",
+    }
+)
+
+# Event types that carry a `duration` but are rate/target overrides rather
+# than point events — these are what "is something running right now?" means.
+_OVERRIDE_EVENT_TYPES = frozenset(
+    {
+        "Temp Basal",
+        "Temporary Target",
+        "Profile Switch",
+        "Combo Bolus",
+        "Exercise",
+        "Announcement",
+        "Note",
+        "OpenAPS Offline",
+        "Suspend Pump",
+    }
+)
+
+
+def _num(value: Any) -> float | None:
+    """Best-effort numeric coercion; None for missing/garbage/NaN."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(num) or math.isinf(num):
+        return None
+    return num
+
+
+def treatment_totals(
+    treatments: list[dict[str, Any]],
+    *,
+    tz: tzinfo | str | None = None,
+) -> dict[str, Any]:
+    """Total daily dose (TDD-style) rollup over treatment records.
+
+    Buckets treatments by local calendar day (``tz``) and sums bolus insulin
+    and carbs. Rows are returned oldest→newest.
+
+    Only :data:`_BOLUS_EVENT_TYPES` contribute to ``insulin_units`` — a
+    ``Temp Basal`` is a rate, not a dose, so counting its fields would inflate
+    the total. Basal delivery is therefore *not* included and the payload says
+    so via ``includes_basal: false`` rather than pretending the number is a
+    true TDD.
+    """
+    by_day: dict[str, dict[str, Any]] = {}
+    skipped = 0
+    for t in treatments or []:
+        if not isinstance(t, dict):
+            skipped += 1
+            continue
+        day = _date_key(t.get("created_at") or t.get("timestamp") or t.get("date"), tz=tz)
+        if day is None:
+            skipped += 1
+            continue
+        row = by_day.setdefault(
+            day,
+            {
+                "date": day,
+                "insulin_units": 0.0,
+                "bolus_count": 0,
+                "carbs_g": 0.0,
+                "carb_event_count": 0,
+                "treatment_count": 0,
+            },
+        )
+        row["treatment_count"] += 1
+        event = t.get("eventType")
+        insulin = _num(t.get("insulin"))
+        if insulin is not None and insulin > 0 and event in _BOLUS_EVENT_TYPES:
+            row["insulin_units"] += insulin
+            row["bolus_count"] += 1
+        carbs = _num(t.get("carbs"))
+        if carbs is not None and carbs > 0:
+            row["carbs_g"] += carbs
+            row["carb_event_count"] += 1
+
+    days = []
+    for day in sorted(by_day):
+        row = by_day[day]
+        row["insulin_units"] = round(row["insulin_units"], 3)
+        row["carbs_g"] = round(row["carbs_g"], 2)
+        days.append(row)
+
+    day_count = len(days)
+    total_insulin = round(sum(d["insulin_units"] for d in days), 3)
+    total_carbs = round(sum(d["carbs_g"] for d in days), 2)
+    return {
+        "days": days,
+        "day_count": day_count,
+        "tz_used": str(getattr(_resolve_tz(tz), "key", _resolve_tz(tz))),
+        "includes_basal": False,
+        "totals": {
+            "insulin_units": total_insulin,
+            "carbs_g": total_carbs,
+            "bolus_count": sum(d["bolus_count"] for d in days),
+            "carb_event_count": sum(d["carb_event_count"] for d in days),
+            "treatment_count": sum(d["treatment_count"] for d in days),
+        },
+        "avg_daily_insulin_units": round(total_insulin / day_count, 3) if day_count else None,
+        "avg_daily_carbs_g": round(total_carbs / day_count, 2) if day_count else None,
+        "insulin_carb_ratio_g_per_unit": (
+            round(total_carbs / total_insulin, 2) if total_insulin > 0 else None
+        ),
+        "skipped_records": skipped,
+    }
+
+
+def active_treatments(
+    treatments: list[dict[str, Any]],
+    *,
+    now: datetime | None = None,
+    include_types: Iterable[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Which duration-bearing treatments are still in effect at ``now``.
+
+    A record is active when ``created_at <= now < created_at + duration``.
+    Zero-duration records are *cancels* in Nightscout's model, so they never
+    count as active. Rows are newest-first and carry ``ends_at`` plus
+    ``remaining_minutes`` so an agent can decide whether to wait or override.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    wanted = set(include_types) if include_types is not None else None
+
+    active: list[dict[str, Any]] = []
+    for t in treatments or []:
+        if not isinstance(t, dict):
+            continue
+        event = t.get("eventType")
+        if wanted is not None and event not in wanted:
+            continue
+        duration = _num(t.get("duration"))
+        if duration is None or duration <= 0:
+            continue
+        start = _parse_ts(t.get("created_at") or t.get("timestamp") or t.get("date"))
+        if start is None:
+            continue
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        end = start + timedelta(minutes=duration)
+        if not (start <= now < end):
+            continue
+        row: dict[str, Any] = {
+            "_id": t.get("_id"),
+            "eventType": event,
+            "created_at": t.get("created_at"),
+            "duration_minutes": duration,
+            "started_at": start.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "ends_at": end.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "elapsed_minutes": round((now - start).total_seconds() / 60.0, 1),
+            "remaining_minutes": round((end - now).total_seconds() / 60.0, 1),
+            "is_override": event in _OVERRIDE_EVENT_TYPES,
+        }
+        for field in (
+            "percent",
+            "absolute",
+            "rate",
+            "targetTop",
+            "targetBottom",
+            "profile",
+            "percentage",
+            "timeshift",
+            "reason",
+            "notes",
+            "splitNow",
+            "splitExt",
+            "enteredinsulin",
+        ):
+            if t.get(field) is not None:
+                row[field] = t[field]
+        active.append(row)
+
+    active.sort(key=lambda r: r.get("started_at") or "", reverse=True)
+    return active

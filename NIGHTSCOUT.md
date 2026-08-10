@@ -40,7 +40,7 @@ summary) are computed locally from data the server returns.
 | `config` | `set`, `show`, `clear`, `test` | Manage server URL + API secret/token |
 | `status` | `info`, `version`, `versions`, `last-modified`, `verifyauth` | Server health, identity, plugin manifest |
 | `entries` | `latest`, `current`, `list`, `get`, `add`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize` | CGM glucose entries |
-| `treatments` | `latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check` | Treatment events (boluses, meals, site/sensor changes) |
+| `treatments` | `latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`, `temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`, `event-types`, `active` | Treatment events (boluses, meals, site/sensor changes) + the structured Care Portal event types |
 | `profile` | `active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `create`, `update`, `delete` | Profile records and schedule lookups |
 | `devicestatus` | `latest`, `list`, `add`, `delete` | Device status |
 | `sensors` | `sessions` | CGM sensor-session detection (windows between `Sensor Start` / `Sensor Change` events) — canonical source for sensor-change history |
@@ -48,7 +48,7 @@ summary) are computed locally from data the server returns.
 | `notifications` | `ack`, `admin` | Alarm acknowledgement and admin notices |
 | `activity` | `latest`, `list`, `get`, `add`, `delete` | Activity / exercise records (API v3) |
 | `food` | `list`, `quickpicks`, `regular`, `add`, `update`, `delete` | Food database |
-| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob` | Computed reports + composed snapshots |
+| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd` | Computed reports + composed snapshots |
 | `v3` | `list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history` | Generic CRUD + sync over any v3 collection |
 | `watch` | (socket.io) | Real-time entries/treatments stream (needs `pip install '.[watch]'`) |
 | `session` | `info`, `save`, `load`, `clear` | Session state and last-fetched cache |
@@ -82,6 +82,45 @@ auto-save the session on success.
   `activity`, `v3 delete`) takes `--yes` to bypass the interactive prompt.
   Without `--yes` and without a TTY, the command aborts rather than
   block — agents must always pass `--yes`.
+
+## Care Portal event types (v2.2.0+)
+
+`treatments add` posts any record and takes `--duration`, `--pre-bolus`,
+`--reason` and repeatable `--field KEY=VALUE` (values coerced to
+int/float/bool/null) for arbitrary Care Portal fields. An event type outside
+the known Care Portal list is still sent, but the CLI warns on stderr — a
+typo like `Meal bolus` stores a record no plugin reads.
+
+Event types with structured semantics have dedicated, **validated** verbs.
+Validation is client-side and deliberate: the server accepts nonsense records
+and every downstream consumer then misreads them.
+
+| Verb | Event type | Required shape |
+|------|-----------|----------------|
+| `treatments temp-basal` | `Temp Basal` | `--duration` + exactly one of `--percent` (relative delta; `-50` = half basal) or `--absolute` (U/hr). `--duration 0` cancels. |
+| `treatments temp-target` | `Temporary Target` | `--target-top` ≥ `--target-bottom`, `--duration`, optional `--reason`/`--units`. `--duration 0` alone emits the canonical cancel (targets 0). |
+| `treatments profile-switch` | `Profile Switch` | `--profile`; optional `--duration` (omit = open-ended), `--percentage` (>0, 100 = unchanged), `--timeshift` hours. |
+| `treatments combo-bolus` | `Combo Bolus` | `--insulin` is the TOTAL dose; `--split-now` + `--split-ext` must equal 100 (ext derived if omitted); an extended portion needs `--duration`. Emits `insulin` = now-portion and `enteredinsulin` = total, so IOB is not double-counted. |
+| `treatments exercise` | `Exercise` | `--duration` > 0. |
+| `treatments note` | `Note` | `--message`, optional `--duration`. |
+| `treatments announcement` | `Announcement` | `--message`; sets `isAnnouncement=1` so the server broadcasts it. |
+| `treatments care-event <TYPE>` | timestamp-only | `TYPE` must match the Care Portal string exactly (`Site Change`, `Sensor Start`, `Sensor Stop`, `Sensor Change`, `Insulin Change`, `Pump Battery Change`, `Suspend Pump`, `Resume Pump`, `OpenAPS Offline`, `D.A.D. Alert`) — these strings drive the CAGE/SAGE/IAGE counters. |
+
+`treatments event-types` prints the accepted strings. All of the above honour
+`--dry-run`, `--json`, `--created-at` and `--entered-by`.
+
+## Override state and dose totals
+
+- `treatments active [--hours N] [--event-type T]` — duration-bearing
+  treatments still in effect *now*, with `remaining_minutes`, `ends_at` and
+  the salient fields (`percent`/`absolute`/`targetTop`/`profile`/`reason`).
+  Zero-duration records are cancels and never report active. Check this
+  before stacking another override.
+- `report tdd [--days N] [--from/--to] [--tz Z]` — per-day bolus insulin,
+  bolus count, carbs, carb-event count, plus averages and an observed
+  g-per-unit ratio. **Bolus only**: a `Temp Basal` is a rate, not a dose, so
+  basal is excluded and the payload carries `includes_basal: false` instead of
+  pretending to be a true TDD.
 
 ## Auth resolution order (highest precedence first)
 

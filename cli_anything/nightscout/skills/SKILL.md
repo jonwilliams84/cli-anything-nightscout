@@ -68,7 +68,7 @@ cli-anything-nightscout
 | `config` | `set`, `show`, `clear`, `test` | Manage server URL + secret/token |
 | `status` | `info`, `version`, `last-modified`, `verifyauth` | Server identity / health |
 | `entries` | `latest`, `list`, `get`, `add`, `delete`, `slice` | CGM glucose readings (sgv, mbg, cal, etr) |
-| `treatments` | `latest`, `list`, `get`, `add`, `delete` | Treatment events (boluses, meals, etc.) |
+| `treatments` | `latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`, `active`, `event-types`, `temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event` | Treatment events. The named verbs cover the structured Care Portal event types (validated client-side); `active` shows which duration-bearing overrides are running now. |
 | `profile` | `current`, `list` | Profile records (basal/ratio/sensitivity) |
 | `devicestatus` | `latest`, `list`, `delete` | Pump/CGM device status snapshots |
 | `food` | `list` | Food database (API v3) |

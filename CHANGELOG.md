@@ -4,6 +4,82 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.2.0] — 2026-08-10
+
+Care Portal coverage refine. Before this release the CLI could only post the
+"flat" treatment fields (carbs / insulin / glucose / notes), which meant the
+event types that actually *carry state* — Temp Basal, Temporary Target,
+Profile Switch, Combo Bolus — were simply not expressible. Agents could read
+them back but never create, extend or cancel one.
+
+### Added — structured Care Portal verbs
+
+All validate client-side before any HTTP call, and all honour `--dry-run`,
+`--json`, `--created-at`, `--entered-by`:
+
+- `treatments temp-basal --duration N (--percent P | --absolute U)` — exactly
+  one rate form is required; `--percent` is Nightscout's *relative* delta
+  (`-50` = half the profile basal) and is floored at `-100`; `--duration 0`
+  is the cancel idiom and implies `percent: 0`.
+- `treatments temp-target --target-top X --target-bottom Y --duration N
+  [--reason R] [--units mg/dl|mmol]` — refuses swapped bounds; `--duration 0`
+  with no targets emits the canonical cancel record (`targetTop/Bottom = 0`).
+- `treatments profile-switch --profile NAME [--duration N] [--percentage P]
+  [--timeshift H]` — open-ended when `--duration` is omitted; `--percentage`
+  must be > 0 (100 = unchanged).
+- `treatments combo-bolus --insulin TOTAL --split-now P [--split-ext P]
+  [--duration N] [--carbs G]` — splits must sum to 100 (ext derived when
+  omitted), an extended portion requires a duration. Posts `insulin` = the
+  immediate portion and `enteredinsulin` = the whole dose, matching what the
+  IOB plugin expects, so the dose is not double-counted.
+- `treatments exercise --duration N`, `treatments note --message M
+  [--duration N]`, `treatments announcement --message M` (sets
+  `isAnnouncement=1`, which is what makes the server broadcast it).
+- `treatments care-event <TYPE>` — timestamp-only events (`Site Change`,
+  `Sensor Start`, `Sensor Stop`, `Sensor Change`, `Insulin Change`,
+  `Pump Battery Change`, `Suspend Pump`, `Resume Pump`, `OpenAPS Offline`,
+  `D.A.D. Alert`). The string must match exactly: these drive the
+  CAGE/SAGE/IAGE age counters, so a near-miss is a record nothing reads.
+- `treatments event-types` — prints the accepted event-type strings.
+
+### Added — override state + dose totals
+
+- `treatments active [--hours N] [--event-type T]` — which duration-bearing
+  treatments are still in effect right now, with `remaining_minutes`,
+  `elapsed_minutes`, `ends_at` and the salient fields
+  (`percent`/`absolute`/`targetTop`/`targetBottom`/`profile`/`reason`).
+  Zero-duration records are cancels in Nightscout's model and never report as
+  active. This is the "is something already running?" check an agent needs
+  before stacking another override.
+- `report tdd [--days N] [--from/--to] [--tz Z]` — per-day bolus insulin,
+  bolus count, carbs, carb-event count, plus averages and an observed
+  g-per-unit ratio. Deliberately **bolus only**: a `Temp Basal` record carries
+  an `insulin` field but represents a *rate*, so summing it would inflate the
+  total. The payload states `includes_basal: false` rather than presenting the
+  number as a true TDD.
+
+### Added — generic escape hatch on `treatments add`
+
+- `--duration`, `--pre-bolus`, `--reason`, and repeatable
+  `--field KEY=VALUE` (values coerced to int/float/bool/null) so any
+  plugin-defined Care Portal field can be posted without a new verb.
+- An event type outside the known Care Portal list is still sent, but now
+  warns on stderr — `Meal bolus` (lowercase b) used to store a record that
+  no plugin would ever read, silently.
+
+### Internal
+
+- New core builders in `core/treatments.py`
+  (`add_temp_basal`, `add_temp_target`, `add_profile_switch`,
+  `add_combo_bolus`, `add_announcement`, `add_note`, `add_exercise`,
+  `add_care_event`) plus the `CARE_EVENT_TYPES` / `KNOWN_EVENT_TYPES`
+  constants; new pure analytics in `core/report.py`
+  (`treatment_totals`, `active_treatments`).
+- 106 new tests (`tests/test_careportal_events.py` + 6 E2E workflows in
+  `tests/test_full_e2e.py`, which exercise post → `treatments active` →
+  `report tdd` against the in-process stand-in server). Suite: 946 passing,
+  coverage 82%.
+
 ## [2.1.0] — 2026-05-29
 
 Safety + medical-data correctness refine. The headline change: `--dry-run`

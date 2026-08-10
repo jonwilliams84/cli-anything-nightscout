@@ -311,3 +311,79 @@ No regressions; pre-existing 294 tests + 63 new = 357 total.
   through the generic `v3` group; a dedicated `settings` shortcut group has
   not been added (low impact for the bridge use case).
 
+
+---
+
+## Refine Pass — 2026-08-10 (Care Portal event coverage)
+
+### Gap that was closed
+
+The CLI could post the *flat* treatment fields only (carbs / insulin /
+glucose / notes). Every Care Portal event type that carries **state** was
+therefore unreachable: `Temp Basal` (needs `duration` + `percent`/`absolute`),
+`Temporary Target` (`targetTop`/`targetBottom` + `duration`), `Profile Switch`
+(`profile`, `percentage`, `timeshift`) and `Combo Bolus`
+(`splitNow`/`splitExt`/`enteredinsulin`). Agents could read those records back
+but could not create, extend or cancel one — and there was no way to ask
+"is an override running right now?".
+
+### Added coverage
+
+| Layer | Added |
+|-------|-------|
+| `core/treatments.py` | `add_temp_basal`, `add_temp_target`, `add_profile_switch`, `add_combo_bolus`, `add_announcement`, `add_note`, `add_exercise`, `add_care_event`, `_require_non_negative`, `_canonical_target_units`, `CARE_EVENT_TYPES`, `KNOWN_EVENT_TYPES` |
+| `core/report.py` | `treatment_totals` (per-day bolus insulin + carbs), `active_treatments` (duration-bearing overrides in effect now), `_num` |
+| CLI (`treatments`) | `temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`, `event-types`, `active`; `add` gains `--duration`, `--pre-bolus`, `--reason`, repeatable `--field KEY=VALUE`, and an unknown-event-type warning |
+| CLI (`report`) | `tdd` |
+
+### Test additions
+
+| File | New tests | Scope |
+|------|-----------|-------|
+| `test_careportal_events.py` | **100** | Builder payload shape + every validation rejection (missing/duplicate rate form, `percent < -100`, negative `absolute`, swapped temp-target bounds, missing bound, bogus units, splits not summing to 100, extended portion without duration, non-positive insulin, blank profile/notes, zero-duration exercise, care-event typo, NaN/non-numeric duration); cancel semantics (`duration=0` → `percent 0` / zero targets); `treatment_totals` (per-day rollup, Temp-Basal insulin excluded, averages/ratio, tz day-boundary shift, epoch-ms timestamps, garbage/NaN/inf/bool inputs, empty); `active_treatments` (running/expired/future, zero-duration cancels never active, ordering, `include_types` filter, field surfacing, naive `now` and naive `created_at` → UTC, garbage); CLI dry-run network-safety for all 8 new mutating verbs; CLI validation errors surface as clean `ClickException` with no request sent; `_parse_field_pairs` coercions and rejections; `treatments active` / `report tdd` / `event-types` in both `--json` and human modes. |
+| `test_full_e2e.py` (`TestRefineCLISubprocess`) | **6** | Installed-binary workflows against the stand-in: `temp-basal` → `treatments active` (asserts `remaining_minutes` and `is_override`); `temp-target` round-trip → cancel record; `event-types` → `care-event "Site Change"`; `temp-basal` with no rate exits non-zero client-side; `Meal Bolus` + `Temp Basal` → `report tdd` (asserts the temp basal is *not* summed and `includes_basal: false`); `--field`/`--pre-bolus` passthrough reaching the server as real record fields. |
+
+### Test results — 2026-08-10
+
+```text
+$ python3 -m pytest --no-header -q
+946 passed in 8.13s
+
+$ python3 -m pytest tests --cov=cli_anything --cov-fail-under=78 -q
+TOTAL  3593  608  1110  101  82%
+Required test coverage of 78% reached. Total coverage: 82.03%
+```
+
+Per-file breakdown after this pass:
+
+- `test_cli_helpers_and_skin.py`: 102
+- `test_careportal_events.py`: **100** ← new
+- `test_core.py`: 89
+- `test_cli_helpers.py`: 66
+- `test_refine_v06.py`: 60
+- `test_refine.py`: 55
+- `test_coverage_gaps3.py`: 53
+- `test_coverage_gaps4.py`: 43
+- `test_v3.py`: 39
+- `test_coverage_gaps2.py`: 38
+- `test_full_e2e.py`: 36 (including 6 new Care Portal workflows)
+- `test_coverage_gaps.py`: 33
+- `test_cli_command_logic.py`: 31
+- `test_backend_v2.py`: 29
+- `test_entries_normalize.py`: 27
+- others (excursions, report metrics, sensors, security, profile, watch,
+  treatments validation, import order, collections regression): 145
+
+No regressions: 840 pre-existing tests still pass; 106 new = 946 total.
+Module coverage: `core/treatments.py` 98%, `core/report.py` 98%.
+
+### Notes on coverage gaps still open
+
+- **Basal delivery is not summed.** `report tdd` is bolus-only by design —
+  reconstructing true TDD needs the profile basal schedule integrated against
+  the temp-basal timeline. That is the obvious next refine target and would
+  make `report tdd` a real total-daily-dose report.
+- **Loop-specific fields** (`isSMB`, `programmed`, OpenAPS `reason` blobs)
+  are reachable via `treatments add --field` but have no dedicated verb.
+- **`Bolus Wizard` / `D.A.D. Alert`** have no structured verb (the former
+  needs the whole bolus-calculator payload); `--field` covers them.

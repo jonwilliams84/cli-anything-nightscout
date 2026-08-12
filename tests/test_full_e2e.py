@@ -775,6 +775,108 @@ class TestRefineCLISubprocess:
         r = self._run(["--json", "devicestatus", "list"], env=env)
         assert r.returncode == 0, r.stderr
 
+    # ---- rig health: devicestatus parsing + age counters ----
+
+    def test_devicestatus_pump_parses_posted_record(self, server_url_and_secret, tmp_path):
+        """Post a real-shaped pump record, then read it back parsed."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        body = json.dumps({
+            "device": "cli-anything-pump-test",
+            "created_at": now,
+            "pump": {
+                "clock": now,
+                "battery": {"percent": 15, "voltage": 1.28},
+                "reservoir": 3.2,
+                "status": {"status": "normal", "bolusing": False, "suspended": False},
+            },
+        })
+        r = self._run(["--json", "devicestatus", "add", "--body-json", body], env=env)
+        assert r.returncode == 0, r.stderr
+        r = self._run(["--json", "devicestatus", "pump", "--count", "20"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        if not _is_live_mode():
+            assert data["found"] is True
+            assert data["reservoir_units"] == 3.2
+            assert data["reservoir_level"] == "urgent"
+            assert data["battery_level"] == "urgent"
+            assert data["level"] == "urgent"
+            assert data["warnings"]
+
+    def test_devicestatus_uploader_and_loop(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        body = json.dumps({
+            "device": "cli-anything-loop-test",
+            "created_at": now,
+            "uploader": {"battery": 88, "type": "PHONE"},
+            "loop": {
+                "name": "Loop", "version": "3.2", "timestamp": now,
+                "iob": {"iob": 0.9}, "cob": {"cob": 7},
+                "enacted": {"rate": 0.45, "duration": 30, "received": True},
+            },
+        })
+        r = self._run(["--json", "devicestatus", "add", "--body-json", body], env=env)
+        assert r.returncode == 0, r.stderr
+
+        r = self._run(["--json", "devicestatus", "uploader", "--count", "20"], env=env)
+        assert r.returncode == 0, r.stderr
+        up = json.loads(r.stdout)
+        r = self._run(["--json", "devicestatus", "loop", "--count", "20"], env=env)
+        assert r.returncode == 0, r.stderr
+        lp = json.loads(r.stdout)
+        if not _is_live_mode():
+            assert up["battery_percent"] == 88
+            assert lp["enacted"] is True
+            assert lp["rate"] == 0.45
+            assert lp["iob"] == 0.9
+            assert lp["stale"] is False
+
+    def test_report_device_health_composes_sections(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        body = json.dumps({
+            "device": "cli-anything-health-test",
+            "created_at": now,
+            "pump": {"battery": {"percent": 90}, "reservoir": 150,
+                       "status": {"status": "normal", "suspended": False}},
+            "uploader": {"battery": 95},
+        })
+        r = self._run(["--json", "devicestatus", "add", "--body-json", body], env=env)
+        assert r.returncode == 0, r.stderr
+        r = self._run(["--json", "report", "device-health", "--count", "50"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        for key in ("pump", "uploader", "loop", "devices", "level", "warnings"):
+            assert key in data
+        assert isinstance(data["devices"], list)
+        if not _is_live_mode():
+            assert any(d["device"] == "cli-anything-health-test" for d in data["devices"])
+
+    def test_report_ages_after_care_events(self, server_url_and_secret, tmp_path):
+        """Care Portal events posted by the CLI must drive the age counters."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        for event in ("Site Change", "Insulin Change", "Pump Battery Change"):
+            r = self._run(["--json", "treatments", "care-event", event], env=env)
+            assert r.returncode == 0, r.stderr
+        r = self._run(["--json", "report", "ages", "--days", "7"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert set(data["counters"]) == {"cage", "sage", "iage", "bage"}
+        if not _is_live_mode():
+            assert data["counters"]["cage"]["found"] is True
+            assert data["counters"]["cage"]["age_hours"] < 1
+            assert data["counters"]["cage"]["level"] == "ok"
+            assert data["counters"]["iage"]["found"] is True
+            assert data["counters"]["bage"]["found"] is True
+
+    def test_report_ages_human_output(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["report", "ages", "--days", "7"], env=env)
+        assert r.returncode == 0, r.stderr
+        assert "CAGE" in r.stdout and "BAGE" in r.stdout
+
     # ---- report sensor-life ----
 
     def test_report_sensor_life(self, server_url_and_secret, tmp_path):

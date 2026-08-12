@@ -80,13 +80,13 @@ cli-anything-nightscout
 | `entries` | `latest`, `current`, `list`, `get`, `add`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize` | CGM glucose readings (sgv, mbg, cal, etr) |
 | `treatments` | `latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`, `active`, `event-types`, `temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event` | Treatment events. The named verbs cover the structured Care Portal event types and validate the field combinations before sending. |
 | `profile` | `active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `create`, `update`, `delete` | Profile records and schedule lookups |
-| `devicestatus` | `latest`, `list`, `add`, `delete` | Pump/CGM device status snapshots |
+| `devicestatus` | `latest`, `list`, `add`, `delete`, `pump`, `uploader`, `loop` | Device status snapshots. `pump`/`uploader`/`loop` **parse** the free-form payload (battery, reservoir, suspend state, loop cycle) instead of returning raw JSON. |
 | `sensors` | `sessions` | **CGM sensor-session detection** — windows between `Sensor Start` / `Sensor Change` treatments. Use this for sensor-change history. |
 | `properties` | `get [names]` | **Derived state from `/api/v2/properties`** — IOB, COB, bgnow, delta, loop, sensor age. The endpoint every HA integration uses. |
 | `notifications` | `ack`, `admin` | Acknowledge alarms; list admin notices |
 | `activity` | `latest`, `list`, `get`, `add`, `delete` | Activity / exercise records (API v3) |
 | `food` | `list`, `quickpicks`, `regular`, `add`, `update`, `delete` | Food database |
-| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd` | Computed reports + composed snapshots |
+| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `device-health`, `ages` | Computed reports + composed snapshots |
 | `v3` | `list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history` | Generic CRUD + sync over any v3 collection |
 | `watch` | (socket.io) | Real-time entries/treatments stream (`pip install '.[watch]'`) |
 | `session` | `info`, `save`, `load`, `clear` | Session state (cache + history) |
@@ -170,6 +170,11 @@ whether the harness already covers it. Common misses:
 | Sensor age / when to replace | `report sensor-life --threshold-hours 168` | Composes `sensors sessions` with an age threshold. Returns `is_stale` / `should_replace_soon`. |
 | **IOB / COB / loop status / right-now snapshot** | `report iob-cob` or `properties get iob,cob,loop` | Derived from `/api/v2/properties` — the canonical "what is happening right now" endpoint. Single round trip. |
 | Site changes, cannula changes, pump-battery changes | `treatments list --event-type "Site Change"` (etc.) | Same pattern — they live in `treatments`. |
+| **How old is my site / sensor / insulin / pump battery?** | `report ages --days N` | CAGE/SAGE/IAGE/BAGE in hours, with Nightscout's own warn/urgent thresholds. A counter with no event reports `found: false` — say "unknown", never "0 hours old". |
+| Pump battery / reservoir / is the pump suspended? | `devicestatus pump` | Parses the pump sub-document. Also reports `clock_skew_minutes`; a drifting pump clock corrupts IOB and basal maths. |
+| Phone / uploader battery | `devicestatus uploader` | Handles all three payload shapes uploaders use. |
+| Is the loop still running / did it stall? | `devicestatus loop [--stale-minutes M]` | Normalises Loop and OpenAPS/AAPS into one shape; `stale` + `age_minutes` are the "has it stopped?" signal. |
+| Overall rig health in one call | `report device-health` | Pump + uploader + loop + which device went quiet. Branch on the single top-level `level`. |
 | Recent CGM values | `entries latest --count N` or `entries current` | `current` is a lighter single-record endpoint. |
 | Time-in-Range / GMI / daily summary | `report tir` / `report gmi` / `report daily` | Local computation over fetched entries. |
 | Edit a logged carb/insulin value | `treatments update <id> --carbs N` | v1 PUT, merges with the existing record. |

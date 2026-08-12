@@ -119,6 +119,48 @@ cli-anything-nightscout treatments add --event-type "Meal Bolus" --insulin 4 \
 portion lands in `insulin` and the whole dose in `enteredinsulin` (what the
 IOB plugin reads), so IOB is not double-counted.
 
+### Rig health: pump, uploader, loop (v2.3.0+)
+
+Nightscout's `devicestatus` records hide everything useful inside a free-form
+sub-document that every uploader spells differently. These commands parse it:
+
+```bash
+# Pump battery (% and/or cell voltage), reservoir, suspended/bolusing,
+# and pump-clock drift vs the upload time
+cli-anything-nightscout devicestatus pump --json
+
+# Phone / rig battery (handles uploader.battery, bare uploader, uploaderBattery)
+cli-anything-nightscout devicestatus uploader
+
+# Last closed-loop cycle — Loop and OpenAPS/AAPS normalised into one shape
+cli-anything-nightscout devicestatus loop --stale-minutes 20
+
+# Everything at once, plus which uploader went quiet
+cli-anything-nightscout report device-health --json | jq '.level, .warnings'
+```
+
+`--count` here is *scan depth*: a rig with more than one uploader interleaves
+records carrying no pump document, so the command walks back through the last
+N records to find the newest that does.
+
+Every payload carries `level` (`ok`/`info`/`warn`/`urgent`/`unknown`) and a
+`warnings` list, with thresholds matching Nightscout's own plugin defaults so
+the CLI agrees with the web UI's pills. Missing data reports `found: false`
+and `level: "unknown"` — never a fabricated `0`.
+
+### Consumable ages — CAGE / SAGE / IAGE / BAGE
+
+```bash
+cli-anything-nightscout report ages --days 45 --json
+```
+
+Hours since the last `Site Change`, `Sensor Start`/`Sensor Change`,
+`Insulin Change` and `Pump Battery Change` — the same four pills Nightscout
+shows. Computed locally from Care Portal treatments, so it works with a
+read-only token and even when the server-side plugins are disabled. A counter
+with no matching event reports `found: false`, because an unknown consumable
+age is not a fresh one.
+
 ### Is an override running right now?
 
 ```bash

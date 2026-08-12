@@ -387,3 +387,73 @@ Module coverage: `core/treatments.py` 98%, `core/report.py` 98%.
   are reachable via `treatments add --field` but have no dedicated verb.
 - **`Bolus Wizard` / `D.A.D. Alert`** have no structured verb (the former
   needs the whole bolus-calculator payload); `--field` covers them.
+
+## Refine Pass — 2026-08-12 (rig health: devicestatus parsing + consumable ages)
+
+### Gap that was closed
+
+`devicestatus` was the last collection the CLI passed through **raw**, and it
+is the one collection whose value lives entirely inside a free-form
+sub-document. Loop, OpenAPS, AAPS, xDrip+ and the pump bridges each spell it
+differently (`pump.battery.percent` vs `pump.battery.voltage` vs a bare
+`pump.battery` number; `uploader.battery` vs a bare `uploader` vs the legacy
+top-level `uploaderBattery`; `loop.iob.iob` vs `openaps.suggested.IOB`), so an
+agent asking "is the pump about to run dry?" or "has the loop stalled?" had to
+hand-parse five vendor dialects. Nightscout's own `pump`, `upbat`, `loop` and
+`openaps` plugins render exactly these as pills.
+
+The CAGE / SAGE / IAGE / BAGE age counters had no CLI equivalent either, even
+though `treatments care-event` already writes the exact event-type strings
+that drive them. `sensors sessions` / `report sensor-life` covered the sensor
+axis only.
+
+### Added coverage
+
+| Layer | Added |
+|-------|-------|
+| `core/device_health.py` (new) | `pump_status`, `uploader_status`, `loop_status`, `device_inventory`, `device_health`, `age_counters`; helpers `_num`, `_parse_ts`, `_record_dt`, `_sorted_records`, `_first_with`, `_dig`, `_worst`, `_level_low`, `_level_high`; Nightscout-default threshold constants + `AGE_THRESHOLDS_HOURS` / `AGE_EVENT_TYPES` |
+| CLI (`devicestatus`) | `pump`, `uploader`, `loop` (`--count` scan depth, `--stale-minutes`) |
+| CLI (`report`) | `device-health` (`--count`, `--stale-minutes`), `ages` (`--days`, `--from`) |
+
+### Test additions
+
+| File | New tests | Scope |
+|------|-----------|-------|
+| `test_device_health.py` | **58** | Helpers (numeric coercion rejecting bool/NaN/inf, timestamp parsing for ISO-Z / naive / epoch-ms / trailing-junk / garbage, severity ordering, inclusive threshold boundaries, newest-first sorting that drops non-dicts). `pump_status`: healthy record, not-found, low reservoir → urgent, low battery → warn, **percent-healthy-but-voltage-dying still urgent**, bare-numeric battery disambiguated (≤2 → volts, else percent), suspended pump flagged, stale record, clock-skew detection, newest-record-carrying-a-pump-doc selection, custom thresholds, malformed sub-documents. `uploader_status`: all three payload shapes, warn/urgent bands, scanning past records with no battery. `loop_status`: Loop and OpenAPS dialects, enacted vs suggested, stale → urgent, `failureReason`, custom thresholds, timestamp fallback, loop-preferred-over-openaps. `device_inventory`: grouping, record counts, stale flag + sort order, missing/non-string device names. `device_health`: composition, worst-section level, all-unknown, stale-device warning, `now=None` wall-clock path. `age_counters`: all four counters present, **missing events report `found: false` not 0h**, threshold bands, Sensor Start *or* Change driving SAGE, newest event wins, future-dated records ignored, custom thresholds, garbage skipped, epoch-ms support, unrelated event types not resetting counters, naive `now` treated as UTC. |
+| `test_device_health_cli.py` | **26** | Command wiring with the core mocked: JSON contract for all five commands, `--count`/`--days`/`--from`/`--stale-minutes` plumbing (including the default 45-day window arithmetic and warn-vs-urgent bands), human-readable rendering (warning lines, `no pump data`, `no warnings`, counter table), non-list and empty server responses tolerated, missing-URL guard. |
+| `test_full_e2e.py` (`TestRefineCLISubprocess`) | **5** | Installed-binary round-trips against the stand-in server: post a real-shaped pump record → `devicestatus pump` reports urgent reservoir *and* battery; post uploader+loop record → `devicestatus uploader` / `devicestatus loop` parse it; `report device-health` composes all sections and lists the device; three `treatments care-event` posts → `report ages` shows CAGE/IAGE/BAGE found and fresh; `report ages` human output lists all four counters. |
+
+### Test results — 2026-08-12
+
+```text
+$ python3 -m pytest --no-header -q
+1035 passed in 9.71s
+
+$ python3 -m pytest tests --cov=cli_anything --cov-fail-under=78 -q
+TOTAL  3981  615  1280  108  84%
+Required test coverage of 78% reached. Total coverage: 83.79%
+```
+
+No regressions: all 946 pre-existing tests still pass; 89 new = 1035 total.
+Module coverage: `core/device_health.py` **97%**, `core/devicestatus.py` 100%.
+
+Lint: `ruff check cli_anything/` and `ruff format --check cli_anything/` both
+clean (the new e2e tests also consumed two previously-unused imports in
+`test_full_e2e.py`, dropping the advisory test-lane count from 35 to 33).
+
+### Notes on coverage gaps still open
+
+- **`xdripjs` / CGM transmitter state** (`state`, `stateString`,
+  `txStatusString`, transmitter battery) is surfaced in `device_inventory`'s
+  `documents` list but has no parsed view of its own — the obvious next
+  increment for this domain.
+- **No history/trend series.** `report device-health` is a *snapshot*;
+  reservoir burn-rate or battery-decay-over-time (which would predict "you
+  will run out in ~6 h") is not computed.
+- **Thresholds are the Nightscout defaults, not the server's settings.** A
+  site that customised `PUMP_WARN_RESERVOIR` etc. will see the CLI's level
+  disagree with its own pills; reading `status info`'s settings block to
+  inherit them is not wired up. Every threshold is overridable on the core
+  functions, but only `--stale-minutes` is exposed as a CLI flag so far.
+- **Basal delivery still not summed** in `report tdd` (carried over from the
+  previous pass).

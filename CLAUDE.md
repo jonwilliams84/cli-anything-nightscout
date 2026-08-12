@@ -28,6 +28,7 @@ data; analytic reports (TIR, GMI, AGP, MAGE…) are computed locally from server
 - `entries delete <id>` takes only a 24-hex ObjectId. Bulk delete is `entries delete-by-type <type> --before <iso> --apply --yes` (requires `--before`/`--after`, lists matched IDs first).
 - Against production, prefer a **read-only token** unless mutations are required.
 - Structured Care Portal verbs (v2.2.0+): `treatments temp-basal|temp-target|profile-switch|combo-bolus|announcement|note|exercise|care-event` validate field combos client-side (`--duration 0` = cancel for temp basal/target; `combo-bolus --insulin` is the TOTAL dose and splits must sum to 100). `treatments active` = which duration-bearing overrides are running now; `report tdd` = per-day **bolus-only** insulin/carbs (`includes_basal: false`). Escape hatch: `treatments add --field KEY=VALUE` (repeatable).
+- Rig health (v2.3.0+): `devicestatus pump|uploader|loop` parse the free-form devicestatus sub-documents (pump battery/reservoir/suspend + clock skew, uploader battery, loop vs openaps dialects); `report device-health` composes them, `report ages` = CAGE/SAGE/IAGE/BAGE hours from Care Portal events. `--count` there is scan depth, not page size. Every payload has `level` + `warnings`; missing data is `found: false`/`unknown`, **never 0** — an unknown consumable age is not a fresh one.
 - All commands accept `--json`. Transport env knobs: `NIGHTSCOUT_TIMEOUT`, `NIGHTSCOUT_RETRIES`, `NIGHTSCOUT_VERIFY_SSL`, `NIGHTSCOUT_CA_BUNDLE`, `NIGHTSCOUT_UNITS`.
 
 ## Conventions

@@ -14,6 +14,7 @@ from typing import Any
 import click
 
 from cli_anything.nightscout.core import activity as activity_mod
+from cli_anything.nightscout.core import device_health as health_mod
 from cli_anything.nightscout.core import devicestatus as ds_mod
 from cli_anything.nightscout.core import entries as entries_mod
 from cli_anything.nightscout.core import excursions as excursions_mod
@@ -32,7 +33,7 @@ from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -3261,6 +3262,198 @@ def report_tdd(
             f"{res['avg_daily_insulin_units']:.2f}U / {res['avg_daily_carbs_g']:.0f}g"
         )
         click.echo("  (bolus only — basal delivery is not included)")
+
+
+# ─── rig health: devicestatus payload parsing + consumable age counters ────
+
+
+def _health_level_line(label: str, level: str) -> str:
+    """One human status line, prefixed with a severity marker."""
+    mark = {"ok": "✔", "info": "·", "warn": "⚠", "urgent": "✖", "unknown": "?"}.get(level, "?")
+    return f"  {mark} {label:<12} {level}"
+
+
+@devicestatus_grp.command("pump")
+@click.option(
+    "--count",
+    default=10,
+    type=int,
+    help="How many recent records to scan for a pump document (default 10).",
+)
+@click.pass_context
+def devicestatus_pump(ctx: click.Context, count: int) -> None:
+    """Latest pump battery / reservoir / suspend state, parsed.
+
+    Scans back over the last --count devicestatus records because a rig with
+    several uploaders interleaves records that carry no pump document.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    recs = ds_mod.latest(count=count, conn=conn)
+    res = health_mod.pump_status(recs if isinstance(recs, list) else [])
+    if _is_json(ctx):
+        _emit(ctx, res)
+        return
+    if not res["found"]:
+        click.echo(f"  no pump data in the last {count} devicestatus records")
+        return
+    batt = (
+        f"{res['battery_percent']:g}%"
+        if res["battery_percent"] is not None
+        else (f"{res['battery_voltage']:g}V" if res["battery_voltage"] is not None else "?")
+    )
+    reservoir = f"{res['reservoir_units']:g}U" if res["reservoir_units"] is not None else "?"
+    click.echo(f"  device      {res['device']}")
+    click.echo(f"  age         {res['age_minutes']}min")
+    click.echo(f"  battery     {batt} ({res['battery_level']})")
+    click.echo(f"  reservoir   {reservoir} ({res['reservoir_level']})")
+    click.echo(
+        f"  status      {res['status']} suspended={res['suspended']} bolusing={res['bolusing']}"
+    )
+    for w in res["warnings"]:
+        click.echo(f"  ⚠ {w}")
+
+
+@devicestatus_grp.command("uploader")
+@click.option("--count", default=10, type=int, help="Records to scan (default 10).")
+@click.pass_context
+def devicestatus_uploader(ctx: click.Context, count: int) -> None:
+    """Latest uploader (phone / rig) battery level."""
+    conn = _conn(ctx)
+    _require_url(conn)
+    recs = ds_mod.latest(count=count, conn=conn)
+    res = health_mod.uploader_status(recs if isinstance(recs, list) else [])
+    if _is_json(ctx):
+        _emit(ctx, res)
+        return
+    if not res["found"]:
+        click.echo(f"  no uploader battery in the last {count} devicestatus records")
+        return
+    pct = f"{res['battery_percent']:g}%" if res["battery_percent"] is not None else "?"
+    click.echo(f"  {res['device']}  battery {pct} ({res['level']}), {res['age_minutes']}min old")
+    for w in res["warnings"]:
+        click.echo(f"  ⚠ {w}")
+
+
+@devicestatus_grp.command("loop")
+@click.option("--count", default=10, type=int, help="Records to scan (default 10).")
+@click.option(
+    "--stale-minutes",
+    default=health_mod.LOOP_STALE_WARN_MIN,
+    type=float,
+    help="Minutes since the last loop cycle that counts as stale (default 30).",
+)
+@click.pass_context
+def devicestatus_loop(ctx: click.Context, count: int, stale_minutes: float) -> None:
+    """Latest closed-loop cycle (Loop / OpenAPS / AAPS), normalised.
+
+    Reports whether the last cycle was enacted, the temp basal it set, IOB/COB
+    and how long ago it ran — a loop that stopped reporting is the failure
+    mode that matters.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    recs = ds_mod.latest(count=count, conn=conn)
+    res = health_mod.loop_status(
+        recs if isinstance(recs, list) else [],
+        stale_warn_minutes=stale_minutes,
+        stale_urgent_minutes=stale_minutes * 2,
+    )
+    if _is_json(ctx):
+        _emit(ctx, res)
+        return
+    if not res["found"]:
+        click.echo(f"  no loop/openaps data in the last {count} devicestatus records")
+        return
+    click.echo(f"  {res['flavour']} {res['name'] or ''} {res['version'] or ''} on {res['device']}")
+    click.echo(f"  last cycle  {res['age_minutes']}min ago (enacted={res['enacted']})")
+    if res["rate"] is not None:
+        click.echo(f"  temp basal  {res['rate']:g} U/hr for {res['duration_minutes']}min")
+    click.echo(f"  iob={res['iob']} cob={res['cob']}")
+    for w in res["warnings"]:
+        click.echo(f"  ⚠ {w}")
+
+
+@report_grp.command("device-health")
+@click.option("--count", default=50, type=int, help="Devicestatus records to examine.")
+@click.option(
+    "--stale-minutes",
+    default=health_mod.DEVICESTATUS_STALE_WARN_MIN,
+    type=float,
+    help="Silence after which a device counts as stale (default 30).",
+)
+@click.pass_context
+def report_device_health(ctx: click.Context, count: int, stale_minutes: float) -> None:
+    """Composed rig health: pump + uploader + loop + which devices went quiet.
+
+    One call answers "is the hardware OK?". ``level`` in the JSON payload is
+    the worst of the sections, so an agent can branch on a single field.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    recs = ds_mod.latest(count=count, conn=conn)
+    res = health_mod.device_health(
+        recs if isinstance(recs, list) else [],
+        stale_minutes=stale_minutes,
+    )
+    if _is_json(ctx):
+        _emit(ctx, res)
+        return
+    click.echo(f"  overall: {res['level']}  ({res['records_examined']} records examined)")
+    click.echo(_health_level_line("pump", res["pump"]["level"]))
+    click.echo(_health_level_line("uploader", res["uploader"]["level"]))
+    click.echo(_health_level_line("loop", res["loop"]["level"]))
+    for dev in res["devices"]:
+        age = dev["age_minutes"]
+        click.echo(
+            f"    {dev['device']:<28} last seen {age}min ago{' STALE' if dev['stale'] else ''}"
+        )
+    for w in res["warnings"]:
+        click.echo(f"  ⚠ {w}")
+    if not res["warnings"]:
+        click.echo("  no warnings")
+
+
+@report_grp.command("ages")
+@click.option(
+    "--days",
+    default=45,
+    type=int,
+    help="Look-back window for change events (default 45 — BAGE runs to 15 days).",
+)
+@click.option("--from", "date_gte", default=None, help="ISO lower bound (overrides --days).")
+@click.pass_context
+def report_ages(ctx: click.Context, days: int, date_gte: str | None) -> None:
+    """CAGE / SAGE / IAGE / BAGE — hours since site, sensor, insulin, battery change.
+
+    Computed locally from Care Portal treatments, so it works with a
+    read-only token and even when the server-side plugins are disabled. A
+    counter with no matching event reports ``found: false`` rather than 0h.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    conn = _conn(ctx)
+    _require_url(conn)
+    if not date_gte:
+        start = datetime.now(timezone.utc) - timedelta(days=days)
+        date_gte = start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    limit = 5000
+    txs = treatments_mod.list_treatments(conn=conn, count=limit, date_gte=date_gte)
+    _warn_truncation(txs, limit=limit, ctx=ctx)
+    res = health_mod.age_counters(txs if isinstance(txs, list) else [])
+    if _is_json(ctx):
+        _emit(ctx, res)
+        return
+    for key, row in res["counters"].items():
+        if not row["found"]:
+            click.echo(f"  {key.upper():<5} {row['label']:<18} no event in window")
+            continue
+        click.echo(
+            f"  {key.upper():<5} {row['label']:<18} {row['age_hours']:>7.1f}h "
+            f"({row['age_days']:.1f}d)  {row['level']}"
+        )
+    for w in res["warnings"]:
+        click.echo(f"  ⚠ {w}")
 
 
 if __name__ == "__main__":

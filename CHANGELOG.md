@@ -4,6 +4,77 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.3.0] — 2026-08-12
+
+Rig-health refine. `devicestatus` was the one collection the CLI passed
+through raw, and it is the one collection whose value lives entirely inside a
+free-form sub-document that every uploader (Loop, OpenAPS, AAPS, xDrip+,
+pump bridges) spells differently. An agent asking "is the pump about to run
+dry?" or "has the loop stalled?" had to hand-parse five vendor dialects. The
+Care Portal age counters Nightscout shows as pills — CAGE/SAGE/IAGE/BAGE —
+had no CLI equivalent either, despite the CLI already writing the exact event
+types that drive them.
+
+### Added — parsed devicestatus views
+
+- `devicestatus pump [--count N]` — battery as **both** `percent` and
+  `voltage` (the worse of the two sets the level, so a healthy percentage
+  cannot mask a dying cell), reservoir units, `status`/`suspended`/`bolusing`,
+  and `clock_skew_minutes` (pump clock vs upload time — drift silently
+  corrupts every downstream IOB and basal calculation and is invisible in the
+  raw record).
+- `devicestatus uploader [--count N]` — phone/rig battery, handling all three
+  shapes in the wild: `uploader.battery`, a bare numeric `uploader`, and the
+  legacy top-level `uploaderBattery`.
+- `devicestatus loop [--count N] [--stale-minutes M]` — last closed-loop
+  cycle with the `loop` and `openaps` dialects normalised into one shape:
+  `enacted` vs merely suggested, temp basal rate/duration, IOB/COB (Loop
+  nests these a level deeper than OpenAPS), `failure_reason`, and minutes
+  since the last cycle.
+
+On all three, `--count` is *scan depth*, not page size: a rig with several
+uploaders interleaves records carrying no pump document, so the commands walk
+back through the last N records to find the newest one that does.
+
+### Added — composed reports
+
+- `report device-health [--count N] [--stale-minutes M]` — pump + uploader +
+  loop plus a per-device inventory showing which uploader went quiet. The
+  top-level `level` is the worst of the sections so an agent branches on one
+  field instead of five.
+- `report ages [--days N] [--from ISO]` — CAGE / SAGE / IAGE / BAGE: hours
+  since the last `Site Change`, `Sensor Start`/`Sensor Change`,
+  `Insulin Change` and `Pump Battery Change`. Computed locally from Care
+  Portal treatments, so it works with a read-only token and even when the
+  server-side plugins are disabled.
+
+### Design notes
+
+- **Thresholds mirror Nightscout's own plugin defaults** (`PUMP_WARN_BATT_P`
+  30 / urgent 20, cell voltage 1.35 / 1.30 V, reservoir 10 / 5 U, loop stale
+  30 / 60 min, CAGE 44/48/72 h, SAGE 144/164/166 h, IAGE 44/48/72 h, BAGE
+  312/336/360 h) so the CLI's verdict agrees with the web UI's pills. They are
+  *display* thresholds, not clinical advice, and every one is an argument on
+  the core function.
+- **Missing data is `found: false` / `level: "unknown"`, never `0`.** A
+  consumable with no recorded change event has an *unknown* age, not a fresh
+  one; emitting `0h` would be a plausible number an agent might act on.
+  Future-dated records are discarded as clock errors rather than becoming
+  negative ages.
+- All parsing is pure-Python over records the server already returned — no
+  new endpoints, no mutations, nothing added to the write surface.
+
+### Tests
+
+- `tests/test_device_health.py` — 58 unit tests over the parsing and
+  threshold logic, using literal records shaped like real uploader output.
+- `tests/test_device_health_cli.py` — 26 CLI tests (JSON contract, human
+  rendering, option plumbing, empty/non-list server responses).
+- `tests/test_full_e2e.py` — 5 new round-trip tests: post a real-shaped
+  devicestatus record and read it back parsed; post care events and confirm
+  they drive the age counters.
+- Suite: 946 → 1035 passing. Total coverage 84%; `core/device_health.py` 97%.
+
 ## [2.2.0] — 2026-08-10
 
 Care Portal coverage refine. Before this release the CLI could only post the

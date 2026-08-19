@@ -4,6 +4,78 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.4.0] — 2026-08-19
+
+Basal refine. Every previous release could tell you what was *bolused* and
+never what was *delivered*: `report tdd` carried `includes_basal: false`
+because a `Temp Basal` record is a rate, not a dose, and summing its fields
+would have produced a number that looks like insulin and is not. The
+scheduled rate lived in the profile, the deviations lived in treatments, and
+nothing joined the two — so basal:bolus split, the first thing anyone looks
+at when a TDD moves, was uncomputable from this CLI.
+
+### Added — `core/basal.py`
+
+- `basal_schedule(store)` — normalises a profile body's basal slot list
+  (`time`, `timeAsSeconds`, an old-style scalar rate, unsorted or duplicate
+  slots) and totals the scheduled U/day with a per-slot breakdown.
+- `basal_delivery(treatments, store, start=, end=, tz=)` — integrates that
+  schedule over a window and replays the deviations on top of it:
+  `Temp Basal` as percent (a *relative delta*, matching the write path) or
+  absolute U/hr, later records superseding running ones, zero-duration
+  records as cancels, and `Suspend Pump` / `Resume Pump` windows delivering
+  nothing.
+- `true_tdd(bolus_totals, basal_report)` — merges the bolus rollup with the
+  reconstructed basal into a real TDD with a basal/bolus split.
+
+### Added — commands
+
+- `profile basal-total [--name NAME]` — scheduled basal U/day plus the
+  per-slot breakdown (`00:00–06:00  0.800 U/hr  6.00h  4.800 U`).
+- `report basal [--days N] [--from/--to] [--tz Z] [--profile NAME]` — per-day
+  *scheduled vs delivered* basal with the minutes spent under a temp,
+  suspended, or with no defined rate.
+- `report tdd --include-basal [--profile NAME]` — true TDD. Emits
+  `includes_basal: true`, per-day `basal_percent`/`bolus_percent`, and keeps
+  the untouched bolus-only payload alongside it under `bolus_only`.
+
+### Design notes
+
+- **Unknown is never zero.** A schedule that does not start at `00:00` leaves
+  that span undefined; it is reported as `unknown_minutes` and excluded from
+  the total instead of being delivered at 0 U/hr. A percent temp basal over
+  an undefined slot is likewise unknown, not a fabricated number. If no
+  profile can be resolved, `--include-basal` degrades to the bolus-only total
+  with `includes_basal: false` rather than reporting basal as 0 U.
+- **Partial days are labelled.** The clipped first/last day of a window carry
+  `partial: true` and are excluded from the averages, so nobody reads a
+  6-hour slice as a light basal day.
+- **DST is real.** Day length is computed from the bucket timezone, so a
+  spring-forward day is 23 h (and delivers 23 U on a 1 U/hr profile) and is
+  *not* mislabelled partial. The schedule's `HH:MM` slots are read in the
+  profile's own `timezone` field, which is frequently not the reporting one.
+- **Overrides are truncated, not stacked.** Nightscout has no "temp ended"
+  record; a temp runs until its duration expires *or* a later temp/cancel
+  supersedes it. Replaying without that truncation double-counts every
+  stacked temp, which is the usual way hand-rolled scripts get this wrong.
+- **A window boundary clips, it does not extend.** A temp basal that starts
+  before the window and is still running is honoured (treatments are fetched
+  with a 12 h look-back); one that runs past the window end contributes only
+  the part inside it.
+- **A `Profile Switch` inside the window is not applied** — the replay uses
+  one profile throughout — so the payload warns when it finds one instead of
+  returning a confidently wrong number. `--profile NAME` is the workaround.
+- Basal is *reconstructed intent*, not pump-confirmed delivery. It is the
+  best available answer from the Nightscout API, which stores commands rather
+  than confirmations, and the payload names its source in `basal_source`.
+
+### Changed
+
+- `report tdd` without `--include-basal` is byte-for-byte unchanged
+  (`includes_basal: false`); its human footer now points at the new flag.
+- The stand-in Nightscout server in `test_full_e2e.py` now seeds a real basal
+  schedule instead of an empty list.
+
 ## [2.3.0] — 2026-08-12
 
 Rig-health refine. `devicestatus` was the one collection the CLI passed

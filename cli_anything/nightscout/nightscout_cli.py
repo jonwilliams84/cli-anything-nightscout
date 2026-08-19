@@ -14,6 +14,7 @@ from typing import Any
 import click
 
 from cli_anything.nightscout.core import activity as activity_mod
+from cli_anything.nightscout.core import basal as basal_mod
 from cli_anything.nightscout.core import device_health as health_mod
 from cli_anything.nightscout.core import devicestatus as ds_mod
 from cli_anything.nightscout.core import entries as entries_mod
@@ -33,7 +34,7 @@ from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-VERSION = "2.3.0"
+VERSION = "2.4.0"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -1017,6 +1018,76 @@ def profile_list(ctx: click.Context) -> None:
             click.echo(
                 f"  {p.get('startDate', p.get('created_at', '?'))}  default={p.get('defaultProfile', '?')}"
             )
+
+
+def _basal_profile_store(
+    conn: dict[str, Any], name: str | None = None
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Resolve the profile body to replay basal from, plus its name.
+
+    With ``name`` it must exist (an agent asking for "Weekend" must not
+    silently get "Default"). Without one, the record's ``defaultProfile`` is
+    used, falling back to a lone store entry.
+    """
+    record = profile_mod.current(conn=conn)
+    if not record:
+        return None, None
+    store = record.get("store") or {}
+    if name:
+        body = store.get(name)
+        if not isinstance(body, dict):
+            available = ", ".join(sorted(store)) or "none"
+            raise click.ClickException(
+                f"No profile named '{name}' in the current record. Available: {available}"
+            )
+        return body, name
+    default = record.get("defaultProfile")
+    if default and isinstance(store.get(default), dict):
+        return store[default], default
+    if len(store) == 1:
+        only_name, only_body = next(iter(store.items()))
+        return (only_body if isinstance(only_body, dict) else None), only_name
+    return None, default
+
+
+@profile_grp.command("basal-total")
+@click.option("--name", default=None, help="Named profile to read (default: the active one).")
+@click.pass_context
+def profile_basal_total(ctx: click.Context, name: str | None) -> None:
+    """Scheduled basal U/day from the profile, with the per-slot breakdown.
+
+    This is *scheduled* insulin — what the profile would deliver with no temp
+    basals or suspends. Use `report basal` for what was actually delivered.
+    A schedule that does not start at 00:00 leaves that time undefined and is
+    reported as such rather than being counted as 0 U/hr.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    store, resolved = _basal_profile_store(conn, name)
+    res = basal_mod.basal_schedule(store)
+    res["profile_name"] = resolved
+    if _is_json(ctx):
+        _emit(ctx, res)
+        return
+    if not res["found"]:
+        click.echo(f"  no usable basal schedule (profile={resolved or '?'})")
+        for w in res["warnings"]:
+            click.echo(f"  ⚠ {w}")
+        return
+    click.echo(f"  profile     {resolved or '?'}  (schedule tz: {res['timezone'] or 'unset'})")
+    for slot in res["slots"]:
+        click.echo(
+            f"  {slot['start']}–{slot['end']}  {slot['rate']:>6.3f} U/hr  "
+            f"{slot['duration_hours']:>5.2f}h  {slot['units']:>7.3f} U"
+        )
+    click.echo(
+        f"  ── {res['total_units_per_day']:.3f} U/day over {res['slot_count']} slot(s); "
+        f"rates {res['min_rate']:g}–{res['max_rate']:g} U/hr"
+    )
+    if not res["covers_full_day"]:
+        click.echo(f"  ⚠ schedule covers only part of the day ({res['uncovered_minutes']} min gap)")
+    for w in res["warnings"]:
+        click.echo(f"  ⚠ {w}")
 
 
 # ─── devicestatus ──────────────────────────────────────────────────────────
@@ -3205,12 +3276,164 @@ def treatments_active(ctx: click.Context, hours: int, event_types: tuple[str, ..
             )
 
 
+_BASAL_LOOKBACK_HOURS = 12
+
+
+def _basal_window(
+    days: int,
+    date_gte: str | None,
+    date_lte: str | None,
+) -> tuple[Any, Any, str, str | None]:
+    """Resolve a report window into (start_dt, end_dt, date_gte, date_lte).
+
+    Explicit ``--from``/``--to`` win; otherwise the window is the last
+    ``days`` days ending now. The datetimes are what the basal replay
+    integrates over; the strings are what the API query uses.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    if date_gte:
+        start = basal_mod.parse_timestamp(date_gte) or (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        )
+        end = basal_mod.parse_timestamp(date_lte) if date_lte else None
+        if end is None:
+            end = datetime.now(timezone.utc)
+        return start, end, date_gte, date_lte
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+    return (
+        start,
+        end,
+        start.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        date_lte or end.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+    )
+
+
+def _basal_report(
+    ctx: click.Context,
+    conn: dict[str, Any],
+    *,
+    start: Any,
+    end: Any,
+    tz: str,
+    profile_name: str | None,
+) -> dict[str, Any]:
+    """Fetch the inputs and replay basal delivery over ``[start, end]``.
+
+    Treatments are fetched from ``_BASAL_LOOKBACK_HOURS`` *before* the window
+    so a temp basal or suspend that began earlier and is still running at the
+    window start is honoured instead of vanishing.
+    """
+    from datetime import timedelta
+
+    store, resolved = _basal_profile_store(conn, profile_name)
+    limit = 50000
+    txs = treatments_mod.list_treatments(
+        conn=conn,
+        count=limit,
+        date_gte=(start - timedelta(hours=_BASAL_LOOKBACK_HOURS)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z"
+        ),
+        date_lte=end.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+    )
+    _warn_truncation(txs, limit=limit, ctx=ctx)
+    return basal_mod.basal_delivery(
+        txs if isinstance(txs, list) else [],
+        store,
+        start=start,
+        end=end,
+        tz=tz,
+        profile_name=resolved,
+    )
+
+
+@report_grp.command("basal")
+@click.option("--days", default=7, type=int, help="Window size in days (default 7).")
+@click.option("--from", "date_gte", default=None, help="ISO date lower bound (overrides --days).")
+@click.option("--to", "date_lte", default=None)
+@click.option(
+    "--tz", "tz_name", default=None, help="Day-boundary timezone (default: local system tz)."
+)
+@click.option(
+    "--profile",
+    "profile_name",
+    default=None,
+    help="Named profile to replay (default: the active one).",
+)
+@click.pass_context
+def report_basal(
+    ctx: click.Context,
+    days: int,
+    date_gte: str | None,
+    date_lte: str | None,
+    tz_name: str | None,
+    profile_name: str | None,
+) -> None:
+    """Per-day basal insulin actually delivered — schedule replayed against overrides.
+
+    Integrates the profile's basal schedule over the window, then applies
+    ``Temp Basal`` (percent or absolute, later records superseding earlier
+    ones) and ``Suspend Pump`` / ``Resume Pump``. Reports scheduled vs
+    delivered units so an agent can see how far the loop moved basal.
+
+    Time with no defined rate is reported as ``unknown_minutes``, never as
+    0 U/hr, and clipped first/last days are flagged ``partial``.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    tz = tz_name or _default_tz_name()
+    start, end, _gte, _lte = _basal_window(days, date_gte, date_lte)
+    res = _basal_report(ctx, conn, start=start, end=end, tz=tz, profile_name=profile_name)
+    if _is_json(ctx):
+        _emit(ctx, res)
+        return
+    if not res["found"]:
+        click.echo("  basal delivery could not be computed")
+        for w in res["warnings"]:
+            click.echo(f"  ⚠ {w}")
+        return
+    click.echo(f"  profile {res['profile_name'] or '?'}  (schedule tz {res['schedule_tz']})")
+    click.echo("  date         scheduled  delivered   temp min  susp min  unknown")
+    for d in res["days"]:
+        flag = " partial" if d["partial"] else ""
+        click.echo(
+            f"  {d['date']}  {d['scheduled_units']:>9.2f}  {d['delivered_units']:>9.2f}  "
+            f"{d['temp_basal_minutes']:>8.0f}  {d['suspended_minutes']:>8.0f}  "
+            f"{d['unknown_minutes']:>7.0f}{flag}"
+        )
+    t = res["totals"]
+    click.echo(
+        f"  ── {res['day_count']} day(s): {t['delivered_units']:.2f} U delivered vs "
+        f"{t['scheduled_units']:.2f} U scheduled"
+    )
+    if res["avg_daily_delivered_units"] is not None:
+        click.echo(
+            f"  avg/full day {res['avg_daily_delivered_units']:.2f} U "
+            f"({res['full_day_count']} full day(s))"
+        )
+    for w in res["warnings"]:
+        click.echo(f"  ⚠ {w}")
+
+
 @report_grp.command("tdd")
 @click.option("--days", default=7, type=int, help="Window size in days (default 7).")
 @click.option("--from", "date_gte", default=None, help="ISO date lower bound (overrides --days).")
 @click.option("--to", "date_lte", default=None)
 @click.option(
     "--tz", "tz_name", default=None, help="Day-boundary timezone (default: local system tz)."
+)
+@click.option(
+    "--include-basal",
+    is_flag=True,
+    default=False,
+    help="Add reconstructed basal for a true TDD with a basal/bolus split.",
+)
+@click.option(
+    "--profile",
+    "profile_name",
+    default=None,
+    help="Named profile for --include-basal (default: the active one).",
 )
 @click.pass_context
 def report_tdd(
@@ -3219,11 +3442,15 @@ def report_tdd(
     date_gte: str | None,
     date_lte: str | None,
     tz_name: str | None,
+    include_basal: bool,
+    profile_name: str | None,
 ) -> None:
     """Per-day bolus insulin + carbs totals from treatment records.
 
-    Basal delivery is NOT included (a Temp Basal is a rate, not a dose), so
-    the JSON payload carries ``includes_basal: false``.
+    By default basal delivery is NOT included (a Temp Basal is a rate, not a
+    dose), so the payload carries ``includes_basal: false``. Pass
+    --include-basal to replay the profile's basal schedule against temp basals
+    and suspends and get a true TDD with a basal/bolus split.
     """
     from datetime import datetime, timedelta, timezone
 
@@ -3244,6 +3471,46 @@ def report_tdd(
     )
     _warn_truncation(txs, limit=limit, ctx=ctx)
     res = report_mod.treatment_totals(txs if isinstance(txs, list) else [], tz=tz)
+
+    if include_basal:
+        start_dt, end_dt, _gte, _lte = _basal_window(days, date_gte, date_lte)
+        basal_res = _basal_report(
+            ctx, conn, start=start_dt, end=end_dt, tz=tz, profile_name=profile_name
+        )
+        full = basal_mod.true_tdd(res, basal_res)
+        full["bolus_only"] = res
+        full["basal"] = basal_res
+        if _is_json(ctx):
+            _emit(ctx, full)
+            return
+        if not full["days"]:
+            click.echo("  no data in window")
+            return
+        click.echo("  date          bolus    basal    total   basal%")
+        for d in full["days"]:
+            basal_u = f"{d['basal_units']:>7.2f}" if d["basal_units"] is not None else "      ?"
+            total_u = f"{d['total_units']:>7.2f}" if d["total_units"] is not None else "      ?"
+            pct = f"{d['basal_percent']:>6.1f}%" if d["basal_percent"] is not None else "      ?"
+            flag = " partial" if d["partial"] else ""
+            click.echo(
+                f"  {d['date']}  {d['bolus_units']:>7.2f}  {basal_u}  {total_u}  {pct}{flag}"
+            )
+        tot = full["totals"]
+        basal_txt = f"{tot['basal_units']:.2f}" if tot["basal_units"] is not None else "?"
+        total_txt = f"{tot['total_units']:.2f}" if tot["total_units"] is not None else "?"
+        click.echo(
+            f"  ── {full['day_count']} day(s): {tot['bolus_units']:.2f} U bolus + "
+            f"{basal_txt} U basal = {total_txt} U"
+        )
+        if full["avg_daily_total_units"] is not None:
+            click.echo(
+                f"  avg/full day {full['avg_daily_total_units']:.2f} U "
+                f"(basal {full['basal_percent']:.1f}% of total)"
+            )
+        for w in full["warnings"]:
+            click.echo(f"  ⚠ {w}")
+        return
+
     if _is_json(ctx):
         _emit(ctx, res)
     elif not res["days"]:
@@ -3261,7 +3528,9 @@ def report_tdd(
             f"{t['carbs_g']:.0f}g carbs; avg/day "
             f"{res['avg_daily_insulin_units']:.2f}U / {res['avg_daily_carbs_g']:.0f}g"
         )
-        click.echo("  (bolus only — basal delivery is not included)")
+        click.echo(
+            "  (bolus only — basal delivery is not included; pass --include-basal for a true TDD)"
+        )
 
 
 # ─── rig health: devicestatus payload parsing + consumable age counters ────

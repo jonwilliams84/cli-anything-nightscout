@@ -456,4 +456,67 @@ clean (the new e2e tests also consumed two previously-unused imports in
   inherit them is not wired up. Every threshold is overridable on the core
   functions, but only `--stale-minutes` is exposed as a CLI flag so far.
 - **Basal delivery still not summed** in `report tdd` (carried over from the
-  previous pass).
+  previous pass). *Closed in v2.4.0 — see the basal refine section below.*
+
+
+---
+
+## Refine pass — basal delivery and true TDD (v2.4.0)
+
+### Gap addressed
+
+`report tdd` had shipped since v2.2.0 with `includes_basal: false` because a
+`Temp Basal` record is a *rate*, not a dose. The scheduled rate lived in the
+profile, the deviations lived in treatments, and nothing joined them — so
+delivered basal, and therefore the basal:bolus split, was uncomputable from
+this CLI. This pass closes exactly that gap (it was the last open item in the
+previous pass's coverage notes).
+
+### Test plan
+
+| File | New tests | Scope |
+|------|-----------|-------|
+| `tests/test_basal.py` — `TestBasalSchedule` | **17** | Flat and multi-slot schedules totalled correctly; slot lists sorted rather than assumed ordered; `timeAsSeconds` accepted; legacy scalar rate treated as a flat day (with a warning); missing / non-dict / basal-less profiles report `found: false`; unusable slots (bad time, non-numeric or negative value, non-dicts) skipped and counted; all-unusable → not found; duplicate slot times warn; **a schedule not starting at 00:00 leaves the gap undefined** (18 U total, not 24) instead of assuming a rate; implausible rate warns but keeps the value; `scheduled_rate_at` forward-fills and returns `None` (never 0) inside a gap. |
+| `tests/test_basal.py` — `TestBasalDelivery` | **29** | No treatments → delivery equals the schedule. `Temp Basal` as percent (relative delta, above and below 100), absolute, and the bare `rate` fallback. **A later temp truncates the running one**; a zero-duration record cancels it; a temp with the same start as its successor is dropped entirely. Temps with no rate fields or no timestamp are ignored *with warnings*. A temp starting before the window still counts. `Suspend Pump`/`Resume Pump`, suspend-with-duration, an unresumed suspend running to the window end (warned), and suspend beating a concurrent temp. **Uncovered schedule time is `unknown_minutes`, not 0 U/hr**, including a percent temp over an undefined slot; percent below −100 clamps at zero. Partial first/last days flagged and excluded from averages; day buckets follow `--tz` while slots are read in the profile's `timezone`; **a DST spring-forward day is 23 h, delivers 23 U and is not mislabelled partial**. No schedule → `found: false`; inverted window rejected; naive datetimes read as UTC; non-dict treatments ignored; **a `Profile Switch` inside the window raises a warning** (its schedule change is not applied) while one before the window does not. |
+| `tests/test_basal.py` — `TestTrueTdd` | **6** | Bolus + basal merged into a total with a basal/bolus percentage split; a basal-only day reports 0 U bolus; **a bolus day with no reconstructed basal reports `None`, not 0** (an absent basal figure must not read as "no basal"); an unreconstructable basal falls back to bolus-only with `includes_basal: false`; partial days excluded from averages; empty inputs do not explode. |
+| `tests/test_basal.py` — helpers | **4** | Timestamp parsing (ISO-Z, epoch ms, fractional seconds, NaN, out-of-range epoch, bool, junk), numeric coercion rejecting bool/NaN/inf, tz fallback to UTC, and every `HH:MM` / `timeAsSeconds` slot-time variant including the invalid ones. |
+| `tests/test_basal.py` — CLI | **21** | Command wiring with the profile/treatment fetchers mocked. `profile basal-total`: JSON contract, human table, `--name`, **an unknown `--name` errors instead of silently using the default**, no-profile path, single-entry store without `defaultProfile`, gap warning rendered. `report basal`: JSON contract, a temp basal reducing delivery, human output, not-computable path, `--days` window, and an assertion that treatments are fetched with the **12 h look-back**. `report tdd`: default stays byte-for-byte bolus-only, `--include-basal` adds the split and preserves `bolus_only`, `--profile` honoured, no-profile degrades to bolus-only, human renderings. |
+| `tests/test_full_e2e.py` (`TestRefineCLISubprocess`) | **4** | Installed-binary round-trips against the stand-in server (now seeded with a real basal schedule): `profile basal-total` totals the server's own schedule (21.6 U/day); a **backdated** zero-rate temp basal posted through `treatments temp-basal` drives `report basal` delivered below scheduled; `report tdd --include-basal` exceeds the bolus-only total and reports a sane `basal_percent`; `report basal` human output renders. |
+
+### Test results — 2026-08-19
+
+```text
+$ python3 -m pytest --no-header -q
+1116 passed in 15.21s
+
+$ python3 -m pytest tests --cov=cli_anything --cov-fail-under=78 -q
+TOTAL  4437  620  1480  117  85%
+Required test coverage of 78% reached. Total coverage: 85.35%
+```
+
+No regressions: all 1035 pre-existing tests still pass; 81 new = 1116 total.
+Module coverage: `core/basal.py` **99%** (the three uncovered branches are
+defensive `continue`s that the deduplicated breakpoint set cannot reach).
+
+Lint: `ruff check cli_anything/` and `ruff format --check cli_anything/` both
+clean.
+
+### Notes on coverage gaps still open
+
+- **`Profile Switch` is not applied during the replay.** A switch mid-window
+  (especially with `percentage` or `timeshift`) still replays against the
+  profile resolved at call time. The payload now *warns* when a switch falls
+  inside the window rather than returning a confidently wrong number, and
+  `--profile NAME` is the manual workaround — but honouring the switch is the
+  next obvious increment.
+- **Basal is reconstructed intent, not confirmed delivery.** Nightscout
+  stores commands, not pump acknowledgements; a pump that rejected or
+  truncated a temp will not show it here. `basal_source` names this in the
+  payload.
+- **`report tdd --include-basal` needs write-free profile access** but two
+  round trips (profile + treatments); there is no caching between them.
+- **Loop performance over time** (percentage of cycles enacted across days,
+  loop uptime) is still only a snapshot via `devicestatus loop` — unchanged
+  from the previous pass.
+- **Thresholds inherited from the server's own settings** remains unwired
+  (carried over).

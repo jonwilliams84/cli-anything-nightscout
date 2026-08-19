@@ -41,14 +41,14 @@ summary) are computed locally from data the server returns.
 | `status` | `info`, `version`, `versions`, `last-modified`, `verifyauth` | Server health, identity, plugin manifest |
 | `entries` | `latest`, `current`, `list`, `get`, `add`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize` | CGM glucose entries |
 | `treatments` | `latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`, `temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`, `event-types`, `active` | Treatment events (boluses, meals, site/sensor changes) + the structured Care Portal event types |
-| `profile` | `active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `create`, `update`, `delete` | Profile records and schedule lookups |
+| `profile` | `active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `basal-total`, `create`, `update`, `delete` | Profile records, schedule lookups and scheduled basal totals |
 | `devicestatus` | `latest`, `list`, `add`, `delete`, `pump`, `uploader`, `loop` | Device status — raw records plus parsed pump / uploader / closed-loop views |
 | `sensors` | `sessions` | CGM sensor-session detection (windows between `Sensor Start` / `Sensor Change` events) — canonical source for sensor-change history |
 | `properties` | `get` | Derived state from `/api/v2/properties` — IOB, COB, bgnow, delta, loop, sensor age |
 | `notifications` | `ack`, `admin` | Alarm acknowledgement and admin notices |
 | `activity` | `latest`, `list`, `get`, `add`, `delete` | Activity / exercise records (API v3) |
 | `food` | `list`, `quickpicks`, `regular`, `add`, `update`, `delete` | Food database |
-| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `device-health`, `ages` | Computed reports + composed snapshots |
+| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages` | Computed reports + composed snapshots |
 | `v3` | `list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history` | Generic CRUD + sync over any v3 collection |
 | `watch` | (socket.io) | Real-time entries/treatments stream (needs `pip install '.[watch]'`) |
 | `session` | `info`, `save`, `load`, `clear` | Session state and last-fetched cache |
@@ -120,7 +120,8 @@ and every downstream consumer then misreads them.
   bolus count, carbs, carb-event count, plus averages and an observed
   g-per-unit ratio. **Bolus only**: a `Temp Basal` is a rate, not a dose, so
   basal is excluded and the payload carries `includes_basal: false` instead of
-  pretending to be a true TDD.
+  pretending to be a true TDD. Pass `--include-basal` (v2.4.0+) to replay the
+  profile schedule against temp basals and suspends and get the real number.
 
 ## Rig health and consumable ages (v2.3.0+)
 
@@ -159,6 +160,56 @@ The age counters are computed from Care Portal treatments the server already
 returned, so they work with a read-only token and even when the server-side
 cage/sage/iage/bage plugins are disabled. They are driven by exactly the
 event-type strings `treatments care-event` writes.
+
+## Basal delivery and true TDD (v2.4.0+)
+
+Nightscout stores basal *intent* in two unrelated places and never reconciles
+them: the scheduled rate lives in the **profile** (`basal` slots), and every
+deviation from it lives in **treatments** (`Temp Basal`, `Suspend Pump` /
+`Resume Pump`). Neither alone answers "how much basal was delivered?", which
+is why `report tdd` is bolus-only by default. These commands join the two by
+integrating the rate over time.
+
+| Command | Answers |
+|---------|---------|
+| `profile basal-total [--name NAME]` | Scheduled U/day from the profile, with a per-slot breakdown (start/end, rate, hours, units). This is intent with no overrides applied. |
+| `report basal [--days N] [--from/--to] [--tz Z] [--profile NAME]` | Per-day **scheduled vs delivered** basal, plus minutes spent under a temp basal, suspended, or with no defined rate. |
+| `report tdd --include-basal [--profile NAME]` | True TDD: bolus + reconstructed basal, with per-day `basal_percent`/`bolus_percent`. The untouched bolus-only payload stays alongside under `bolus_only`. |
+
+Replay rules, all of which are the ways a hand-rolled script gets this wrong:
+
+- **`Temp Basal` percent is a relative delta** (`-50` = half basal), matching
+  what `treatments temp-basal` writes; `absolute` is U/hr outright. A bare
+  `rate` field is accepted when neither is present.
+- **A temp runs until its duration expires *or* a later record supersedes
+  it.** Nightscout has no "temp ended" record, and a zero-duration record is
+  a *cancel*. Replaying without that truncation double-counts stacked temps.
+- **`Suspend Pump` delivers nothing** until the matching `Resume Pump` (or
+  its own `duration`). A suspend with neither runs to the end of the window
+  and says so in `warnings`.
+- **The window clips, it does not extend.** Treatments are fetched with a
+  12 h look-back so a temp that started earlier and is still running counts;
+  one running past the window end contributes only the part inside it.
+- **Schedule times are read in the profile's own `timezone`**, which is often
+  not the reporting timezone.
+- **A `Profile Switch` inside the window is *not* applied** — the whole window
+  replays against one profile. The payload warns when it finds one; use
+  `--profile NAME` to pick which schedule to replay.
+
+Two familiar guarantees:
+
+- **Unknown is never zero.** A schedule that does not start at `00:00` leaves
+  that span undefined: it is reported as `unknown_minutes` and excluded, not
+  delivered at 0 U/hr. A percent temp over an undefined slot is unknown too.
+  With no resolvable profile, `--include-basal` degrades to `includes_basal:
+  false` rather than claiming 0 U of basal.
+- **Partial days are labelled** (`partial: true`) and excluded from averages;
+  day length comes from the bucket timezone, so a DST day is 23 or 25 hours
+  and is not mistaken for a clipped one.
+
+Basal here is *reconstructed intent*, not pump-confirmed delivery — the
+Nightscout API stores commands, not confirmations. The payload names its
+source in `basal_source`.
 
 ## Auth resolution order (highest precedence first)
 

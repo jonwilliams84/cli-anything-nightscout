@@ -79,14 +79,14 @@ cli-anything-nightscout
 | `status` | `info`, `version`, `versions`, `last-modified`, `verifyauth` | Server identity / plugin manifest / health |
 | `entries` | `latest`, `current`, `list`, `get`, `add`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize` | CGM glucose readings (sgv, mbg, cal, etr) |
 | `treatments` | `latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`, `active`, `event-types`, `temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event` | Treatment events. The named verbs cover the structured Care Portal event types and validate the field combinations before sending. |
-| `profile` | `active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `create`, `update`, `delete` | Profile records and schedule lookups |
+| `profile` | `active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `basal-total`, `create`, `update`, `delete` | Profile records, schedule lookups, scheduled basal U/day |
 | `devicestatus` | `latest`, `list`, `add`, `delete`, `pump`, `uploader`, `loop` | Device status snapshots. `pump`/`uploader`/`loop` **parse** the free-form payload (battery, reservoir, suspend state, loop cycle) instead of returning raw JSON. |
 | `sensors` | `sessions` | **CGM sensor-session detection** — windows between `Sensor Start` / `Sensor Change` treatments. Use this for sensor-change history. |
 | `properties` | `get [names]` | **Derived state from `/api/v2/properties`** — IOB, COB, bgnow, delta, loop, sensor age. The endpoint every HA integration uses. |
 | `notifications` | `ack`, `admin` | Acknowledge alarms; list admin notices |
 | `activity` | `latest`, `list`, `get`, `add`, `delete` | Activity / exercise records (API v3) |
 | `food` | `list`, `quickpicks`, `regular`, `add`, `update`, `delete` | Food database |
-| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `device-health`, `ages` | Computed reports + composed snapshots |
+| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages` | Computed reports + composed snapshots |
 | `v3` | `list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history` | Generic CRUD + sync over any v3 collection |
 | `watch` | (socket.io) | Real-time entries/treatments stream (`pip install '.[watch]'`) |
 | `session` | `info`, `save`, `load`, `clear` | Session state (cache + history) |
@@ -181,7 +181,10 @@ whether the harness already covers it. Common misses:
 | Set / cancel a temp basal or temp target | `treatments temp-basal` / `treatments temp-target` | `--duration 0` cancels. `--percent` is a relative delta, not an absolute rate. Do **not** hand-roll these with `treatments add` — the dedicated verbs validate the field combination. |
 | Switch profile, log a combo bolus, log exercise | `treatments profile-switch` / `treatments combo-bolus` / `treatments exercise` | For `combo-bolus`, `--insulin` is the TOTAL dose and the splits must sum to 100. |
 | Is a temp basal / temp target / override running now? | `treatments active --hours N` | Returns `remaining_minutes` + `ends_at`. Zero-duration records are cancels and never appear. Check this before stacking another override. |
-| Total daily insulin / carbs | `report tdd --days N --tz Z` | **Bolus only** — basal delivery is not included (`includes_basal: false`). Do not report it as a true TDD. |
+| Total daily insulin / carbs | `report tdd --days N --tz Z` | **Bolus only** by default — `includes_basal: false`. Do not report that number as a true TDD. |
+| **True TDD / basal:bolus split** | `report tdd --include-basal --days N --tz Z` | Replays the profile's basal schedule against temp basals and suspends, then adds bolus. Emits `includes_basal: true` and `basal_percent`. If no profile resolves it degrades to bolus-only — check the flag, don't assume. |
+| How much basal was delivered / did the loop cut basal? | `report basal --days N --tz Z` | Per-day scheduled vs delivered basal + minutes under a temp / suspended. `unknown_minutes` is time with no defined rate — that is NOT 0 U/hr. |
+| What is my scheduled basal rate / daily basal total? | `profile basal-total [--name NAME]` | Profile intent only, no overrides applied. Per-slot breakdown included. |
 | Which event-type strings are valid | `treatments event-types` | Care-event strings must match exactly or the age counters ignore them. |
 | Acknowledge an outstanding alarm | `notifications ack --level N` | `level` 0=info, 1=warn, 2=urgent. |
 | Server-side record count | `entries count --field type --op eq --value sgv` | Avoids fetching when you only need the count. |

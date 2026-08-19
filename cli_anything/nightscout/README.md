@@ -184,6 +184,44 @@ an observed g-per-unit ratio. **Bolus only** — a `Temp Basal` is a *rate*, not
 a dose, so basal delivery is excluded and the JSON says
 `"includes_basal": false` rather than passing the number off as a true TDD.
 
+### Basal delivery and true TDD (v2.4.0+)
+
+The scheduled rate lives in the profile; every deviation from it (`Temp
+Basal`, `Suspend Pump`/`Resume Pump`) lives in treatments. These commands
+join the two by integrating the rate over time:
+
+```bash
+# Scheduled basal U/day, with the per-slot breakdown
+cli-anything-nightscout profile basal-total
+#   00:00–06:00   0.800 U/hr   6.00h    4.800 U
+#   06:00–24:00   1.100 U/hr  18.00h   19.800 U
+#   ── 24.600 U/day over 2 slot(s); rates 0.8–1.1 U/hr
+
+# What was actually delivered — scheduled vs delivered, per day
+cli-anything-nightscout report basal --days 7 --tz Europe/London
+
+# True TDD with the basal:bolus split
+cli-anything-nightscout --json report tdd --include-basal --days 14 \
+  | jq '.totals, .basal_percent'
+```
+
+`report basal` reports the minutes spent under a temp basal, suspended, or
+with **no defined rate** (`unknown_minutes`) — a schedule that does not start
+at `00:00` leaves that span undefined, and it is excluded rather than
+delivered at 0 U/hr. Clipped first/last days carry `partial: true` and are
+kept out of the averages; day length comes from the bucket timezone, so a DST
+day is 23 or 25 hours.
+
+A temp basal runs until its duration expires *or* a later temp/cancel
+supersedes it — replaying without that truncation double-counts stacked
+temps. Treatments are fetched with a 12 h look-back so a temp that started
+before the window and is still running is honoured.
+
+This is *reconstructed intent*, not pump-confirmed delivery: the Nightscout
+API stores commands, not confirmations. With no resolvable profile,
+`--include-basal` degrades to the bolus-only total (`includes_basal: false`)
+instead of claiming 0 U of basal.
+
 ### Dry-run is network-safe (v2.1.0+)
 
 `--dry-run` now describes the request without sending it — every mutating
@@ -236,14 +274,14 @@ cli-anything-nightscout session info
 | `status` | Server identity (`info`, `version`, `versions`, `last-modified`, `verifyauth`) |
 | `entries` | CGM entries (`latest`, `current`, `list`, `get`, `add`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize`) |
 | `treatments` | Treatment events incl. boluses, meals, site/sensor changes (`latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`, `active`, `event-types`) plus validated Care Portal verbs (`temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`) |
-| `profile` | Profile records (`active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `create`, `update`, `delete`) |
-| `devicestatus` | Pump/CGM status (`latest`, `list`, `add`, `delete`) |
+| `profile` | Profile records (`active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `basal-total`, `create`, `update`, `delete`) |
+| `devicestatus` | Pump/CGM status (`latest`, `list`, `add`, `delete`) plus parsed views (`pump`, `uploader`, `loop`) |
 | `sensors` | CGM sensor-session detection from `Sensor Start` / `Sensor Change` treatments (`sessions`) |
 | `properties` | Derived state from `/api/v2/properties` — IOB, COB, bgnow, delta, loop, sensor age (`get`) |
 | `notifications` | Alarm `ack` + `admin` notices |
 | `activity` | Activity / exercise records — API v3 (`latest`, `list`, `get`, `add`, `delete`) |
 | `food` | Food database (`list`, `quickpicks`, `regular`, `add`, `update`, `delete`) |
-| `report` | Computed reports: `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `tdd`, plus composed snapshots `sensor-life` and `iob-cob` |
+| `report` | Computed reports: `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `tdd` (`--include-basal` for a true TDD), `basal`, plus composed snapshots `sensor-life`, `iob-cob`, `device-health` and `ages` |
 | `v3` | Generic CRUD + sync over any v3 collection (`list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history`) |
 | `watch` | Real-time entries/treatments via socket.io (needs `pip install '.[watch]'`) |
 | `session` | Session state (`info`, `save`, `load`, `clear`) |

@@ -7,7 +7,7 @@ data; analytic reports (TIR, GMI, AGP, MAGE…) are computed locally from server
 
 ## Layout
 - `cli_anything/nightscout/nightscout_cli.py` — Click entrypoint (`main`), wires all command groups (~3270 lines).
-- `cli_anything/nightscout/core/*.py` — one module per domain (entries, treatments, profile, devicestatus, sensors, properties, notifications, activity, food, report, excursions, v3, watch) + `project.py` (session/config state).
+- `cli_anything/nightscout/core/*.py` — one module per domain (entries, treatments, profile, basal, devicestatus, sensors, properties, notifications, activity, food, report, excursions, v3, watch) + `project.py` (session/config state).
 - `cli_anything/nightscout/utils/nightscout_backend.py` — HTTP transport, auth, retries; `repl_skin.py` — REPL UI.
 - `tests/` — unit tests + `test_full_e2e.py` (needs a live server). `scripts/` — standalone HA→Nightscout sensor-change bridge cron scripts (not part of the package).
 - `skills/cli-anything-nightscout/SKILL.md` and `cli_anything/nightscout/skills/SKILL.md` — agent skill docs. **NIGHTSCOUT.md** is the canonical SOP; read it for full command/auth reference.
@@ -29,6 +29,7 @@ data; analytic reports (TIR, GMI, AGP, MAGE…) are computed locally from server
 - Against production, prefer a **read-only token** unless mutations are required.
 - Structured Care Portal verbs (v2.2.0+): `treatments temp-basal|temp-target|profile-switch|combo-bolus|announcement|note|exercise|care-event` validate field combos client-side (`--duration 0` = cancel for temp basal/target; `combo-bolus --insulin` is the TOTAL dose and splits must sum to 100). `treatments active` = which duration-bearing overrides are running now; `report tdd` = per-day **bolus-only** insulin/carbs (`includes_basal: false`). Escape hatch: `treatments add --field KEY=VALUE` (repeatable).
 - Rig health (v2.3.0+): `devicestatus pump|uploader|loop` parse the free-form devicestatus sub-documents (pump battery/reservoir/suspend + clock skew, uploader battery, loop vs openaps dialects); `report device-health` composes them, `report ages` = CAGE/SAGE/IAGE/BAGE hours from Care Portal events. `--count` there is scan depth, not page size. Every payload has `level` + `warnings`; missing data is `found: false`/`unknown`, **never 0** — an unknown consumable age is not a fresh one.
+- Basal (v2.4.0+): `profile basal-total` = scheduled U/day from the profile; `report basal` replays that schedule against `Temp Basal` (percent = relative delta) / `Suspend Pump` to give delivered vs scheduled; `report tdd --include-basal` = true TDD + basal:bolus split (plain `report tdd` is unchanged and still bolus-only). A temp runs until a later temp/cancel supersedes it; time with no defined rate is `unknown_minutes`, **never** 0 U/hr; clipped days are `partial` and excluded from averages. It is reconstructed *intent* — Nightscout stores commands, not pump confirmations.
 - All commands accept `--json`. Transport env knobs: `NIGHTSCOUT_TIMEOUT`, `NIGHTSCOUT_RETRIES`, `NIGHTSCOUT_VERIFY_SSL`, `NIGHTSCOUT_CA_BUNDLE`, `NIGHTSCOUT_UNITS`.
 
 ## Conventions

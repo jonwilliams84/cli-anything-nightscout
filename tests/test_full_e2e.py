@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -77,7 +77,13 @@ class _NightscoutStandIn:
             "_id": _oid(),
             "defaultProfile": "Default",
             "startDate": "2025-04-01T00:00:00.000Z",
-            "store": {"Default": {"basal": []}},
+            "store": {"Default": {
+                "basal": [{"time": "00:00", "value": 0.8},
+                            {"time": "12:00", "value": 1.0}],
+                "carbratio": [{"time": "00:00", "value": 10}],
+                "sens": [{"time": "00:00", "value": 50}],
+                "timezone": "UTC",
+            }},
             "created_at": "2025-04-01T00:00:00.000Z",
         })
         self.food.append({
@@ -1001,6 +1007,80 @@ class TestRefineCLISubprocess:
             assert data["totals"]["insulin_units"] >= 4.2
             assert data["totals"]["carbs_g"] >= 42
             assert data["totals"]["bolus_count"] >= 1
+
+    # ---- basal: scheduled schedule, delivery replay, true TDD ----
+
+    def test_profile_basal_total(self, server_url_and_secret, tmp_path):
+        """`profile basal-total` totals the schedule the server actually holds."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "profile", "basal-total"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert "total_units_per_day" in data
+        assert "slots" in data
+        if not _is_live_mode():
+            # Seeded schedule: 0.8 U/hr until 12:00, then 1.0 U/hr.
+            assert data["found"] is True
+            assert data["profile_name"] == "Default"
+            assert data["slot_count"] == 2
+            assert data["total_units_per_day"] == pytest.approx(0.8 * 12 + 1.0 * 12)
+            assert data["covers_full_day"] is True
+            print(f"\n  scheduled basal: {data['total_units_per_day']} U/day")
+
+    def test_report_basal_replays_a_posted_temp_basal(self, server_url_and_secret, tmp_path):
+        """A zero-rate temp basal must reduce delivered basal below scheduled."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        # Backdated so the whole hour falls inside the reported window — a
+        # temp starting "now" runs into the future and is correctly clipped.
+        started = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z"
+        )
+        r = self._run(["--json", "treatments", "temp-basal",
+                        "--duration", "60", "--absolute", "0",
+                        "--created-at", started], env=env)
+        assert r.returncode == 0, r.stderr
+        r = self._run(["--json", "report", "basal", "--days", "1", "--tz", "UTC"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert "days" in data and "totals" in data
+        if not _is_live_mode():
+            assert data["found"] is True
+            assert data["totals"]["temp_basal_minutes"] > 0
+            assert data["totals"]["delivered_units"] < data["totals"]["scheduled_units"]
+            assert data["schedule_tz"] == "UTC"
+            print(f"\n  basal delivered {data['totals']['delivered_units']} U "
+                    f"vs scheduled {data['totals']['scheduled_units']} U")
+
+    def test_report_tdd_include_basal_beats_bolus_only(self, server_url_and_secret, tmp_path):
+        """--include-basal must add basal on top of the bolus-only total."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "treatments", "add",
+                        "--event-type", "Meal Bolus",
+                        "--carbs", "30", "--insulin", "3"], env=env)
+        assert r.returncode == 0, r.stderr
+        r = self._run(["--json", "report", "tdd", "--days", "1", "--tz", "UTC"], env=env)
+        assert r.returncode == 0, r.stderr
+        bolus_only = json.loads(r.stdout)
+        r = self._run(["--json", "report", "tdd", "--include-basal",
+                        "--days", "1", "--tz", "UTC"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert "totals" in data
+        if not _is_live_mode():
+            assert data["includes_basal"] is True
+            assert data["totals"]["basal_units"] > 0
+            assert data["totals"]["total_units"] > bolus_only["totals"]["insulin_units"]
+            assert 0 < data["basal_percent"] < 100
+            # The bolus-only view is preserved verbatim alongside the split.
+            assert data["bolus_only"]["includes_basal"] is False
+            print(f"\n  TDD {data['totals']['total_units']} U "
+                    f"({data['basal_percent']}% basal)")
+
+    def test_report_basal_human_output(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["report", "basal", "--days", "1", "--tz", "UTC"], env=env)
+        assert r.returncode == 0, r.stderr
+        assert "scheduled" in r.stdout and "delivered" in r.stdout
 
     def test_add_field_passthrough(self, server_url_and_secret, tmp_path):
         """`--field k=v` reaches the server as a real record field."""

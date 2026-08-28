@@ -39,7 +39,7 @@ summary) are computed locally from data the server returns.
 |-------|----------|---------|
 | `config` | `set`, `show`, `clear`, `test` | Manage server URL + API secret/token |
 | `status` | `info`, `version`, `versions`, `last-modified`, `verifyauth` | Server health, identity, plugin manifest |
-| `entries` | `latest`, `current`, `list`, `get`, `add`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize` | CGM glucose entries |
+| `entries` | `latest`, `current`, `list`, `get`, `add`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize`, `calibrations`, `raw`, `gaps` | CGM glucose entries, plus the record types the analytics filter away (`cal` transfer function, raw BG) and the silence *between* readings |
 | `treatments` | `latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`, `temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`, `event-types`, `active` | Treatment events (boluses, meals, site/sensor changes) + the structured Care Portal event types |
 | `profile` | `active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `basal-total`, `create`, `update`, `delete` | Profile records, schedule lookups and scheduled basal totals |
 | `devicestatus` | `latest`, `list`, `add`, `delete`, `pump`, `uploader`, `loop` | Device status — raw records plus parsed pump / uploader / closed-loop views |
@@ -48,7 +48,7 @@ summary) are computed locally from data the server returns.
 | `notifications` | `ack`, `admin` | Alarm acknowledgement and admin notices |
 | `activity` | `latest`, `list`, `get`, `add`, `delete` | Activity / exercise records (API v3) |
 | `food` | `list`, `quickpicks`, `regular`, `add`, `update`, `delete` | Food database |
-| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages` | Computed reports + composed snapshots |
+| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages`, `data-quality`, `accuracy` | Computed reports + composed snapshots |
 | `v3` | `list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history` | Generic CRUD + sync over any v3 collection |
 | `watch` | (socket.io) | Real-time entries/treatments stream (needs `pip install '.[watch]'`) |
 | `session` | `info`, `save`, `load`, `clear` | Session state and last-fetched cache |
@@ -210,6 +210,59 @@ Two familiar guarantees:
 Basal here is *reconstructed intent*, not pump-confirmed delivery — the
 Nightscout API stores commands, not confirmations. The payload names its
 source in `basal_source`.
+
+## Data trustworthiness (v2.5.0+)
+
+Nightscout's `entries` collection carries four record types. Every analytic in
+this harness before v2.5.0 filtered to `type == "sgv"` and discarded the rest,
+and none of them measured the *stream* — a window that is half empty still
+produces a confident, precise, wrong TIR, because the missing hours are
+weightless rather than counted as unknown.
+
+| Command | Answers |
+|---------|---------|
+| `report data-quality [--days N] [--from/--to] [--interval M] [--exclude-warmup] [--tz Z]` | CGM capture completeness: actual vs expected readings overall and per calendar day, gap list, duplicate timestamps, out-of-order delivery, sensor-noise histogram. |
+| `entries gaps [--days N] [--interval M] [--min-gap M]` | Just the dropouts — start, end, duration, readings lost. Newest first. |
+| `report accuracy [--days N] [--window-minutes M] [--min-pairs N]` | Meter vs sensor: MARD, median ARD, bias, MAD, ISO-style %15/15, %20/20, %40/40 agreement, Clarke error-grid zones A–E, and a hypo/target/hyper breakdown. |
+| `entries calibrations [--days N]` | Parsed `cal` records: slope / intercept / scale, interval since the previous calibration, and a per-field sanity check. |
+| `entries raw [--count N] [--cal-days N]` | Nightscout's `rawbg` — the uncalibrated value beside the calibrated `sgv`, plus the divergence between them. |
+
+Rules that matter:
+
+- **The window you asked for is the window scored.** `capture_report` defaults
+  its window to first→last reading only when no explicit range is given; the
+  CLI always passes the resolved `--days`/`--from`/`--to` range. Otherwise an
+  uploader that died three days ago scores 100%, because the window shrinks
+  with the data.
+- **`report accuracy` is the only report here with an external reference.**
+  Everything else grades the CGM using the CGM. It pairs `mbg` entries *and*
+  `BG Check` treatments against the nearest sgv inside `--window-minutes`
+  (default 15). `BG Check` rows with `glucoseType: Sensor` are excluded by
+  default — scoring the CGM against a number that came off the CGM measures
+  nothing. Readings uploaded as both an `mbg` entry and a `BG Check` are
+  de-duplicated on (second, value) so they count once.
+- **Clarke zone D and E are called out separately.** They are not "worse B"s:
+  a D is a real hypo the sensor said was fine, an E would drive treatment in
+  the wrong direction. Either one forces `level: urgent` regardless of MARD.
+- **A verdict needs data.** Under `--min-pairs` (default 5) matched pairs the
+  numbers are still returned but `found: false` / `level: unknown`. A MARD off
+  two finger-sticks is noise.
+- **Gaps are annotated, never hidden.** `--exclude-warmup` removes the ~2 h of
+  expected silence after each `Sensor Start`/`Sensor Change` from the
+  *denominator* (composing with the same events `sensors sessions` reads), but
+  the gap still appears in the list with `explained: true`. Suppressing it
+  would let a genuinely dead uploader disappear behind a sensor change.
+- **Unknown is never zero.** No `cal` records → `found: false`, not a clean
+  bill of health; Libre and most Loop uploaders never emit them. An entry with
+  no `unfiltered` field → `raw_mgdl: null`. Nightscout's own `rawbg` returns
+  `0` in that case, which is indistinguishable from a real reading, so this
+  harness deliberately diverges.
+- **Calibration bounds are heuristics, not spec.** The slope/intercept/scale
+  bands (`CAL_SLOPE_MIN` etc. in `core/calibration.py`) describe Dexcom G4/G5
+  records as observed in the wild; every bound is a keyword argument.
+
+The intended workflow is to run `report data-quality` *first* and treat its
+`capture_pct` / `level` as a qualifier on every glucose statistic that follows.
 
 ## Auth resolution order (highest precedence first)
 

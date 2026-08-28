@@ -1108,3 +1108,317 @@ class TestRefineCLISubprocess:
         # Just confirm it returns a list (empty allowed).
         data = json.loads(r.stdout)
         assert isinstance(data, list)
+
+
+# ─── v2.5.0: data-trustworthiness surface (calibration / accuracy / capture) ──
+
+@pytest.fixture(scope="module")
+def seeded(server_url_and_secret):
+    """Post a known sgv stream with a hole, a cal record and meter readings.
+
+    Module-scoped so the ~56 seeded records are written once. The window is
+    deliberately opened 10min BEFORE the first reading so the calibration that
+    precedes the stream falls inside `--from`.
+    """
+    url, secret = server_url_and_secret
+    conn = {"server_url": url, "api_secret": secret, "api_token": "", "units": "mg/dl"}
+    if _is_live_mode():
+        pytest.skip("data-quality seeding writes many records; skipped in LIVE mode")
+    cls = TestDataQualityE2E
+    base = cls._base(conn)
+    recs = []
+    # 0-115min: 24 readings at 5min. Then a ~2h hole. Then 24 more.
+    for i in range(24):
+        recs.append(cls._rec(base, i * 5, type="sgv", sgv=110 + (i % 5), direction="Flat"))
+    for i in range(24):
+        recs.append(cls._rec(base, 240 + i * 5, type="sgv", sgv=140 + (i % 5), direction="Flat"))
+    # A calibration in force from before the very first reading.
+    recs.append(cls._rec(base, -5, type="cal", slope=1000.0, intercept=30000.0, scale=1.0))
+    # Meter readings lined up with sgv timestamps (sensor reads ~10 high).
+    for i in (0, 6, 12, 18):
+        recs.append(cls._rec(base, i * 5, type="mbg", mbg=100 + (i % 5)))
+    for i in (0, 6, 12):
+        recs.append(cls._rec(base, 240 + i * 5, type="mbg", mbg=130 + (i % 5)))
+    cls._post_entries(conn, recs)
+    time.sleep(0.1)
+    return {
+        "conn": conn,
+        "from": (base - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "to": (base + timedelta(minutes=400)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+    }
+
+
+
+class TestDataQualityE2E:
+    """E2E for `entries calibrations|raw|gaps` and `report accuracy|data-quality`.
+
+    These need entry types the rest of the suite never posts (`cal`, `mbg`) and
+    a deliberately holey sgv stream, so the records are seeded through the real
+    HTTP transport rather than through `entries.add_sgv`, which only builds
+    sgv-shaped payloads.
+    """
+
+    CLI_BASE = _resolve_cli("cli-anything-nightscout")
+
+    # Seeded data lives well in the past so it cannot collide with whatever a
+    # live server already holds, and so `--from/--to` fully bracket it.
+    WINDOW_DAYS_AGO = 3
+
+    def _run(self, args, env=None, check=True):
+        env_full = os.environ.copy()
+        if env:
+            env_full.update(env)
+        return subprocess.run(
+            self.CLI_BASE + list(args),
+            capture_output=True, text=True, check=check, env=env_full, timeout=30,
+        )
+
+    def _conn_env(self, server_url_and_secret, tmp_path):
+        url, secret = server_url_and_secret
+        return {
+            "NIGHTSCOUT_URL": url,
+            "NIGHTSCOUT_API_SECRET": secret,
+            "NIGHTSCOUT_TOKEN": "",
+            "CLI_ANYTHING_HOME": str(tmp_path),
+        }
+
+    # -- seeding -----------------------------------------------------------
+
+    @staticmethod
+    def _base(conn):
+        return datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ) - timedelta(days=TestDataQualityE2E.WINDOW_DAYS_AGO)
+
+    @staticmethod
+    def _post_entries(conn, records):
+        from cli_anything.nightscout.utils import nightscout_backend as backend
+        return backend.post(
+            "/entries.json",
+            data=records,
+            base_url=conn["server_url"],
+            version="v1",
+            api_secret=conn.get("api_secret"),
+            token=conn.get("api_token"),
+        )
+
+    @staticmethod
+    def _rec(base, minutes, **fields):
+        ts = base + timedelta(minutes=minutes)
+        ms = int(ts.timestamp() * 1000)
+        rec = {
+            "date": ms,
+            "dateString": ts.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            "device": "e2e-dataquality",
+        }
+        rec.update(fields)
+        return rec
+
+    # -- entries calibrations ---------------------------------------------
+
+    def test_entries_calibrations_json(self, seeded, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(
+            ["--json", "entries", "calibrations", "--from", seeded["from"], "--to", seeded["to"]],
+            env=env,
+        )
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["found"] is True
+        assert data["count"] >= 1
+        rec = data["records"][0]
+        assert rec["slope"] == 1000.0
+        assert rec["intercept"] == 30000.0
+        assert rec["sane"] is True
+        print(f"\n  cal slope={rec['slope']} intercept={rec['intercept']} sane={rec['sane']}")
+
+    def test_entries_calibrations_human(self, seeded, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(
+            ["entries", "calibrations", "--from", seeded["from"], "--to", seeded["to"]], env=env
+        )
+        assert r.returncode == 0, r.stderr
+        assert "calibration record" in r.stdout
+        assert "slope" in r.stdout
+
+    # -- entries raw -------------------------------------------------------
+
+    def test_entries_raw_reports_null_without_unfiltered(self, seeded,
+                                                           server_url_and_secret, tmp_path):
+        """The seeded stream has no `unfiltered`, so raw must be null, not 0."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "entries", "raw", "--count", "10"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert all(row["raw_mgdl"] is None for row in data["rows"])
+        assert data["found"] is False
+
+    def test_entries_raw_computes_when_unfiltered_present(self, seeded,
+                                                            server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        base = self._base(seeded["conn"])
+        # unfiltered 130000 with slope 1000 / intercept 30000 → raw 100 mg/dL
+        self._post_entries(
+            seeded["conn"],
+            [self._rec(base, 500, type="sgv", sgv=100, unfiltered=130000, direction="Flat")],
+        )
+        time.sleep(0.1)
+        r = self._run(["--json", "entries", "raw", "--count", "300"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        computed = [row for row in data["rows"] if row["raw_mgdl"] is not None]
+        assert computed, "expected at least one reconstructed raw value"
+        assert computed[0]["raw_mgdl"] == pytest.approx(100.0, abs=0.5)
+        print(f"\n  raw={computed[0]['raw_mgdl']} sgv={computed[0]['sgv_mgdl']}")
+
+    # -- entries gaps ------------------------------------------------------
+
+    def test_entries_gaps_finds_the_seeded_hole(self, seeded, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(
+            ["--json", "entries", "gaps", "--from", seeded["from"], "--to", seeded["to"]], env=env
+        )
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["count"] >= 1
+        biggest = max(data["gaps"], key=lambda g: g["minutes"])
+        assert biggest["minutes"] == pytest.approx(125.0, abs=1.0)
+        assert biggest["missing_readings"] == 24
+        print(f"\n  gap {biggest['hours']}h missing {biggest['missing_readings']} readings")
+
+    def test_entries_gaps_human(self, seeded, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(
+            ["entries", "gaps", "--from", seeded["from"], "--to", seeded["to"]], env=env
+        )
+        assert r.returncode == 0, r.stderr
+        assert "gap(s)" in r.stdout and "duration" in r.stdout
+
+    # -- report accuracy ---------------------------------------------------
+
+    def test_report_accuracy_scores_the_seeded_sensor(self, seeded,
+                                                       server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(
+            ["--json", "report", "accuracy", "--from", seeded["from"], "--to", seeded["to"]],
+            env=env,
+        )
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["pairs"] >= 5
+        assert data["found"] is True
+        # Sensor was seeded ~10 mg/dL above the meter.
+        assert data["bias_mgdl"] > 0
+        assert data["mard_pct"] is not None
+        assert sum(data["clarke"][z] for z in "ABCDE") == data["pairs"]
+        print(f"\n  MARD={data['mard_pct']}% bias={data['bias_mgdl']} "
+                f"pairs={data['pairs']} A+B={data['clarke']['a_b_pct']}%")
+
+    def test_report_accuracy_human(self, seeded, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(
+            ["report", "accuracy", "--from", seeded["from"], "--to", seeded["to"]], env=env
+        )
+        assert r.returncode == 0, r.stderr
+        assert "MARD" in r.stdout and "Clarke" in r.stdout
+
+    def test_report_accuracy_window_tightening_drops_pairs(self, seeded,
+                                                             server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        args = ["--json", "report", "accuracy", "--from", seeded["from"], "--to", seeded["to"]]
+        loose = json.loads(self._run([*args, "--window-minutes", "15"], env=env).stdout)
+        tight = json.loads(self._run([*args, "--window-minutes", "1"], env=env).stdout)
+        assert tight["pairs"] <= loose["pairs"]
+
+    # -- report data-quality ----------------------------------------------
+
+    def test_report_data_quality_measures_the_hole(self, seeded,
+                                                     server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(
+            ["--json", "report", "data-quality", "--from", seeded["from"],
+             "--to", seeded["to"], "--tz", "UTC"],
+            env=env,
+        )
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["found"] is True
+        # 48 readings across a 400min window at 5min cadence ≈ 60%.
+        assert data["capture_pct"] < 85.0
+        assert data["level"] in ("warn", "urgent")
+        assert data["gap_count"] >= 1
+        assert data["days"]
+        print(f"\n  capture={data['capture_pct']}% level={data['level']} "
+                f"gaps={data['gap_count']}")
+
+    def test_report_data_quality_human(self, seeded, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(
+            ["report", "data-quality", "--from", seeded["from"], "--to", seeded["to"],
+             "--tz", "UTC"],
+            env=env,
+        )
+        assert r.returncode == 0, r.stderr
+        assert "capture" in r.stdout and "hygiene" in r.stdout
+
+    def test_data_quality_qualifies_a_tir_from_the_same_window(self, seeded,
+                                                                 server_url_and_secret, tmp_path):
+        """Workflow: run data-quality first, then TIR, over the same window.
+
+        This is the composition the command exists for — the TIR is a real
+        number either way, but only one of the two calls tells you how much of
+        the window it was actually computed from.
+        """
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        window = ["--from", seeded["from"], "--to", seeded["to"]]
+        dq = json.loads(
+            self._run(["--json", "report", "data-quality", *window, "--tz", "UTC"], env=env).stdout
+        )
+        tir = json.loads(self._run(["--json", "report", "tir", *window], env=env).stdout)
+        assert tir["total_readings"] > 0
+        assert dq["readings"] >= tir["total_readings"] * 0.5
+        assert dq["capture_pct"] < 100.0
+        print(f"\n  TIR {tir['tir_pct']}% computed from only "
+                f"{dq['capture_pct']}% of the window")
+
+    def test_exclude_warmup_lifts_capture(self, seeded, server_url_and_secret, tmp_path):
+        """`--exclude-warmup` must compose with the Care Portal sensor events."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        base = self._base(seeded["conn"])
+        # A sensor change covering the seeded hole.
+        self._run(
+            ["--json", "treatments", "add", "--event-type", "Sensor Change",
+             "--created-at", (base + timedelta(minutes=115)).strftime("%Y-%m-%dT%H:%M:%S.000Z")],
+            env=env, check=False,
+        )
+        time.sleep(0.1)
+        window = ["--from", seeded["from"], "--to", seeded["to"], "--tz", "UTC"]
+        plain = json.loads(
+            self._run(["--json", "report", "data-quality", *window], env=env).stdout
+        )
+        excluded = json.loads(
+            self._run(
+                ["--json", "report", "data-quality", *window, "--exclude-warmup"], env=env
+            ).stdout
+        )
+        assert excluded["capture_pct"] >= plain["capture_pct"]
+        assert excluded["excluded_hours"] >= 0.0
+        # The gap is still listed even when it is explained away.
+        assert excluded["gap_count"] == plain["gap_count"]
+
+    # -- help / registration ----------------------------------------------
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            ["entries", "calibrations"],
+            ["entries", "raw"],
+            ["entries", "gaps"],
+            ["report", "accuracy"],
+            ["report", "data-quality"],
+        ],
+    )
+    def test_help_exits_zero(self, path):
+        r = self._run([*path, "--help"])
+        assert r.returncode == 0, r.stderr
+        assert "Options:" in r.stdout

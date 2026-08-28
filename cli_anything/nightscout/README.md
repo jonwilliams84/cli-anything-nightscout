@@ -222,6 +222,66 @@ API stores commands, not confirmations. With no resolvable profile,
 `--include-basal` degrades to the bolus-only total (`includes_basal: false`)
 instead of claiming 0 U of basal.
 
+### Is the data trustworthy? (v2.5.0+)
+
+Every other report here weights the readings it was handed equally, so a
+window that is half empty still yields a confident TIR. These commands
+measure the *stream* rather than the glucose in it, and read the entry types
+the rest of the CLI filters away (`cal`, `mbg`).
+
+```bash
+# CGM capture: expected vs actual readings, gaps, duplicates, noise
+cli-anything-nightscout report data-quality --days 14 --tz Europe/London
+#   capture   58.5%  (48 of 82 expected over 6.83h)  [urgent]
+#   gaps      1  longest 125.0min  total 125.0min
+#   hygiene   0 duplicate ts, 0 out-of-order, 0 noisy
+
+# Where exactly did the data go
+cli-anything-nightscout entries gaps --days 7
+
+# Meter vs sensor — the only report here with an external reference
+cli-anything-nightscout report accuracy --days 30
+#   MARD           8.9%   (median 8.7%)
+#   bias           10.0 mg/dL   MAD 10.0 mg/dL
+#   agreement      15/15 100.0%   20/20 100.0%   40/40 100.0%
+#   Clarke         A=7 B=0 C=0 D=0 E=0   (A+B 100.0%)
+
+# Parsed `cal` records — slope / intercept / scale, cadence, sanity
+cli-anything-nightscout entries calibrations --days 14
+
+# Raw (uncalibrated) BG beside sgv — Nightscout's `rawbg` plugin
+cli-anything-nightscout entries raw --count 48
+```
+
+Run `report data-quality` **before** trusting `report tir`/`gmi`/`agp`:
+
+```bash
+cli-anything-nightscout --json report data-quality --days 14 | jq '.capture_pct, .level'
+cli-anything-nightscout --json report tir --from ... --to ...   # now qualified
+```
+
+Notes that matter:
+
+- **The window you asked for is the window scored.** Passing `--from/--to`
+  (or `--days`) scores against *that* range, so an uploader that died three
+  days ago drops the capture percentage instead of silently shrinking the
+  window and scoring 100%.
+- **`report accuracy` needs an external reference.** It pairs `mbg` entries
+  and `BG Check` treatments with the nearest sensor reading. `BG Check` rows
+  whose `glucoseType` is `Sensor` are excluded by default — grading the CGM
+  against a number that came off the CGM measures nothing (`--include-sensor-meter`
+  overrides). Below `--min-pairs` (default 5) the verdict is withheld
+  (`found: false`) rather than computed off a handful of sticks. Clarke
+  zone **D** pairs are the dangerous ones: a real hypo the sensor called fine.
+- **`--exclude-warmup` composes with the sensor events.** It discounts the
+  ~2 h of expected silence after each `Sensor Start`/`Sensor Change` from the
+  denominator, but the gap is still *listed* with `explained: true` — a dead
+  uploader must not be able to hide behind a sensor change.
+- **Unknown is never zero.** No `cal` records reports `found: false`, not a
+  clean bill of health (Libre and most Loop uploaders never emit them). An
+  entry with no `unfiltered` field gets `raw_mgdl: null`, not 0 — Nightscout's
+  own `rawbg` returns 0 there, which is indistinguishable from a real reading.
+
 ### Dry-run is network-safe (v2.1.0+)
 
 `--dry-run` now describes the request without sending it — every mutating
@@ -272,7 +332,7 @@ cli-anything-nightscout session info
 |-------|-------------|
 | `config` | Manage server URL + API secret/token (`set`, `show`, `clear`, `test`) |
 | `status` | Server identity (`info`, `version`, `versions`, `last-modified`, `verifyauth`) |
-| `entries` | CGM entries (`latest`, `current`, `list`, `get`, `add`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize`) |
+| `entries` | CGM entries (`latest`, `current`, `list`, `get`, `add`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize`) plus the data-quality surface (`calibrations`, `raw`, `gaps`) |
 | `treatments` | Treatment events incl. boluses, meals, site/sensor changes (`latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`, `active`, `event-types`) plus validated Care Portal verbs (`temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`) |
 | `profile` | Profile records (`active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `basal-total`, `create`, `update`, `delete`) |
 | `devicestatus` | Pump/CGM status (`latest`, `list`, `add`, `delete`) plus parsed views (`pump`, `uploader`, `loop`) |
@@ -281,7 +341,7 @@ cli-anything-nightscout session info
 | `notifications` | Alarm `ack` + `admin` notices |
 | `activity` | Activity / exercise records — API v3 (`latest`, `list`, `get`, `add`, `delete`) |
 | `food` | Food database (`list`, `quickpicks`, `regular`, `add`, `update`, `delete`) |
-| `report` | Computed reports: `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `tdd` (`--include-basal` for a true TDD), `basal`, plus composed snapshots `sensor-life`, `iob-cob`, `device-health` and `ages` |
+| `report` | Computed reports: `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `tdd` (`--include-basal` for a true TDD), `basal`, plus composed snapshots `sensor-life`, `iob-cob`, `device-health`, `ages`, and the trustworthiness pair `data-quality` + `accuracy` |
 | `v3` | Generic CRUD + sync over any v3 collection (`list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history`) |
 | `watch` | Real-time entries/treatments via socket.io (needs `pip install '.[watch]'`) |
 | `session` | Session state (`info`, `save`, `load`, `clear`) |

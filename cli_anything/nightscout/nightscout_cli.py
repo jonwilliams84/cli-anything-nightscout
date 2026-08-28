@@ -15,6 +15,7 @@ import click
 
 from cli_anything.nightscout.core import activity as activity_mod
 from cli_anything.nightscout.core import basal as basal_mod
+from cli_anything.nightscout.core import calibration as calibration_mod
 from cli_anything.nightscout.core import device_health as health_mod
 from cli_anything.nightscout.core import devicestatus as ds_mod
 from cli_anything.nightscout.core import entries as entries_mod
@@ -24,6 +25,7 @@ from cli_anything.nightscout.core import notifications as notifications_mod
 from cli_anything.nightscout.core import profile as profile_mod
 from cli_anything.nightscout.core import project
 from cli_anything.nightscout.core import properties as properties_mod
+from cli_anything.nightscout.core import quality as quality_mod
 from cli_anything.nightscout.core import report as report_mod
 from cli_anything.nightscout.core import sensors as sensors_mod
 from cli_anything.nightscout.core import status as status_mod
@@ -34,7 +36,7 @@ from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-VERSION = "2.4.0"
+VERSION = "2.5.0"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -2680,6 +2682,211 @@ def entries_normalize(ctx: click.Context, to_units: str, from_units: str, count:
             click.echo(_format_entry_row(e))
 
 
+# ─── entries: calibration / raw / gaps (data-quality surface) ──────────────
+#
+# Everything else in this CLI filters entries down to `type == "sgv"`. These
+# three verbs are the ones that read the record types that filter throws away:
+# `cal` (the raw→mg/dL transfer function) and the silence BETWEEN readings.
+
+
+def _entries_window(
+    ctx: click.Context,
+    conn: dict[str, Any],
+    *,
+    days: int,
+    date_gte: str | None,
+    date_lte: str | None,
+    type_: str | None = None,
+    limit: int = 100000,
+) -> tuple[list[dict[str, Any]], str, str]:
+    """Fetch entries for an analytic window; returns (entries, from_iso, to_iso).
+
+    Centralises the `--days` vs `--from/--to` dance the report commands all do,
+    so a new report cannot accidentally resolve its window differently.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    end = _parse_iso_utc(date_lte) if date_lte else datetime.now(timezone.utc)
+    start = _parse_iso_utc(date_gte) if date_gte else end - timedelta(days=days)
+    gte = start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    lte = end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    data = entries_mod.list_entries(conn=conn, count=limit, type_=type_, date_gte=gte, date_lte=lte)
+    rows = data if isinstance(data, list) else []
+    _warn_truncation(rows, limit=limit, ctx=ctx)
+    return rows, gte, lte
+
+
+def _parse_iso_utc(value: str) -> Any:
+    """Parse a user-supplied ISO date/datetime into an aware UTC datetime."""
+    from datetime import datetime, timezone
+
+    raw = str(value).strip()
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise click.ClickException(
+            f"could not parse {value!r} as an ISO date (try 2025-01-01 or 2025-01-01T00:00:00Z)"
+        ) from None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+@entries_grp.command("calibrations")
+@click.option("--days", default=14, type=int, help="Look-back window in days (default 14)")
+@click.option("--from", "date_gte", default=None, help="ISO lower bound (overrides --days)")
+@click.option("--to", "date_lte", default=None, help="ISO upper bound")
+@click.option("--limit", default=50, type=int, help="Max records to print (JSON is never cut)")
+@click.pass_context
+def entries_calibrations(
+    ctx: click.Context, days: int, date_gte: str | None, date_lte: str | None, limit: int
+) -> None:
+    """Parsed `cal` records — slope / intercept / scale, cadence, sanity check.
+
+    Dexcom-style uploaders write a `cal` entry every time the sensor is
+    calibrated; it carries the affine transform from raw transmitter counts to
+    mg/dL. A slope or intercept outside the usual band is the root cause behind
+    "the CGM reads 40 points off" — and it is invisible in every other report.
+
+    An empty window reports `found: false`, not a clean bill of health: plenty
+    of uploaders (Libre, most Loop setups) never emit `cal` records at all.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    rows, _, _ = _entries_window(
+        ctx, conn, days=days, date_gte=date_gte, date_lte=date_lte, type_="cal", limit=10000
+    )
+    res = calibration_mod.parse_cal_records(rows)
+    if _is_json(ctx):
+        _emit(ctx, res)
+        return
+    if not res["found"]:
+        click.echo(f"  no calibration records in the last {days} day(s)")
+        for w in res["warnings"]:
+            click.echo(f"  ⚠ {w}")
+        return
+    click.echo(f"  {res['count']} calibration record(s), newest first  [{res['level']}]")
+    if res["latest_age_hours"] is not None:
+        click.echo(f"  last calibrated {res['latest_age_hours']}h ago")
+    if res["mean_interval_hours"] is not None:
+        click.echo(f"  mean interval   {res['mean_interval_hours']}h")
+    click.echo("  date                       slope   intercept    scale   gap")
+    for r in res["records"][:limit]:
+        gap = f"{r['interval_hours']}h" if r["interval_hours"] is not None else "—"
+        click.echo(
+            f"  {(r['date'] or '?')[:19]}   {r['slope']!s:>6}   {r['intercept']!s:>9}"
+            f"   {r['scale']!s:>6}   {gap:>7}"
+            + ("" if r["sane"] else "  ⚠ " + "; ".join(r["issues"]))
+        )
+    for w in res["warnings"]:
+        click.echo(f"  ⚠ {w}")
+
+
+@entries_grp.command("raw")
+@click.option("--count", default=48, type=int, help="Recent sgv entries to reconstruct")
+@click.option("--cal-days", default=14, type=int, help="Look-back for calibration records")
+@click.option("--units", "units_flag", default=None, type=click.Choice(["mg/dl", "mmol", "mmol/l"]))
+@click.option("--limit", default=48, type=int, help="Max rows to print (JSON is never cut)")
+@click.pass_context
+def entries_raw(
+    ctx: click.Context, count: int, cal_days: int, units_flag: str | None, limit: int
+) -> None:
+    """Raw (uncalibrated) BG beside the calibrated sgv — Nightscout's `rawbg`.
+
+    Applies the calibration in force at each reading to its `unfiltered` /
+    `filtered` counts. A steady offset means the calibration has drifted; a
+    sharp raw-only dive while sgv stays flat is the classic compression low.
+
+    Needs BOTH a `cal` record and entries carrying `unfiltered` — most Loop and
+    Libre uploaders export neither, in which case rows come back with
+    `raw_mgdl: null` rather than a fabricated number.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    units = units_flag or conn.get("units", "mg/dl")
+    sgvs = entries_mod.latest(count=count, conn=conn)
+    cals, _, _ = _entries_window(
+        ctx, conn, days=cal_days, date_gte=None, date_lte=None, type_="cal", limit=10000
+    )
+    res = calibration_mod.raw_bg_series(
+        sgvs if isinstance(sgvs, list) else [], cals=cals, units=units
+    )
+    if _is_json(ctx):
+        _emit(ctx, res)
+        return
+    click.echo(
+        f"  {res['computed']}/{res['count']} entries reconstructed "
+        f"from {res['calibrations_used']} calibration(s)"
+    )
+    if res["mean_divergence_mgdl"] is not None:
+        click.echo(
+            f"  raw − sgv: mean {res['mean_divergence_mgdl']} "
+            f"max |Δ| {res['max_abs_divergence_mgdl']} ({res['units']})"
+        )
+    click.echo("  date                        sgv     raw     Δ   noise")
+    for r in res["rows"][:limit]:
+        click.echo(
+            f"  {(r['date'] or '?')[:19]}   {r['sgv_mgdl']!s:>5}   {r['raw_mgdl']!s:>5}"
+            f"   {r['divergence_mgdl']!s:>5}   {r['noise']!s:>5}"
+        )
+    for w in res["warnings"]:
+        click.echo(f"  ⚠ {w}")
+
+
+@entries_grp.command("gaps")
+@click.option("--days", default=7, type=int, help="Look-back window in days (default 7)")
+@click.option("--from", "date_gte", default=None, help="ISO lower bound (overrides --days)")
+@click.option("--to", "date_lte", default=None, help="ISO upper bound")
+@click.option(
+    "--interval",
+    default=quality_mod.DEFAULT_INTERVAL_MIN,
+    type=float,
+    help="Expected minutes between readings (default 5)",
+)
+@click.option(
+    "--min-gap",
+    default=None,
+    type=float,
+    help="Minimum minutes of silence to report (default: 3 x --interval)",
+)
+@click.option("--limit", default=50, type=int, help="Max gaps to print (JSON is never cut)")
+@click.pass_context
+def entries_gaps(
+    ctx: click.Context,
+    days: int,
+    date_gte: str | None,
+    date_lte: str | None,
+    interval: float,
+    min_gap: float | None,
+    limit: int,
+) -> None:
+    """CGM dropouts — stretches with no reading, newest first.
+
+    This is the "where did my data go" verb. Every glucose statistic in this
+    CLI weights the readings it was given equally, so a nine-hour hole does not
+    lower the TIR, it just quietly stops contributing.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    rows, gte, lte = _entries_window(
+        ctx, conn, days=days, date_gte=date_gte, date_lte=date_lte, type_="sgv"
+    )
+    gaps = quality_mod.detect_gaps(
+        rows, expected_interval_minutes=interval, min_gap_minutes=min_gap
+    )
+    if _is_json(ctx):
+        _emit(ctx, {"window_start": gte, "window_end": lte, "count": len(gaps), "gaps": gaps})
+        return
+    if not gaps:
+        click.echo(f"  no gaps over {min_gap or interval * 3:g}min in {len(rows)} readings")
+        return
+    click.echo(f"  {len(gaps)} gap(s) in {len(rows)} readings, newest first")
+    click.echo("  start                 end                   duration   missing")
+    for g in gaps[:limit]:
+        click.echo(
+            f"  {g['start'][:19]}   {g['end'][:19]}   {g['hours']:>6.2f}h   "
+            f"{g['missing_readings']:>7}"
+        )
+
+
 # ─── status: versions ─────────────────────────────────────────────────────
 
 
@@ -3681,6 +3888,209 @@ def report_device_health(ctx: click.Context, count: int, stale_minutes: float) -
         click.echo(f"  ⚠ {w}")
     if not res["warnings"]:
         click.echo("  no warnings")
+
+
+# ─── report: data trustworthiness (accuracy + capture) ─────────────────────
+#
+# TIR/GMI/AGP/MAGE all answer "how good is the glucose?". These two answer the
+# question that has to come first: "is the glucose data real?".
+
+
+@report_grp.command("accuracy")
+@click.option("--days", default=14, type=int, help="Look-back window in days (default 14)")
+@click.option("--from", "date_gte", default=None, help="ISO lower bound (overrides --days)")
+@click.option("--to", "date_lte", default=None, help="ISO upper bound")
+@click.option(
+    "--window-minutes",
+    default=calibration_mod.DEFAULT_PAIR_WINDOW_MIN,
+    type=float,
+    help="Max minutes between a meter reading and the sensor reading it is paired with",
+)
+@click.option(
+    "--include-sensor-meter",
+    is_flag=True,
+    default=False,
+    help="Also use `BG Check` treatments whose glucoseType is Sensor (normally excluded — "
+    "scoring the CGM against itself measures nothing)",
+)
+@click.option("--units", "units_flag", default=None, type=click.Choice(["mg/dl", "mmol", "mmol/l"]))
+@click.option("--min-pairs", default=5, type=int, help="Pairs required before a verdict is given")
+@click.option("--limit", default=20, type=int, help="Max pairs to print (JSON carries more)")
+@click.pass_context
+def report_accuracy(
+    ctx: click.Context,
+    days: int,
+    date_gte: str | None,
+    date_lte: str | None,
+    window_minutes: float,
+    include_sensor_meter: bool,
+    units_flag: str | None,
+    min_pairs: int,
+    limit: int,
+) -> None:
+    """Meter vs sensor — MARD, bias, %15/20/40 agreement, Clarke error grid.
+
+    Pairs every finger-stick (`mbg` entries AND `BG Check` treatments) with the
+    nearest sensor reading, then scores the sensor against it. This is the only
+    report here with an external reference: everything else grades the CGM
+    using the CGM.
+
+    Zone D/E pairs are called out separately because they are the ones that
+    would have driven the WRONG treatment — a D is a real hypo the sensor said
+    was fine. Below `--min-pairs` matches the verdict is withheld
+    (`found: false`) rather than computed off a handful of sticks.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    units = units_flag or conn.get("units", "mg/dl")
+    rows, gte, lte = _entries_window(ctx, conn, days=days, date_gte=date_gte, date_lte=date_lte)
+    txs = treatments_mod.list_treatments(conn=conn, count=10000, date_gte=gte, date_lte=lte)
+    res = calibration_mod.accuracy_report(
+        rows,
+        treatments=txs if isinstance(txs, list) else [],
+        window_minutes=window_minutes,
+        include_sensor_sourced=include_sensor_meter,
+        units=units,
+        min_pairs=min_pairs,
+    )
+    if _is_json(ctx):
+        _emit(ctx, {"window_start": gte, "window_end": lte, **res})
+        return
+    click.echo(
+        f"  {res['pairs']} matched pair(s) from {res['references']} meter reading(s)"
+        f"  [{res['level']}]"
+    )
+    if not res["pairs"]:
+        for w in res["warnings"]:
+            click.echo(f"  ⚠ {w}")
+        return
+    click.echo(f"  MARD           {res['mard_pct']}%   (median {res['median_ard_pct']}%)")
+    click.echo(f"  bias           {res['bias_mgdl']} mg/dL   MAD {res['mad_mgdl']} mg/dL")
+    click.echo(
+        f"  agreement      15/15 {res['within_15_15_pct']}%"
+        f"   20/20 {res['within_20_20_pct']}%   40/40 {res['within_40_40_pct']}%"
+    )
+    c = res["clarke"]
+    click.echo(
+        f"  Clarke         A={c['A']} B={c['B']} C={c['C']} D={c['D']} E={c['E']}"
+        f"   (A+B {c['a_b_pct']}%)"
+    )
+    click.echo("  by range       pairs    MARD%    bias")
+    for bucket in ("hypo", "target", "hyper"):
+        b = res["by_range"][bucket]
+        click.echo(
+            f"    {bucket:<12} {b['pairs']:>5}   {b['mard_pct']!s:>6}   {b['bias_mgdl']!s:>6}"
+        )
+    click.echo("  meter    sensor    Δ      zone   when")
+    for p in res["pairs_detail"][:limit]:
+        click.echo(
+            f"  {p['meter_mgdl']!s:>6}   {p['sensor_mgdl']!s:>6}  {p['diff_mgdl']!s:>6}"
+            f"     {p['clarke_zone']}     {p['meter_date'][:19]}"
+        )
+    for w in res["warnings"]:
+        click.echo(f"  ⚠ {w}")
+
+
+@report_grp.command("data-quality")
+@click.option("--days", default=14, type=int, help="Look-back window in days (default 14)")
+@click.option("--from", "date_gte", default=None, help="ISO lower bound (overrides --days)")
+@click.option("--to", "date_lte", default=None, help="ISO upper bound")
+@click.option(
+    "--interval",
+    default=quality_mod.DEFAULT_INTERVAL_MIN,
+    type=float,
+    help="Expected minutes between readings (default 5)",
+)
+@click.option(
+    "--min-gap",
+    default=None,
+    type=float,
+    help="Minimum minutes of silence to count as a gap (default: 3 x --interval)",
+)
+@click.option(
+    "--exclude-warmup",
+    is_flag=True,
+    default=False,
+    help="Discount sensor warm-up after each Sensor Start/Change from the expected count",
+)
+@click.option("--warmup-minutes", default=120.0, type=float, help="Warm-up length (default 120)")
+@click.option("--tz", "tz_name", default=None, help="Timezone for the per-day breakdown")
+@click.pass_context
+def report_data_quality(
+    ctx: click.Context,
+    days: int,
+    date_gte: str | None,
+    date_lte: str | None,
+    interval: float,
+    min_gap: float | None,
+    exclude_warmup: bool,
+    warmup_minutes: float,
+    tz_name: str | None,
+) -> None:
+    """CGM capture completeness — expected vs actual readings, gaps, hygiene.
+
+    Run this BEFORE trusting `report tir`/`gmi`/`agp`. Those weight the
+    readings they were handed equally, so a window that is 55% empty still
+    yields a confident TIR; this command is what tells you it was 55% empty.
+
+    `--exclude-warmup` removes the ~2h of expected silence after each sensor
+    change from the denominator by composing with the same Care Portal events
+    `sensors sessions` uses. Gaps covered by a warm-up are still LISTED, marked
+    `explained: true` — a dead uploader must not be able to hide behind a
+    sensor change.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    tz = tz_name or _default_tz_name()
+    rows, gte, lte = _entries_window(
+        ctx, conn, days=days, date_gte=date_gte, date_lte=date_lte, type_="sgv"
+    )
+    exclude = None
+    if exclude_warmup:
+        txs = treatments_mod.list_treatments(conn=conn, count=10000, date_gte=gte, date_lte=lte)
+        sessions = sensors_mod.sensor_sessions(txs if isinstance(txs, list) else [])
+        exclude = quality_mod.warmup_windows(sessions, warmup_minutes=warmup_minutes)
+    res = quality_mod.capture_report(
+        rows,
+        expected_interval_minutes=interval,
+        min_gap_minutes=min_gap,
+        start=gte,
+        end=lte,
+        tz=tz,
+        exclude_windows=exclude,
+    )
+    if _is_json(ctx):
+        _emit(ctx, res)
+        return
+    if not res["found"]:
+        click.echo(f"  no usable sgv entries between {gte[:19]} and {lte[:19]}")
+        for w in res["warnings"]:
+            click.echo(f"  ⚠ {w}")
+        return
+    click.echo(
+        f"  capture   {res['capture_pct']}%  "
+        f"({res['readings']} of {res['expected']} expected over {res['window_hours']}h)"
+        f"  [{res['level']}]"
+    )
+    if res["excluded_hours"]:
+        click.echo(f"  excluded  {res['excluded_hours']}h of warm-up / no-sensor time")
+    click.echo(
+        f"  gaps      {res['gap_count']}  longest {res['longest_gap_minutes']}min"
+        f"  total {res['total_gap_minutes']}min"
+    )
+    click.echo(
+        f"  hygiene   {res['duplicates']} duplicate ts, "
+        f"{res['out_of_order']} out-of-order, {res['noise_flagged']} noisy"
+    )
+    click.echo("  date         count   expected   capture%   gaps")
+    for d in res["days"]:
+        flag = " (partial)" if d["partial"] else ""
+        click.echo(
+            f"  {d['date']}   {d['count']:>5}   {d['expected']:>8}"
+            f"   {d['capture_pct']!s:>8}   {d['gaps']:>4}{flag}"
+        )
+    for w in res["warnings"]:
+        click.echo(f"  ⚠ {w}")
 
 
 @report_grp.command("ages")

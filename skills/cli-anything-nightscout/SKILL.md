@@ -4,7 +4,9 @@ description: >-
   Command-line interface for the Nightscout CGM remote monitor.
   Queries and mutates glucose entries, treatments, profiles, device status,
   and the food database on a remote Nightscout server, and computes
-  consensus CGM reports (Time-In-Range, GMI/estimated A1C, daily summary).
+  consensus CGM reports (Time-In-Range, GMI/estimated A1C, daily summary)
+  plus data-trustworthiness checks (CGM capture completeness, meter-vs-sensor
+  MARD and Clarke error grid, calibration records).
   Targets Nightscout REST API v1 + v3 (cgm-remote-monitor 14+/15+).
 ---
 
@@ -77,7 +79,7 @@ cli-anything-nightscout
 |-------|----------|---------------|
 | `config` | `set`, `show`, `clear`, `test` | Manage server URL + secret/token |
 | `status` | `info`, `version`, `versions`, `last-modified`, `verifyauth` | Server identity / plugin manifest / health |
-| `entries` | `latest`, `current`, `list`, `get`, `add`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize` | CGM glucose readings (sgv, mbg, cal, etr) |
+| `entries` | `latest`, `current`, `list`, `get`, `add`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize`, `calibrations`, `raw`, `gaps` | CGM glucose readings (sgv, mbg, cal, etr). `calibrations`/`raw` read the `cal` transfer function most reports discard; `gaps` reports the silence *between* readings. |
 | `treatments` | `latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`, `active`, `event-types`, `temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event` | Treatment events. The named verbs cover the structured Care Portal event types and validate the field combinations before sending. |
 | `profile` | `active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `basal-total`, `create`, `update`, `delete` | Profile records, schedule lookups, scheduled basal U/day |
 | `devicestatus` | `latest`, `list`, `add`, `delete`, `pump`, `uploader`, `loop` | Device status snapshots. `pump`/`uploader`/`loop` **parse** the free-form payload (battery, reservoir, suspend state, loop cycle) instead of returning raw JSON. |
@@ -86,7 +88,7 @@ cli-anything-nightscout
 | `notifications` | `ack`, `admin` | Acknowledge alarms; list admin notices |
 | `activity` | `latest`, `list`, `get`, `add`, `delete` | Activity / exercise records (API v3) |
 | `food` | `list`, `quickpicks`, `regular`, `add`, `update`, `delete` | Food database |
-| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages` | Computed reports + composed snapshots |
+| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages`, `data-quality`, `accuracy` | Computed reports + composed snapshots. `data-quality` and `accuracy` grade the **data**, not the glucose. |
 | `v3` | `list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history` | Generic CRUD + sync over any v3 collection |
 | `watch` | (socket.io) | Real-time entries/treatments stream (`pip install '.[watch]'`) |
 | `session` | `info`, `save`, `load`, `clear` | Session state (cache + history) |
@@ -185,6 +187,11 @@ whether the harness already covers it. Common misses:
 | **True TDD / basal:bolus split** | `report tdd --include-basal --days N --tz Z` | Replays the profile's basal schedule against temp basals and suspends, then adds bolus. Emits `includes_basal: true` and `basal_percent`. If no profile resolves it degrades to bolus-only — check the flag, don't assume. |
 | How much basal was delivered / did the loop cut basal? | `report basal --days N --tz Z` | Per-day scheduled vs delivered basal + minutes under a temp / suspended. `unknown_minutes` is time with no defined rate — that is NOT 0 U/hr. |
 | What is my scheduled basal rate / daily basal total? | `profile basal-total [--name NAME]` | Profile intent only, no overrides applied. Per-slot breakdown included. |
+| **Can I trust this TIR / how much data is missing?** | `report data-quality --days N --tz Z` | Run this BEFORE `report tir`/`gmi`/`agp`. Those weight the readings they were given equally, so a half-empty window still yields a confident number. Returns `capture_pct`, `level`, per-day rows, gaps, duplicates, out-of-order count, noise histogram. Below 70% capture the glucose statistics are **not interpretable** — say so. |
+| When did my CGM drop out / where are the gaps? | `entries gaps --days N` | Start, end, duration and readings lost per dropout, newest first. |
+| **Is the sensor accurate / does it match my meter?** | `report accuracy --days N` | The only report here with an external reference: pairs `mbg` entries and `BG Check` treatments against the nearest sgv. Returns MARD, bias, %15/15, and Clarke zones. Zone **D** = a real hypo the sensor called fine; zone **E** = would drive the opposite treatment. Under `--min-pairs` (default 5) it returns `found: false` — report "not enough finger-sticks", never a MARD off two sticks. |
+| Calibration slope / intercept / when was it last calibrated | `entries calibrations --days N` | Parsed `cal` records with a per-field sanity check. `found: false` means the uploader does not emit them (normal for Libre and most Loop rigs) — it is **not** a clean bill of health. |
+| Raw / uncalibrated BG, compression low, calibration drift | `entries raw --count N` | Nightscout's `rawbg`. `raw_mgdl: null` means the uploader exports no `unfiltered` field; do not read it as 0. |
 | Which event-type strings are valid | `treatments event-types` | Care-event strings must match exactly or the age counters ignore them. |
 | Acknowledge an outstanding alarm | `notifications ack --level N` | `level` 0=info, 1=warn, 2=urgent. |
 | Server-side record count | `entries count --field type --op eq --value sgv` | Avoids fetching when you only need the count. |
@@ -222,6 +229,15 @@ saying it's unsupported — the answer is usually already there.
   --units mmol`).
 - **Timestamps.** `entries` use `date` (epoch ms) and `dateString`
   (ISO 8601). `treatments` use `created_at` (ISO 8601).
+- **Qualify glucose statistics with capture.** `report tir`/`gmi`/`agp`/`mage`
+  weight whatever readings they receive equally — a nine-hour hole does not
+  lower a TIR, it just stops contributing. `report data-quality` over the same
+  window returns `capture_pct` and a `level`; quote it alongside any glucose
+  number computed from a window you did not verify.
+- **Unknown is never zero, everywhere in the v2.5.0 surface.** No `cal`
+  records → `found: false`. No `unfiltered` field → `raw_mgdl: null`. Fewer
+  than `--min-pairs` matched finger-sticks → `found: false` with
+  `level: unknown`. An empty entry stream → `capture_pct: null`, not 0%.
 - **Report timezones.** `report daily`, `report agp`, `report by-weekday`,
   and `report excursions-by-hour` bucket by hour/day-of-week. v2.1.0+
   defaults to the local system timezone (so 09:00 BST breakfasts land in

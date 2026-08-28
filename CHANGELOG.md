@@ -4,6 +4,106 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.5.0] — 2026-08-28
+
+Data-trustworthiness refine. Nightscout's `entries` collection carries four
+record types; every analytic in this harness filtered to `type == "sgv"` and
+threw the rest away (`_filter_sgv` in `report.py` and `excursions.py`). Two
+consequences: the `cal` records that define the raw→mg/dL transfer function
+were opaque, and the `mbg` finger-sticks that are the only external reference
+for judging a sensor were never used. A third gap sat underneath both — nothing
+measured the *stream*. TIR, GMI, AGP, MAGE and risk all weight the readings
+they are handed equally, so a window that was 55% empty still produced a
+confident, precise, wrong TIR.
+
+### Added — `core/calibration.py`
+
+- `parse_cal_records(entries, ...)` — parses `type: "cal"` entries into
+  structured records (slope / intercept / scale, device, id), computes the
+  interval since the previous calibration, and sanity-checks each field
+  against configurable bands.
+- `raw_bg(entry, cal)` — faithful port of Nightscout's `lib/plugins/rawbg.js`
+  `calc()`, including the filtered/calibrated ratio branch that makes rawbg
+  track the sensor during a compression low.
+- `raw_bg_series(entries, cals=, units=)` — applies the calibration *in force
+  at each reading* and reports `raw − sgv` divergence.
+- `reference_bgs(entries, treatments, ...)` — collects finger-sticks from both
+  places Nightscout keeps them (`mbg` entries and `BG Check` treatments),
+  de-duplicated on (second, value).
+- `meter_sensor_pairs(...)` — matches each reference to the nearest sgv inside
+  a window, recording a signed `offset_minutes`.
+- `clarke_zone(meter, sensor)` — Clarke Error Grid zone A–E.
+- `accuracy_report(...)` — MARD, median ARD, bias, MAD, ISO-style %15/15,
+  %20/20 and %40/40 agreement, Clarke zone counts, and a hypo/target/hyper
+  breakdown.
+
+### Added — `core/quality.py`
+
+- `detect_gaps(entries, ...)` — stretches of silence between consecutive sgv
+  readings, with the number of readings each cost.
+- `capture_report(entries, ...)` — actual vs expected readings overall and per
+  calendar day, gap summary, duplicate timestamps, out-of-order delivery, and
+  a sensor-noise histogram, with a `level` and `warnings`.
+- `warmup_windows(sessions, ...)` — sensor warm-up windows derived from
+  `sensors.sensor_sessions()` output, for use as `exclude_windows`.
+
+### Added — commands
+
+- `entries calibrations [--days N] [--from/--to]` — parsed `cal` records,
+  cadence and sanity check.
+- `entries raw [--count N] [--cal-days N]` — raw BG beside `sgv`, plus
+  divergence.
+- `entries gaps [--days N] [--interval M] [--min-gap M]` — CGM dropouts,
+  newest first.
+- `report accuracy [--days N] [--window-minutes M] [--min-pairs N] [--include-sensor-meter]`
+  — the meter-vs-sensor scorecard.
+- `report data-quality [--days N] [--interval M] [--exclude-warmup] [--tz Z]`
+  — capture completeness and stream hygiene.
+
+### Design notes
+
+- **The window you asked for is the window scored.** The CLI always passes the
+  resolved `--days`/`--from`/`--to` range into `capture_report`. Defaulting the
+  window to first→last reading (as the core function does when given no range)
+  lets an uploader that died three days ago score 100%, because the window
+  shrinks with the data.
+- **`report accuracy` refuses to grade the CGM with the CGM.** `BG Check`
+  treatments whose `glucoseType` is `Sensor` are excluded by default
+  (`--include-sensor-meter` overrides). Below `--min-pairs` (default 5) matched
+  pairs the numbers are returned but `found: false` / `level: unknown` — a MARD
+  off two finger-sticks is noise, not a verdict.
+- **Clarke D and E are not "worse B"s.** A zone-D pair is a real hypo the
+  sensor said was fine; a zone-E pair would drive treatment in the wrong
+  direction. Either forces `level: urgent` independently of MARD.
+- **Gaps are annotated, never hidden.** `--exclude-warmup` composes with the
+  `Sensor Start`/`Sensor Change` events `sensors sessions` already reads and
+  removes the expected post-insertion silence from the *denominator* — but the
+  gap still appears in the list with `explained: true`. Suppressing it outright
+  would let a genuinely dead uploader disappear behind a sensor change.
+- **Unknown is never zero — including where Nightscout says otherwise.**
+  Nightscout's own `rawbg` returns `0` when the transform is not computable;
+  `0` there is indistinguishable from a real reading, so `raw_bg` returns
+  `None` instead. An empty `cal` window is `found: false`, not a clean bill of
+  health (Libre and most Loop uploaders never emit `cal` records at all).
+- **Partial days are labelled**, matching `report basal`: days clipped by the
+  window edges carry `partial: true` and are excluded from
+  `mean_full_day_capture_pct`.
+- **Calibration bounds are documented heuristics.** The slope/intercept/scale
+  bands describe Dexcom G4/G5 records as observed in Nightscout, not a spec;
+  every bound is a keyword argument.
+
+### Tests
+
+- `tests/test_calibration.py` — 86 unit tests.
+- `tests/test_quality.py` — 63 unit tests.
+- `tests/test_data_quality_cli.py` — 58 CLI-level tests (wiring, JSON contract,
+  human rendering, option plumbing).
+- `tests/test_full_e2e.py` — 18 new E2E tests seeding `cal` / `mbg` records and
+  a deliberately holey sgv stream through the real HTTP transport, including a
+  workflow test that computes a TIR and then shows it was derived from 58.5% of
+  the window.
+- Suite: 1116 → 1341 tests, all passing. Coverage 80% → 87%.
+
 ## [2.4.0] — 2026-08-19
 
 Basal refine. Every previous release could tell you what was *bolused* and

@@ -520,3 +520,119 @@ clean.
   from the previous pass.
 - **Thresholds inherited from the server's own settings** remains unwired
   (carried over).
+
+---
+
+## Refine pass — data trustworthiness (v2.5.0)
+
+### Gap addressed
+
+Nightscout's `entries` collection carries four record types (`sgv`, `mbg`,
+`cal`, `etr`). The harness could read and write all four, but every analytic
+filtered to `type == "sgv"` and discarded the rest — literally
+`[e for e in entries if e.get("type", "sgv") == "sgv"]` in both `report.py`
+and `excursions.py`. Three holes followed:
+
+1. **`cal` records were opaque.** Dexcom-style uploaders write the affine
+   raw→mg/dL transfer function (`slope`/`intercept`/`scale`) that Nightscout's
+   own `rawbg` plugin consumes. Nothing parsed or validated it, so the classic
+   "the CGM reads 40 points off" root cause was invisible.
+2. **Meter-vs-sensor accuracy was uncomputed.** Finger-sticks arrive as `mbg`
+   entries and `BG Check` treatments — the only external reference available
+   for judging a sensor — and were never paired against `sgv`.
+3. **Nothing measured the stream itself.** TIR/GMI/AGP/MAGE/risk weight the
+   readings they receive equally, so a window that was 55% empty still produced
+   a confident, precise, wrong TIR.
+
+### Test plan
+
+| File | Planned | Scope |
+|------|---------|-------|
+| `test_calibration.py` | ~85 unit tests | `parse_cal_records` (field parsing, newest-first ordering, interval-since-previous, per-field sanity bands, custom bounds, undated records, non-dict rows); `raw_bg` (all four Nightscout `calc()` branches + the not-computable case); `raw_bg_series` (calibration-in-force selection, entries predating every cal, divergence aggregates, mmol fields); `reference_bgs` (both sources, sensor-sourced exclusion, de-duplication, ordering); `meter_sensor_pairs` (nearest-match, signed offset, window bounds, validation); `clarke_zone` (one case per zone + boundaries); `accuracy_report` (empty, below-min-pairs, clean, MARD warn/urgent escalation, bias direction, zone-D escalation, unmatched refs, by-range buckets, truncation). |
+| `test_quality.py` | ~60 unit tests | Timestamp/number helpers and their guard rails; `_overlap_minutes` window merging and clipping; `_normalize_windows` rejection of malformed pairs; `detect_gaps` (threshold default and overrides, missing-reading estimate, ordering, duplicate timestamps, `explained` annotation, validation); `capture_report` (empty→unknown, 100% stream, urgent/warn bands, explicit vs implicit window, duplicates, out-of-order in both input directions, noise histogram incl. unknown codes, gap capping, per-day rows, partial-day exclusion, timezone shift, exclusion windows, ceiling at 100%); `warmup_windows`. |
+| `test_data_quality_cli.py` | ~55 CLI tests | Command wiring, JSON contract, human rendering and option plumbing for all five new commands, plus the shared `_entries_window` / `_parse_iso_utc` helpers. Core modules are mocked — no network. |
+| `test_full_e2e.py` (additions) | ~18 E2E tests | Seed `cal` / `mbg` records and a deliberately holey sgv stream through the real HTTP transport, then drive the installed CLI as a subprocess. |
+
+**Workflow scenario — "qualify a TIR".** Simulates the question an agent
+actually has to answer: *is this Time-In-Range trustworthy?* Operations
+chained: seed a stream with a known 2 h hole → `report data-quality` over an
+explicit window → `report tir` over the same window. Verified: the TIR is a
+real number, and `capture_pct` proves it was computed from only part of the
+window.
+
+**Workflow scenario — "explain a gap".** Chained: `report data-quality`
+(baseline) → post a `Sensor Change` treatment covering the hole →
+`report data-quality --exclude-warmup`. Verified: capture rises, but
+`gap_count` is unchanged — the gap is annotated, not suppressed.
+
+### Test results — 2026-08-28
+
+```
+tests/test_calibration.py .............................................. 86 passed
+tests/test_quality.py ........................................................ 63 passed
+tests/test_data_quality_cli.py ............................................... 58 passed
+tests/test_full_e2e.py -k DataQuality ......................................... 18 passed
+
+$ python -m pytest tests -q
+1341 passed in 13.93s
+```
+
+Coverage:
+
+```
+cli_anything/nightscout/core/calibration.py    316    3   156    3    99%
+cli_anything/nightscout/core/quality.py        239    5   112    5    97%
+---------------------------------------------------------------------------
+TOTAL                                         5168  631  1802  128    87%
+Required test coverage of 78% reached. Total coverage: 87.25%
+```
+
+No regressions: all 1116 pre-existing tests still pass; 225 new = 1341 total.
+Suite coverage moved 80% → 87%.
+
+Selected E2E artifacts printed by the run (stand-in server):
+
+```
+  cal slope=1000.0 intercept=30000.0 sane=True
+  raw=100.0 sgv=100.0
+  gap 2.08h missing 24 readings
+  MARD=8.9% bias=10.0 pairs=7 A+B=100.0%
+  capture=58.5% level=urgent gaps=1
+  TIR 100.0% computed from only 58.5% of the window
+```
+
+That last line is the whole point of the pass: before v2.5.0 the CLI would
+have reported `TIR 100.0%` with nothing attached to it.
+
+Lint: `ruff check cli_anything/` and `ruff format --check cli_anything/` both
+clean (the two new modules and the modified CLI add zero findings to the
+blocking gate).
+
+### Notes on coverage gaps still open
+
+- **`accuracy` cannot separate sensor error from meter error.** MARD here is
+  the disagreement between two imperfect devices, attributed entirely to the
+  sensor. A meter with its own bias will read as sensor bias. There is no
+  Nightscout-side signal that would let the harness split them.
+- **Pairing does not interpolate.** A finger-stick is matched to the *nearest*
+  sgv within the window rather than to a value interpolated between the two
+  neighbours, so `offset_minutes` is exposed for callers who want to tighten
+  the match. During a fast rise a 10-minute offset is a real source of apparent
+  error, and the report does not currently correct for rate-of-change.
+- **Capture assumes a fixed cadence.** `--interval` is a single number for the
+  whole window; a rig that changed from 5-minute to 1-minute uploads mid-window
+  will be scored against one of them. Detecting the modal cadence per day is
+  the obvious next increment.
+- **Warm-up exclusion is time-based, not confirmed.** It discounts a fixed
+  `--warmup-minutes` after each sensor marker; Nightscout stores no
+  "sensor ready" event, so a sensor that warmed up faster or was inserted
+  without a Care Portal record is not handled.
+- **`entries raw` needs an uploader that exports `unfiltered`.** Libre and most
+  Loop rigs do not, and the command correctly reports `raw_mgdl: null` rather
+  than fabricating a value — but that means the feature is inert on those
+  setups. This is a property of the data source, not a fixable gap.
+- **The `etr` entry type is still unused** by any analytic. It is rare in
+  practice, but it is the one remaining record type nothing reads.
+- **Carried over from earlier passes:** `Profile Switch` is still not applied
+  during the basal replay; loop performance over time is still only a snapshot;
+  thresholds are still not inherited from the server's own settings.

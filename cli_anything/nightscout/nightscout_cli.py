@@ -21,6 +21,7 @@ from cli_anything.nightscout.core import devicestatus as ds_mod
 from cli_anything.nightscout.core import entries as entries_mod
 from cli_anything.nightscout.core import excursions as excursions_mod
 from cli_anything.nightscout.core import food as food_mod
+from cli_anything.nightscout.core import loop_report as loop_report_mod
 from cli_anything.nightscout.core import notifications as notifications_mod
 from cli_anything.nightscout.core import profile as profile_mod
 from cli_anything.nightscout.core import project
@@ -3894,6 +3895,122 @@ def report_device_health(ctx: click.Context, count: int, stale_minutes: float) -
 #
 # TIR/GMI/AGP/MAGE all answer "how good is the glucose?". These two answer the
 # question that has to come first: "is the glucose data real?".
+
+
+@report_grp.command("loop")
+@click.option("--days", default=3, type=int, help="Window size in days (default 3).")
+@click.option("--from", "date_gte", default=None, help="ISO lower bound (overrides --days).")
+@click.option("--to", "date_lte", default=None, help="ISO upper bound.")
+@click.option(
+    "--count",
+    default=10000,
+    type=int,
+    help="Max devicestatus records to fetch (scan depth, default 10000).",
+)
+@click.option(
+    "--stale-minutes",
+    default=health_mod.LOOP_STALE_WARN_MIN,
+    type=float,
+    help="Minutes since the last cycle that counts as stale (default 30).",
+)
+@click.pass_context
+def report_loop(
+    ctx: click.Context,
+    days: int,
+    date_gte: str | None,
+    date_lte: str | None,
+    count: int,
+    stale_minutes: float,
+) -> None:
+    """Closed-loop automation summary — cadence, enactments, failures, IOB/COB.
+
+    Aggregates every ``loop``/``openaps`` devicestatus document in the window
+    (Loop / OpenAPS / AndroidAPS post one per cycle) — unlike
+    ``devicestatus loop`` which shows only the latest cycle. Answers: how
+    regular is the loop, what fraction enacted, what failed, what did it
+    decide on.
+
+    A window with no loop documents returns ``found: false`` — unknown rig
+    state, never a healthy loop. ``commanded_basal`` is what the loop
+    *commanded* (rate x duration of enacted temps), not pump-confirmed
+    delivery; ``report basal`` is the schedule-replay cross-check.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    start, end, gte, lte = _basal_window(days, date_gte, date_lte)
+    recs = ds_mod.list_devicestatus(
+        conn=conn,
+        count=count,
+        date_gte=gte,
+        date_lte=lte,
+    )
+    _warn_truncation(recs, limit=count, ctx=ctx)
+    res = loop_report_mod.loop_report(
+        recs if isinstance(recs, list) else [],
+        start=start,
+        end=end,
+        stale_warn_minutes=stale_minutes,
+        stale_urgent_minutes=stale_minutes * 2,
+    )
+    if _is_json(ctx):
+        _emit(ctx, res)
+        return
+    if not res["found"]:
+        click.echo(f"  no loop/openaps data in {count} devicestatus records in the window")
+        for w in res["warnings"]:
+            click.echo(f"  ⚠ {w}")
+        return
+    span = res["span"]
+    click.echo(
+        f"  {res['cycle_count']} cycles over {span['hours']:g}h — "
+        f"{res['enacted']['pct']:g}% enacted"
+        + (
+            f", {', '.join(f'{k} x{v}' for k, v in res['flavours'].items())}"
+            if res["flavours"]
+            else ""
+        )
+    )
+    if res["devices"]:
+        click.echo(f"  devices: {', '.join(res['devices'])}")
+    cad = res["cadence"]
+    if cad["count"]:
+        click.echo(
+            f"  cadence   median {cad['median_minutes']:g}min, mean {cad['mean_minutes']:g}min, "
+            f"max {cad['max_minutes']:g}min"
+        )
+    click.echo(
+        f"  enacted   {res['enacted']['count']}/{res['cycle_count']}"
+        + (
+            f", ack received {res['enacted']['received']['count']}"
+            if res["enacted"]["received"]["count"]
+            else ""
+        )
+        + f"; suggestion-only {res['suggestion_only']['count']}"
+    )
+    f = res["failures"]
+    if f["count"]:
+        top = ", ".join(f"{r['reason']!r} x{r['count']}" for r in f["reasons"][:3])
+        click.echo(f"  failures  {f['count']} ({f['pct']:g}%) — {top}")
+    else:
+        click.echo("  failures  none")
+    for label, key in (("iob", "iob"), ("cob", "cob"), ("bolus rec", "recommended_bolus")):
+        s = res[key]
+        if s["present"]:
+            click.echo(
+                f"  {label:<9} n={s['present']}  mean {s['mean']:g}  median {s['median']:g}  max {s['max']:g}"
+            )
+    cb = res["commanded_basal"]
+    click.echo(
+        f"  temps     {cb['enacted_temp_minutes']:g}min enacted, {cb['units']:.2f} U commanded"
+    )
+    last = res["last"]
+    age = f"{last['age_minutes']:g}min ago" if last["age_minutes"] is not None else "?"
+    last_txt = f"last cycle {age}, enacted={last['enacted']}"
+    if last["rate"] is not None:
+        last_txt += f", {last['rate']:g} U/hr x{last['duration_minutes']:g}min"
+    click.echo(f"  {last_txt}")
+    for w in res["warnings"]:
+        click.echo(f"  ⚠ {w}")
 
 
 @report_grp.command("accuracy")

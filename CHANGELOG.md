@@ -4,6 +4,61 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.6.0] — 2026-09-04
+
+Closed-loop automation refine. A Loop/OpenAPS/AndroidAPS rig posts a
+devicestatus record **per cycle** — hundreds a day — but the harness only
+read the latest one (`devicestatus loop`) or folded it into a health
+snapshot (`report device-health`). The historical questions an agent needs
+before trusting an automated rig — is the cadence regular, what fraction of
+cycles enacted, what keeps failing, what IOB/COB did it decide on, how much
+basal did it command — were unanswerable.
+
+### Added — `core/loop_report.py`
+
+- `loop_cycles(records, start=, end=)` — normalises every devicestatus
+  record carrying a `loop` or `openaps` document into one cycle shape
+  (timestamp, flavour, enacted/received, temp rate/duration, IOB, COB,
+  recommended bolus, failure reason), oldest first, clipped to an optional
+  window on the cycle timestamp.
+- `loop_report(records, ...)` — the aggregate: cycle count, dialect and
+  device breakdown, cadence (median/mean/max minutes between cycles),
+  enacted count/pct with the `received` ack fraction, suggestion-only
+  count, failure histogram (sorted, with pct), IOB/COB/recommended-bolus
+  `present/mean/median/max` at decision time, and `commanded_basal` — the
+  loop's own commanded temps (rate × duration of enacted cycles), in U and
+  minutes.
+- Honesty rules as everywhere else in the rig-health code: a window with no
+  loop documents is `found: false` / `level: "unknown"`, never a healthy
+  loop; cycles missing a field contribute nothing (`present: 0`), never a
+  zero; staleness (default warn 30 / urgent 60 min) and < 50 % enactment
+  over ≥ 4 cycles raise the `level` and emit warnings.
+
+### Added — CLI
+
+- `report loop [--days N] [--from ISO] [--to ISO] [--count N]
+  [--stale-minutes M]` — the aggregation as a report, `--json` and human
+  output. `--count` is a fetch/scan depth over devicestatus records
+  (default 10000, truncation warns), not a cycle count; a truncated or
+  empty fetch reads `found: false` rather than a clean bill of health.
+
+### Changed
+
+- `core/devicestatus.list_devicestatus` accepts `date_lte` (posted as
+  `find[created_at][$lte]`) so the loop window is filtered server-side;
+  existing callers are unaffected.
+
+### Tests
+
+- `test_core.py` (`TestLoopReport`): 12 unit tests — dialect normalisation
+  for both `loop` and `openaps` shapes, window clipping, cadence math,
+  enactment/failure aggregation, IOB stats, missing-fields-never-zero,
+  stale-last-cycle → `urgent`, low-enactment → `warn`, empty window →
+  `found: false`.
+- `test_full_e2e.py`: 3 E2E tests — posted cycles aggregated by `report
+  loop` (`--json`, exact counts/units against the stand-in), an empty window
+  reporting `found: false`, and the human output shape.
+
 ## [2.5.0] — 2026-08-28
 
 Data-trustworthiness refine. Nightscout's `entries` collection carries four

@@ -48,7 +48,7 @@ summary) are computed locally from data the server returns.
 | `notifications` | `ack`, `admin` | Alarm acknowledgement and admin notices |
 | `activity` | `latest`, `list`, `get`, `add`, `delete` | Activity / exercise records (API v3) |
 | `food` | `list`, `quickpicks`, `regular`, `add`, `update`, `delete` | Food database |
-| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages`, `data-quality`, `accuracy` | Computed reports + composed snapshots |
+| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages`, `loop`, `data-quality`, `accuracy` | Computed reports + composed snapshots |
 | `v3` | `list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history` | Generic CRUD + sync over any v3 collection |
 | `watch` | (socket.io) | Real-time entries/treatments stream (needs `pip install '.[watch]'`) |
 | `session` | `info`, `save`, `load`, `clear` | Session state and last-fetched cache |
@@ -210,6 +210,40 @@ Two familiar guarantees:
 Basal here is *reconstructed intent*, not pump-confirmed delivery — the
 Nightscout API stores commands, not confirmations. The payload names its
 source in `basal_source`.
+
+## Closed-loop automation history (v2.6.0+)
+
+`devicestatus loop` reads one cycle — the latest. A closed-loop rig posts a
+devicestatus record **per cycle** (every 1–5 minutes), so the history is in
+the collection; `report loop` aggregates it:
+
+```bash
+report loop [--days N] [--from ISO --to ISO] [--count N] [--stale-minutes M]
+```
+
+- **Cadence** — median/mean/max minutes between consecutive cycles. Widening
+  max gaps or a creeping median are the early signs of a failing rig.
+- **Enactments** — cycles that set a temp basal (`enacted`) vs
+  suggestion-only, plus the `received` ack fraction and `failure` histogram
+  (`failureReason`, or the OpenAPS `suggested.reason` when the cycle did not
+  enact). Only `< 50%` enacted over ≥ 4 cycles raises the level.
+- **Decision context** — IOB/COB/recommended-bolus `present/mean/median/max`
+  at cycle time. Cycles missing a field contribute nothing (`present: 0`),
+  never a zero.
+- **`commanded_basal`** — the loop's own commanded temps (rate × duration of
+  enacted cycles), in U and minutes. This is intent, not delivery; `report
+  basal` is the schedule-replay cross-check.
+- **Staleness** — the last cycle's age drives the `level` (default warn at
+  30 min, urgent at 60 min, `--stale-minutes` scales both), so a loop that
+  stopped reporting reads `urgent` even with a perfect history behind it.
+
+Both vendor dialects are normalised: `loop` (Loop/iPhone — nested
+`iob.iob`, `enacted.received`) and `openaps` (OpenAPS/AAPS — flat
+`IOB`/`COB`, `suggested`/`enacted`). A window with no loop documents returns
+`found: false`, `level: "unknown"` — the rig's state is unknown, and a
+window that *should* have cycles but has none is a finding in itself.
+`--count` is a fetch/scan depth over devicestatus records (default 10000),
+not a cycle count; a truncated fetch warns.
 
 ## Data trustworthiness (v2.5.0+)
 

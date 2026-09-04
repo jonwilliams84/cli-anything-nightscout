@@ -23,10 +23,13 @@ def list_devicestatus(
     conn: dict[str, Any],
     count: int = 50,
     date_gte: str | None = None,
+    date_lte: str | None = None,
 ) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"count": count}
     if date_gte:
         params["find[created_at][$gte]"] = date_gte
+    if date_lte:
+        params["find[created_at][$lte]"] = date_lte
     return backend.get(
         "/devicestatus.json",
         base_url=conn["server_url"],

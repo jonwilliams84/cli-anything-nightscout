@@ -839,6 +839,106 @@ class TestRefineCLISubprocess:
             assert lp["iob"] == 0.9
             assert lp["stale"] is False
 
+    def test_report_loop_aggregates_posted_cycles(self, server_url_and_secret, tmp_path):
+        """Post several loop cycles, then summarize them with `report loop`."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        now = datetime.now(timezone.utc)
+        recs = []
+        for idx, mins_ago in enumerate((10, 5, 0)):
+            ts = (now - timedelta(minutes=mins_ago)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            doc = {"timestamp": ts, "iob": {"iob": 1.2}, "cob": {"cob": 3.0}}
+            if idx == 1:
+                # middle cycle only suggests — with an OpenAPS-style reason
+                doc["suggested"] = {"rate": 1.1, "duration": 30, "reason": "no bolus needed"}
+            else:
+                doc["enacted"] = {"rate": 0.8, "duration": 30, "received": True}
+            recs.append(
+                json.dumps(
+                    {
+                        "device": "loop://e2e-phone",
+                        "created_at": ts,
+                        "loop": doc,
+                    }
+                )
+            )
+        for body in recs:
+            r = self._run(["--json", "devicestatus", "add", "--body-json", body], env=env)
+            assert r.returncode == 0, r.stderr
+
+        r = self._run(["--json", "report", "loop", "--days", "1"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        for key in (
+            "found",
+            "cycle_count",
+            "enacted",
+            "cadence",
+            "failures",
+            "iob",
+            "commanded_basal",
+            "last",
+            "level",
+            "warnings",
+        ):
+            assert key in data
+        if not _is_live_mode():
+            # The stand-in server shares devicestatus state across tests, so
+            # counts are lower bounds; exact math lives in test_core.py.
+            assert data["found"] is True
+            assert data["cycle_count"] >= 3
+            assert data["enacted"]["count"] >= 2
+            assert any(r["reason"] == "no bolus needed" for r in data["failures"]["reasons"])
+            assert data["cadence"]["count"] >= 2
+            assert data["iob"]["present"] >= 3
+            assert "loop://e2e-phone" in data["devices"]
+            assert data["last"]["enacted"] is True
+
+    def test_report_loop_empty_window_is_not_a_healthy_loop(self, server_url_and_secret, tmp_path):
+        """A window with no loop documents must read found: false, not clean."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(
+            [
+                "--json",
+                "report",
+                "loop",
+                "--days",
+                "1",
+                "--from",
+                "2000-01-01T00:00:00Z",
+                "--to",
+                "2000-01-02T00:00:00Z",
+            ],
+            env=env,
+        )
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        if not _is_live_mode():
+            assert data["found"] is False
+            assert data["level"] == "unknown"
+            assert data["cycle_count"] == 0
+
+    def test_report_loop_human_output_mentions_cycles(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        body = json.dumps(
+            {
+                "device": "loop://e2e-human",
+                "created_at": now,
+                "loop": {
+                    "timestamp": now,
+                    "iob": {"iob": 0.5},
+                    "enacted": {"rate": 0.9, "duration": 30, "received": True},
+                },
+            }
+        )
+        r = self._run(["--json", "devicestatus", "add", "--body-json", body], env=env)
+        assert r.returncode == 0, r.stderr
+        r = self._run(["report", "loop", "--days", "1"], env=env)
+        assert r.returncode == 0, r.stderr
+        assert "cycles over" in r.stdout
+        assert "enacted" in r.stdout
+
+
     def test_report_device_health_composes_sections(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")

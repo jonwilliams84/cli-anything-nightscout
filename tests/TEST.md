@@ -636,3 +636,42 @@ blocking gate).
 - **Carried over from earlier passes:** `Profile Switch` is still not applied
   during the basal replay; loop performance over time is still only a snapshot;
   thresholds are still not inherited from the server's own settings.
+
+## Pass: closed-loop automation history (v2.6.0) — 2026-09-04
+
+Gap closed: `devicestatus loop` was a latest-cycle snapshot. A closed-loop
+rig posts one devicestatus record per cycle, so the loop's *history* was in
+the collection and unread. This pass adds `report loop` over that history.
+
+### Added coverage
+
+| Layer | Added |
+|-------|-------|
+| `core/loop_report.py` | `loop_cycles` (normalise both `loop` and `openaps` dialects into one cycle shape, window-clipped), `loop_report` (cadence, enactment/received fractions, failure histogram, IOB/COB/recommended-bolus stats, commanded basal, staleness levels) |
+| `core/devicestatus.py` | `list_devicestatus` gains `date_lte` (`find[created_at][$lte]`) so windows filter server-side |
+| CLI (`report`) | `loop [--days] [--from] [--to] [--count] [--stale-minutes]` |
+
+### Test additions
+
+| File | New tests | Scope |
+|------|-----------|-------|
+| `test_core.py` (`TestLoopReport`) | **12** | Empty window → `found: false`/`unknown` (never healthy); both dialects normalised (nested `iob.iob`/`enacted.received` vs flat `IOB`/`COB`); window clipping on cycle timestamps; enactment/cadence aggregation math; failure histogram sorted; IOB stats + commanded basal (0.8+1.2+0.9 U/hr × 30 min = 1.45 U); missing fields → `present: 0`, never 0; stale last cycle → `urgent`; < 50 % enactment over ≥ 4 cycles → `warn`; OpenAPS `suggested.reason` counts as a failure only when not enacted; device/flavour breakdowns. |
+| `test_full_e2e.py` (`TestReportPipelineE2E`) | **3** | Post 3 loop cycles (one suggestion-only with a reason) → `report loop --days 1 --json` asserts cycle/enactment/failure/cadence/IOB/commanded-basal counts; a historical empty window returns `found: false` with `level: unknown`; human output carries the "cycles over" line. |
+
+### Test results — 2026-09-04
+
+```text
+$ python -m pytest tests --cov=cli_anything --cov-fail-under=78 -q
+1356 passed; Total coverage: 87%
+```
+
+### Notes on coverage gaps still open
+
+- **Carried over from earlier passes, now closed:** loop performance over
+  time is no longer only a snapshot — `report loop` aggregates the cycle
+  history (cadence, enactments, failures, decision context).
+- **`commanded_basal` is intent, not delivery.** It sums rate × duration of
+  enacted loop temps; pump confirmations do not exist in the Nightscout
+  data model. `report basal` remains the schedule-replay cross-check.
+- **`Profile Switch` is still not applied during the basal replay;**
+  thresholds are still not inherited from the server's own settings.

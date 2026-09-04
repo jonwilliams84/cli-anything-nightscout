@@ -1,3 +1,4 @@
+
 """Unit tests for cli-anything-nightscout — pure-Python, no network."""
 
 from __future__ import annotations
@@ -998,3 +999,215 @@ class TestReport:
         # min was 3.2 mmol/L = 57.66 mg/dL
         assert evts[0]["min_mmol"] == 3.2
         assert evts[0]["level"] == "level_1"  # 3.2 > 3.0
+
+# ─── core/loop_report.py — closed-loop automation report ──────────────────
+
+
+class TestLoopReport:
+    def setup_method(self):
+        from cli_anything.nightscout.core import loop_report
+
+        self.lr = loop_report
+
+    NOW = None  # set per test via _dt.datetime.now(timezone.utc)
+
+    @staticmethod
+    def _ts(mins_ago: float, base):
+        from datetime import timedelta
+
+        return (base - timedelta(minutes=mins_ago)).isoformat().replace("+00:00", "Z")
+
+    def _rec(
+        self,
+        mins_ago,
+        base,
+        *,
+        enacted=True,
+        failure=None,
+        rate=0.8,
+        duration=30,
+        iob=1.1,
+        cob=5.0,
+        device="loop://phone",
+        flavour="loop",
+        received=True,
+    ):
+        ts = self._ts(mins_ago, base)
+        doc = {"timestamp": ts, "iob": {"iob": iob}, "cob": {"cob": cob}}
+        if enacted:
+            doc["enacted"] = {"rate": rate, "duration": duration, "received": received}
+        else:
+            doc["suggested"] = {
+                "rate": rate,
+                "duration": duration,
+                "reason": failure or "temp basal",
+            }
+        return {"device": device, "created_at": ts, flavour: doc}
+
+    def test_no_loop_records_is_found_false_not_healthy(self):
+        from datetime import datetime, timezone
+
+        recs = [
+            {
+                "device": "pump",
+                "created_at": "2025-05-01T00:00:00Z",
+                "pump": {"battery": {"percent": 50}},
+            }
+        ]
+        res = self.lr.loop_report(recs, now=datetime.now(timezone.utc))
+        assert res["found"] is False
+        assert res["level"] == "unknown"
+        assert res["cycle_count"] == 0
+        assert res["warnings"] == []
+
+    def test_cycles_normalise_loop_dialect(self):
+        from datetime import datetime, timezone
+
+        base = datetime(2025, 5, 1, 12, 0, tzinfo=timezone.utc)
+        recs = [self._rec(10, base), self._rec(5, base), self._rec(0, base)]
+        cycles = self.lr.loop_cycles(recs)
+        assert len(cycles) == 3
+        assert all(c["flavour"] == "loop" for c in cycles)
+        # oldest first
+        assert cycles[0]["timestamp"] < cycles[-1]["timestamp"]
+        assert cycles[-1]["enacted"] is True
+        assert cycles[-1]["iob"] == 1.1
+        assert cycles[-1]["rate"] == 0.8
+
+    def test_cycles_normalise_openaps_dialect(self):
+        from datetime import datetime, timezone
+
+        base = datetime(2025, 5, 1, 12, 0, tzinfo=timezone.utc)
+        ts = self._ts(0, base)
+        recs = [
+            {
+                "device": "openaps://pi",
+                "created_at": ts,
+                "openaps": {
+                    "iob": 0.4,
+                    "cob": 0,
+                    "enacted": {"rate": 1.4, "duration": 30, "IOB": 0.4, "COB": 0, "timestamp": ts},
+                },
+            }
+        ]
+        cycles = self.lr.loop_cycles(recs)
+        assert len(cycles) == 1
+        assert cycles[0]["flavour"] == "openaps"
+        assert cycles[0]["iob"] == 0.4
+        assert cycles[0]["cob"] == 0.0
+        assert cycles[0]["enacted"] is True
+
+    def test_window_filters_on_cycle_timestamp(self):
+        from datetime import datetime, timedelta, timezone
+
+        base = datetime(2025, 5, 1, 12, 0, tzinfo=timezone.utc)
+        recs = [self._rec(m, base) for m in (0, 5, 60, 90)]
+        start = base - timedelta(minutes=20)
+        cycles = self.lr.loop_cycles(recs, start=start, end=base)
+        assert len(cycles) == 2  # 5 and 0 minutes ago
+
+    def test_report_aggregates_enactment_and_cadence(self):
+        from datetime import datetime, timezone
+
+        base = datetime(2025, 5, 1, 12, 0, tzinfo=timezone.utc)
+        recs = [
+            self._rec(m, base, enacted=(m != 5), failure="no bolus needed") for m in (20, 15, 5, 0)
+        ]
+        res = self.lr.loop_report(recs, now=base)
+        assert res["found"] is True
+        assert res["cycle_count"] == 4
+        assert res["enacted"]["count"] == 3
+        assert res["enacted"]["pct"] == 75.0
+        assert res["suggestion_only"]["count"] == 1
+        assert res["cadence"]["count"] == 3
+        assert res["cadence"]["median_minutes"] == 5.0
+        assert res["cadence"]["max_minutes"] == 10.0
+        assert res["span"]["hours"] == 0.3  # 20 minutes across, rounded to 0.3h
+
+    def test_report_failure_histogram_sorted(self):
+        from datetime import datetime, timezone
+
+        base = datetime(2025, 5, 1, 12, 0, tzinfo=timezone.utc)
+        recs = [self._rec(m, base, enacted=False, failure="no bolus needed") for m in (30, 25, 10)]
+        recs.append(self._rec(0, base, enacted=False, failure="could not get data"))
+        res = self.lr.loop_report(recs, now=base)
+        reasons = res["failures"]["reasons"]
+        assert reasons[0]["reason"] == "no bolus needed"
+        assert reasons[0]["count"] == 3
+        assert res["failures"]["count"] == 4
+        assert any("failure reason" in w for w in res["warnings"])
+
+    def test_report_iob_cob_stats_and_commanded_basal(self):
+        from datetime import datetime, timezone
+
+        base = datetime(2025, 5, 1, 12, 0, tzinfo=timezone.utc)
+        recs = [
+            self._rec(10, base, iob=1.0, rate=0.8),
+            self._rec(5, base, iob=2.0, rate=1.2),
+            self._rec(0, base, iob=3.0, rate=0.9),
+        ]
+        res = self.lr.loop_report(recs, now=base)
+        assert res["iob"]["present"] == 3
+        assert res["iob"]["mean"] == 2.0
+        assert res["iob"]["median"] == 2.0
+        assert res["iob"]["max"] == 3.0
+        # 0.8*30/60 + 1.2*30/60 + 0.9*30/60 = 1.45 U
+        assert res["commanded_basal"]["units"] == 1.45
+        assert res["commanded_basal"]["enacted_temp_minutes"] == 90.0
+
+    def test_report_missing_fields_never_become_zero(self):
+        from datetime import datetime, timezone
+
+        base = datetime(2025, 5, 1, 12, 0, tzinfo=timezone.utc)
+        ts = self._ts(0, base)
+        recs = [
+            {"device": "x", "created_at": ts, "loop": {"timestamp": ts, "enacted": {}}}
+            for _ in range(2)
+        ]
+        res = self.lr.loop_report(recs, now=base)
+        assert res["iob"]["present"] == 0
+        assert res["iob"]["mean"] is None
+        assert res["commanded_basal"]["units"] == 0.0
+
+    def test_report_stale_last_cycle_is_urgent(self):
+        from datetime import datetime, timedelta, timezone
+
+        base = datetime(2025, 5, 1, 12, 0, tzinfo=timezone.utc)
+        now = base + timedelta(hours=2)
+        recs = [self._rec(m, base) for m in (125, 120)]
+        res = self.lr.loop_report(recs, now=now)
+        assert res["last"]["age_minutes"] == 240.0  # 2h ago + 2h since then
+        assert res["last"]["stale"] is True
+        assert res["level"] == "urgent"
+        assert any("urgent" in w for w in res["warnings"])
+
+    def test_report_low_enactment_rate_warns(self):
+        from datetime import datetime, timezone
+
+        base = datetime(2025, 5, 1, 12, 0, tzinfo=timezone.utc)
+        # 6 cycles, only 1 enacted (< 50%), no failures, recent last cycle
+        recs = [self._rec(m, base, enacted=(m == 0)) for m in (25, 20, 15, 10, 5, 0)]
+        res = self.lr.loop_report(recs, now=base)
+        assert res["level"] == "warn"
+        assert any("enacted" in w for w in res["warnings"])
+
+    def test_report_enacted_only_suggestion_dialect_failure(self):
+        """OpenAPS 'suggested.reason' is a failure only when not enacted."""
+        from datetime import datetime, timezone
+
+        base = datetime(2025, 5, 1, 12, 0, tzinfo=timezone.utc)
+        recs = [self._rec(0, base, enacted=False, failure="waiting for carbs")]
+        res = self.lr.loop_report(recs, now=base)
+        assert res["failures"]["count"] == 1
+
+    def test_devices_and_flavours_reported(self):
+        from datetime import datetime, timezone
+
+        base = datetime(2025, 5, 1, 12, 0, tzinfo=timezone.utc)
+        recs = [
+            self._rec(10, base, device="loop://phone"),
+            self._rec(5, base, device="openaps://pi", flavour="openaps"),
+        ]
+        res = self.lr.loop_report(recs, now=base)
+        assert set(res["devices"]) == {"loop://phone", "openaps://pi"}
+        assert res["flavours"] == {"loop": 1, "openaps": 1}

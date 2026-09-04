@@ -222,6 +222,34 @@ API stores commands, not confirmations. With no resolvable profile,
 `--include-basal` degrades to the bolus-only total (`includes_basal: false`)
 instead of claiming 0 U of basal.
 
+### Is the loop actually looping? (v2.6.0+)
+
+`devicestatus loop` shows one thing: the latest cycle. Over a day a closed-loop
+rig (Loop, OpenAPS, AndroidAPS) posts *hundreds* of cycles, and the questions
+that matter are historical — how regular is the cadence, what fraction enacted,
+what keeps failing, what did it decide on?
+
+```bash
+# Cadence, enactments, failures, IOB/COB over the window
+cli-anything-nightscout report loop --days 3 --json
+#   3 cycles over 0.2h — 66.7% enacted
+#   cadence   median 5min, mean 5min, max 5min
+#   failures  1 (33.3%) — 'no bolus needed' x1
+```
+
+The report normalises both vendor dialects (`loop` for Loop/iPhone with nested
+`iob.iob`/`enacted.received`, `openaps` for OpenAPS/AAPS with flat `IOB`/`COB`
+and a `suggested` document). `commanded_basal` is what the loop *commanded*
+(rate × duration of enacted temps) — not pump-confirmed delivery; cross-check
+against `report basal`, which replays the profile schedule instead.
+
+Honesty rules: a window with no loop documents is `found: false` with
+`level: "unknown"` — that is unknown rig state, not a healthy loop. Cycles
+that omit IOB/COB contribute nothing to those statistics (`present: 0`),
+never a zero. A stale last cycle (default warn 30 min / urgent 60 min,
+tunable with `--stale-minutes`) or a low enacted fraction (< 50% over ≥ 4
+cycles) raises the `level`, so an agent can alert without a rules engine.
+
 ### Is the data trustworthy? (v2.5.0+)
 
 Every other report here weights the readings it was handed equally, so a
@@ -341,7 +369,7 @@ cli-anything-nightscout session info
 | `notifications` | Alarm `ack` + `admin` notices |
 | `activity` | Activity / exercise records — API v3 (`latest`, `list`, `get`, `add`, `delete`) |
 | `food` | Food database (`list`, `quickpicks`, `regular`, `add`, `update`, `delete`) |
-| `report` | Computed reports: `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `tdd` (`--include-basal` for a true TDD), `basal`, plus composed snapshots `sensor-life`, `iob-cob`, `device-health`, `ages`, and the trustworthiness pair `data-quality` + `accuracy` |
+| `report` | Computed reports: `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `tdd` (`--include-basal` for a true TDD), `basal`, plus composed snapshots `sensor-life`, `iob-cob`, `device-health`, `ages`, the closed-loop history `loop`, and the trustworthiness pair `data-quality` + `accuracy` |
 | `v3` | Generic CRUD + sync over any v3 collection (`list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history`) |
 | `watch` | Real-time entries/treatments via socket.io (needs `pip install '.[watch]'`) |
 | `session` | Session state (`info`, `save`, `load`, `clear`) |

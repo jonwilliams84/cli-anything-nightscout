@@ -1,3 +1,3 @@
 """cli-anything-nightscout — CLI for the Nightscout CGM remote monitor."""
 
-__version__ = "2.5.0"
+__version__ = "2.6.0"

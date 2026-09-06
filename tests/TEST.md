@@ -675,3 +675,47 @@ $ python -m pytest tests --cov=cli_anything --cov-fail-under=78 -q
   data model. `report basal` remains the schedule-replay cross-check.
 - **`Profile Switch` is still not applied during the basal replay;**
   thresholds are still not inherited from the server's own settings.
+
+## Refine Pass — 2026-09-06 (human-rendering + REPL loop coverage)
+
+### Gap that was closed
+
+Every command's `--json` path was tested, but the **human (non-JSON)
+rendering branches** — the default UX when no flag is passed — were largely
+unexercised: `nightscout_cli.py` sat at 70 % coverage while every core
+module was ≥ 86 %. These branches are pure formatting today, but they are
+exactly where a future refactor would silently break an agent's default
+view. The REPL command loop (`cli` with no subcommand) was in the same
+state: its help/parse-error/ClickException/API-error/unexpected-error/
+EOF paths had no tests at all.
+
+### Test additions
+
+| File | New tests | Scope |
+|------|-----------|-------|
+| `test_cli_human_rendering.py` | **41** | Human tables for `report agp` (incl. count-0 hour buckets → `—`, mmol footer), `report hypos` (events with levels + longest, no-events early return, mmol), `report mage` (value, null → `—`, mmol), `report risk`, `report by-weekday` (mg/dL + mmol), `report daily` (latest path, `--from/--to` path, mmol header), `report gmi` (mg/dL + mmol), `report excursions-by-hour` (mg/dL with missing ICR → `—`, mmol prefers `*_mmol` fields); `profile schedule` (snapshot, missing value → `—`, empty store → "no active profile found"); `sensors sessions` (table, `--with-stats` entry counts, ongoing session); `report loop` human summary (flavours, devices, cadence, suggestion-only, failure histogram, no-failures, not-found is not healthy, last cycle with/without commanded rate); `config set/show/clear/test` human output (secrets masked); `session clear`; and 9 REPL-loop tests (exit/quit/:q, blank lines, help, EOF/KeyboardInterrupt, shlex parse error, unknown command, `NightscoutAPIError` surfaced not raised, unexpected exception surfaced not raised, no-server banner) using a scripted fake `ReplSkin`. |
+
+Report-math tests run against the **real core modules** (entries/
+treatments/devicestatus are mocked at the transport level only), so the
+tests assert on genuine `report.py` / `sensors.py` / `loop_report.py`
+output, not hand-built stubs.
+
+### Test results — 2026-09-06
+
+```text
+$ python -m pytest tests --cov=cli_anything --cov-fail-under=78 -q
+1397 passed; Total coverage: 91.79%
+
+nightscout_cli.py: 70% → 83% (missing lines 611 → 316)
+```
+
+No regressions: all 1356 pre-existing tests still pass; 41 new = 1397 total.
+
+### Notes on coverage gaps still open
+
+- **`nightscout_cli.py` still has ~316 missing lines** — mostly deeply
+  interactive branches (prompt-toolkit-dependent REPL paths behind
+  `create_prompt_session`) and per-command fallbacks already covered at the
+  core layer. Next refine could target the remaining `watch` verbs (86 %).
+- Human-rendering tests intentionally assert on stable substrings, not
+  exact table geometry, so cosmetic changes don't churn the suite.

@@ -27,6 +27,7 @@ from cli_anything.nightscout.core import profile as profile_mod
 from cli_anything.nightscout.core import project
 from cli_anything.nightscout.core import properties as properties_mod
 from cli_anything.nightscout.core import quality as quality_mod
+from cli_anything.nightscout.core import query as query_mod
 from cli_anything.nightscout.core import report as report_mod
 from cli_anything.nightscout.core import sensors as sensors_mod
 from cli_anything.nightscout.core import status as status_mod
@@ -37,7 +38,7 @@ from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-VERSION = "2.5.0"
+VERSION = "2.9.0"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -526,14 +527,30 @@ def entries_latest(ctx: click.Context, count: int) -> None:
 @click.option("--type", "type_", default=None, help="Filter by type (sgv/mbg/cal/etr)")
 @click.option("--from", "date_gte", default=None, help="ISO date lower bound (e.g. 2025-01-01)")
 @click.option("--to", "date_lte", default=None, help="ISO date upper bound")
+@click.option(
+    "--find",
+    "find_pairs",
+    multiple=True,
+    help="Mongo-style server filter KEY=VALUE or KEY[$op]=VALUE (repeatable), "
+    'e.g. --find "sgv[$gte]=180" --find "device=share2nightscout-bridge"',
+)
 @click.pass_context
 def entries_list(
-    ctx: click.Context, count: int, type_: str | None, date_gte: str | None, date_lte: str | None
+    ctx: click.Context,
+    count: int,
+    type_: str | None,
+    date_gte: str | None,
+    date_lte: str | None,
+    find_pairs: tuple[str, ...],
 ) -> None:
     conn = _conn(ctx)
     _require_url(conn)
+    try:
+        find = query_mod.parse_find(find_pairs)
+    except ValueError as exc:
+        raise click.ClickException(f"invalid --find: {exc}") from exc
     res = entries_mod.list_entries(
-        conn=conn, count=count, type_=type_, date_gte=date_gte, date_lte=date_lte
+        conn=conn, count=count, type_=type_, date_gte=date_gte, date_lte=date_lte, find=find
     )
     ctx.obj["session"]["last_fetched"]["entries"] = res
     if _is_json(ctx):
@@ -809,6 +826,13 @@ def treatments_latest(ctx: click.Context, count: int) -> None:
 @click.option("--event-type", default=None)
 @click.option("--from", "date_gte", default=None)
 @click.option("--to", "date_lte", default=None)
+@click.option(
+    "--find",
+    "find_pairs",
+    multiple=True,
+    help="Mongo-style server filter KEY=VALUE or KEY[$op]=VALUE (repeatable), "
+    'e.g. --find "eventType=Meal Bolus" --find "carbs[$gte]=30"',
+)
 @click.pass_context
 def treatments_list(
     ctx: click.Context,
@@ -816,15 +840,21 @@ def treatments_list(
     event_type: str | None,
     date_gte: str | None,
     date_lte: str | None,
+    find_pairs: tuple[str, ...],
 ) -> None:
     conn = _conn(ctx)
     _require_url(conn)
+    try:
+        find = query_mod.parse_find(find_pairs)
+    except ValueError as exc:
+        raise click.ClickException(f"invalid --find: {exc}") from exc
     res = treatments_mod.list_treatments(
         conn=conn,
         count=count,
         event_type=event_type,
         date_gte=date_gte,
         date_lte=date_lte,
+        find=find,
     )
     ctx.obj["session"]["last_fetched"]["treatments"] = res
     if _is_json(ctx):
@@ -1115,11 +1145,31 @@ def devicestatus_latest(ctx: click.Context, count: int) -> None:
 @devicestatus_grp.command("list")
 @click.option("--count", default=50, type=int)
 @click.option("--from", "date_gte", default=None)
+@click.option("--to", "date_lte", default=None)
+@click.option(
+    "--find",
+    "find_pairs",
+    multiple=True,
+    help="Mongo-style server filter KEY=VALUE or KEY[$op]=VALUE (repeatable), "
+    'e.g. --find "uploader.battery[$lt]=20" (dots reach nested documents)',
+)
 @click.pass_context
-def devicestatus_list(ctx: click.Context, count: int, date_gte: str | None) -> None:
+def devicestatus_list(
+    ctx: click.Context,
+    count: int,
+    date_gte: str | None,
+    date_lte: str | None,
+    find_pairs: tuple[str, ...],
+) -> None:
     conn = _conn(ctx)
     _require_url(conn)
-    res = ds_mod.list_devicestatus(conn=conn, count=count, date_gte=date_gte)
+    try:
+        find = query_mod.parse_find(find_pairs)
+    except ValueError as exc:
+        raise click.ClickException(f"invalid --find: {exc}") from exc
+    res = ds_mod.list_devicestatus(
+        conn=conn, count=count, date_gte=date_gte, date_lte=date_lte, find=find
+    )
     _emit(ctx, res, human=f"  {len(res)} device status records")
 
 

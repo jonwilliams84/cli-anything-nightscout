@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from cli_anything.nightscout.core import query as query_mod
 from cli_anything.nightscout.utils import nightscout_backend as backend
 
 VALID_TYPES = {"sgv", "mbg", "cal", "etr"}
@@ -113,11 +114,17 @@ def list_entries(
     type_: str | None = None,
     date_gte: str | None = None,
     date_lte: str | None = None,
+    find: dict[str, str] | None = None,
     normalize_to: str | None = None,
 ) -> list[dict[str, Any]]:
-    """List entries with optional date-range and type filter.
+    """List entries with optional date-range, type and arbitrary find filter.
 
     `date_gte` / `date_lte` accept ISO 8601 strings (e.g. ``2025-01-01``).
+
+    `find` is a Mongo-style server-side query mapping in the shape produced
+    by ``core.query.parse_find`` (``{"sgv[$gte]": "180", "device": "x"}``).
+    Keys colliding with the typed filters (``type``, date ranges) win — the
+    general form overrides the convenient one.
     """
     params: dict[str, Any] = {"count": count}
     if type_:
@@ -126,6 +133,8 @@ def list_entries(
         params["find[dateString][$gte]"] = date_gte
     if date_lte:
         params["find[dateString][$lte]"] = date_lte
+    if find:
+        params.update(query_mod.find_params(find))
     result = backend.get(
         "/entries.json",
         base_url=conn["server_url"],

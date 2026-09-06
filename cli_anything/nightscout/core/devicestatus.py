@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from cli_anything.nightscout.core import query as query_mod
 from cli_anything.nightscout.utils import nightscout_backend as backend
 
 
@@ -24,12 +25,21 @@ def list_devicestatus(
     count: int = 50,
     date_gte: str | None = None,
     date_lte: str | None = None,
+    find: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
+    """List device-status records; `find` adds an arbitrary server filter.
+
+    `find` is in the shape produced by ``core.query.parse_find`` (e.g.
+    ``{"uploader.battery[$lt]": "20"}`` — dots reach into nested documents).
+    Keys colliding with the typed date filters win.
+    """
     params: dict[str, Any] = {"count": count}
     if date_gte:
         params["find[created_at][$gte]"] = date_gte
     if date_lte:
         params["find[created_at][$lte]"] = date_lte
+    if find:
+        params.update(query_mod.find_params(find))
     return backend.get(
         "/devicestatus.json",
         base_url=conn["server_url"],

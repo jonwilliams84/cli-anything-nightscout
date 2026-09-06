@@ -4,6 +4,10 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.8.0] — 2026-09-06
+
+- Updated `tests/test.md`. (2 files changed, 59 insertions(+))
+
 ## [2.7.0] — 2026-09-06
 
 - Updated `tests/test.md`. (2 files changed, 57 insertions(+))
@@ -20,6 +24,24 @@ config/session) and the REPL command loop's error paths (parse errors,
 ClickException, API errors, unexpected exceptions, EOF). Module coverage of
 `nightscout_cli.py` rises 70 % → 83 %; total 87 % → 92 %. No tests were
 weakened, skipped, or removed.
+
+### Tests — command-surface refine pass (2026-09-06)
+
+No behavior change; coverage pass only. 50 new tests in
+`tests/test_cli_rendering_gaps.py` exercise the remaining non-JSON
+rendering branches and safety rails of the command groups the earlier
+refine passes did not reach: `status` (info/version/last-modified/
+verifyauth/versions), `entries` (latest/list/get/add/slice/times/
+normalize, plus the delete / delete-by-type confirmation, dry-run and
+error-collection paths), `treatments` (latest/list, delete rails),
+`profile` (current/list/active, `basal-total` unknown-name error),
+`devicestatus` (latest/list/add/delete rails), `food` list, `activity`
+(latest/list/get), `notifications` (ack dry-run/post, admin
+visible/hidden), `report excursions` human table (mg/dL and mmol),
+`watch entries/treatments` CLI wiring, and `report loop` human
+corners (devices/flavours, no-data). Module coverage of
+`nightscout_cli.py` rises 83 % → 91 %; total 91.8 % → 94.6 %. No tests
+were weakened, skipped, or removed.
 
 ## [2.6.0] — 2026-09-04
 

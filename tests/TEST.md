@@ -719,3 +719,44 @@ No regressions: all 1356 pre-existing tests still pass; 41 new = 1397 total.
   core layer. Next refine could target the remaining `watch` verbs (86 %).
 - Human-rendering tests intentionally assert on stable substrings, not
   exact table geometry, so cosmetic changes don't churn the suite.
+
+## Refine pass 3 — command-surface rendering & safety rails (2026-09-06)
+
+### Gap targeted
+
+The first refine pass covered the `report`/`profile`/`sensors`/`config`
+human branches. Still uncovered: the human (non-JSON) rendering of the
+`status`, `entries`, `treatments`, `profile`, `devicestatus`, `food`,
+`activity` and `notifications` groups, and their validation /
+confirmation / dry-run safety rails. `nightscout_cli.py` sat at 83 %.
+
+### Test additions
+
+| File | New tests | Scope |
+|------|-----------|-------|
+| `test_cli_rendering_gaps.py` | **50** | `status` info/version/last-modified/verifyauth/versions (human field rendering); `entries` latest/list/get/add (human + JSON), slice/times/normalize human tables, and the delete rails (24-hex ObjectId validation, no-TTY abort, `--dry-run` sends nothing, `--yes` success); `entries delete-by-type` (refuses unbounded delete, preview lists IDs without deleting, `--apply --yes` deletes each and collects per-id errors); `treatments` latest/list human, delete rails (abort/dry-run/yes); `profile` current/list/active (slot counts, `no active profile found`), `basal-total --name <unknown>` error; `devicestatus` latest/list/add (no-device error, dry-run, post), delete rails; `food list` human; `activity` latest/list/get; `notifications ack` (dry-run sends nothing, post, human ack line), `notifications admin` (visible vs `hidden — non-admin token`); `report excursions` human table (mg/dL + mmol); `watch entries`/`watch treatments` CLI wiring (callback renders, timeout forwarded); `report loop` human corners (devices line, no-loop-data is not healthy). |
+
+The top-level `--dry-run` flag is passed *before* the subcommand in these
+tests — Click does not parse it after the subcommand name — and mutating
+runs point `--project` at a throwaway session file so nothing touches the
+real HOME. Core modules are mocked at the function level; no network.
+
+### Test results — 2026-09-06
+
+```text
+$ python -m pytest tests --cov=cli_anything --cov-fail-under=78 -q
+1447 passed; Total coverage: 94.62%
+
+nightscout_cli.py: 83% → 91% (missing lines 316 → 150)
+```
+
+No regressions: all 1397 pre-existing tests still pass; 50 new = 1447 total.
+CI gate (pytest + ruff check + ruff format + bandit) exits 0.
+
+### Notes on coverage gaps still open
+
+- **`nightscout_cli.py` ~150 missing lines** — mostly prompt-toolkit
+  REPL internals behind `create_prompt_session` and deep `v3` /
+  `report accuracy` fallbacks already covered at the core layer.
+- **`core/watch.py` 86 %** — the socket.io reconnection branches need a
+  fake socket transport; a candidate for a future pass.

@@ -4,6 +4,23 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.7.0] — 2026-09-06
+
+- Updated `tests/test.md`. (2 files changed, 57 insertions(+))
+
+## [Unreleased]
+
+### Tests — human-rendering refine pass (2026-09-06)
+
+No behavior change; coverage pass only. 41 new tests in
+`tests/test_cli_human_rendering.py` exercise the non-JSON rendering branches
+of the report/profile/sensors/config commands (AGP, hypos, MAGE, risk,
+by-weekday, daily, GMI, excursions-by-hour, loop, schedule, sessions,
+config/session) and the REPL command loop's error paths (parse errors,
+ClickException, API errors, unexpected exceptions, EOF). Module coverage of
+`nightscout_cli.py` rises 70 % → 83 %; total 87 % → 92 %. No tests were
+weakened, skipped, or removed.
+
 ## [2.6.0] — 2026-09-04
 
 Closed-loop automation refine. A Loop/OpenAPS/AndroidAPS rig posts a

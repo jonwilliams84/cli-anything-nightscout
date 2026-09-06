@@ -4,6 +4,10 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.9.0] — 2026-09-06
+
+- Updated `cli_anything/nightscout/core/devicestatus.py`, `cli_anything/nightscout/core/entries.py`, `cli_anything/nightscout/core/treatments.py`, `cli_anything/nightscout/nightscout_cli.py`, `tests/test_core.py`, `tests/test_full_e2e.py`. (6 files changed, 442 insertions(+), 6 deletions(-))
+
 ## [2.8.0] — 2026-09-06
 
 - Updated `tests/test.md`. (2 files changed, 59 insertions(+))

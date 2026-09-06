@@ -1211,3 +1211,137 @@ class TestLoopReport:
         res = self.lr.loop_report(recs, now=base)
         assert set(res["devices"]) == {"loop://phone", "openaps://pi"}
         assert res["flavours"] == {"loop": 1, "openaps": 1}
+
+
+# ─── Mongo-style find queries (core/query.py) ─────────────────────────────
+
+
+class TestParseFind:
+    """parse_find: CLI-facing Mongo query construction, fails closed."""
+
+    def setup_method(self):
+        from cli_anything.nightscout.core import query
+        self.q = query
+
+    def test_plain_field_value(self):
+        assert self.q.parse_find(["sgv=180"]) == {"sgv": "180"}
+
+    def test_operator_form(self):
+        assert self.q.parse_find(["sgv[$gte]=180"]) == {"sgv[$gte]": "180"}
+
+    def test_multiple_pairs_merge(self):
+        res = self.q.parse_find(["sgv[$gte]=180", "device=share2nightscout-bridge"])
+        assert res == {"sgv[$gte]": "180", "device": "share2nightscout-bridge"}
+
+    def test_value_kept_verbatim_including_spaces_and_json(self):
+        res = self.q.parse_find(["sgv[$in]=[70, 180]", "notes=hello world"])
+        assert res["sgv[$in]"] == "[70, 180]"
+        assert res["notes"] == "hello world"
+
+    def test_whitespace_around_key_stripped(self):
+        assert self.q.parse_find(["  sgv = 120"]) == {"sgv": " 120"}
+
+    def test_nested_field_with_dot(self):
+        assert self.q.parse_find(["uploader.battery[$lt]=20"]) == {
+            "uploader.battery[$lt]": "20"
+        }
+
+    def test_all_whitelisted_ops_accepted(self):
+        for op in sorted(self.q.ALLOWED_OPS):
+            res = self.q.parse_find([f"x[{op}]=1"])
+            assert res == {f"x[{op}]": "1"}
+
+    def test_missing_equals_raises(self):
+        with pytest.raises(ValueError, match="KEY=VALUE"):
+            self.q.parse_find(["sgv180"])
+
+    def test_empty_field_raises(self):
+        with pytest.raises(ValueError):
+            self.q.parse_find(["=120"])
+
+    def test_field_starting_with_dollar_raises(self):
+        with pytest.raises(ValueError):
+            self.q.parse_find(["$where=x"])
+
+    def test_unknown_operator_raises(self):
+        with pytest.raises(ValueError, match="unsupported operator"):
+            self.q.parse_find(["sgv[$frobnicate]=1"])
+
+    def test_where_operator_rejected_explicitly(self):
+        """$where executes server-side JS — must never reach the server."""
+        with pytest.raises(ValueError, match=r"\$where.*server-side code"):
+            self.q.parse_find(["sgv[$where]=return true"])
+
+    def test_each_blocked_op_rejected(self):
+        for op in sorted(self.q.BLOCKED_OPS):
+            with pytest.raises(ValueError):
+                self.q.parse_find([f"x[{op}]=1"])
+
+    def test_non_string_input_raises(self):
+        with pytest.raises(ValueError, match="expects strings"):
+            self.q.parse_find([42])
+
+    def test_find_params_wraps_keys(self):
+        assert self.q.find_params({"sgv[$gte]": "180"}) == {"find[sgv][$gte]": "180"}
+
+    def test_find_params_none_is_empty(self):
+        assert self.q.find_params(None) == {}
+        assert self.q.find_params({}) == {}
+
+
+class TestListHelpersFindParam:
+    """The typed list helpers must merge parsed find params into the query."""
+
+    def test_list_entries_passes_find_params(self):
+        from cli_anything.nightscout.core import entries
+
+        with mock.patch.object(entries.backend, "get", return_value=[]) as pm:
+            entries.list_entries(
+                conn={"server_url": "http://x"},
+                find={"sgv[$gte]": "180", "device": "bridge"},
+            )
+        params = pm.call_args.kwargs["params"]
+        assert params["find[sgv][$gte]"] == "180"
+        assert params["find[device]"] == "bridge"
+
+    def test_list_entries_without_find_is_unchanged(self):
+        from cli_anything.nightscout.core import entries
+
+        with mock.patch.object(entries.backend, "get", return_value=[]) as pm:
+            entries.list_entries(conn={"server_url": "http://x"}, type_="sgv")
+        params = pm.call_args.kwargs["params"]
+        assert params["find[type]"] == "sgv"
+        assert not any(k.startswith("find[sgv") for k in params)
+
+    def test_list_entries_find_overrides_typed_filter(self):
+        from cli_anything.nightscout.core import entries
+
+        with mock.patch.object(entries.backend, "get", return_value=[]) as pm:
+            entries.list_entries(
+                conn={"server_url": "http://x"}, type_="mbg", find={"type": "sgv"}
+            )
+        params = pm.call_args.kwargs["params"]
+        assert params["find[type]"] == "sgv"
+
+    def test_list_treatments_passes_find_params(self):
+        from cli_anything.nightscout.core import treatments
+
+        with mock.patch.object(treatments.backend, "get", return_value=[]) as pm:
+            treatments.list_treatments(
+                conn={"server_url": "http://x"}, find={"carbs[$gte]": "30"}
+            )
+        params = pm.call_args.kwargs["params"]
+        assert params["find[carbs][$gte]"] == "30"
+
+    def test_list_devicestatus_find_params_and_date_lte(self):
+        from cli_anything.nightscout.core import devicestatus
+
+        with mock.patch.object(devicestatus.backend, "get", return_value=[]) as pm:
+            devicestatus.list_devicestatus(
+                conn={"server_url": "http://x"},
+                date_lte="2025-02-01",
+                find={"uploader.battery[$lt]": "20"},
+            )
+        params = pm.call_args.kwargs["params"]
+        assert params["find[uploader.battery][$lt]"] == "20"
+        assert params["find[created_at][$lte]"] == "2025-02-01"

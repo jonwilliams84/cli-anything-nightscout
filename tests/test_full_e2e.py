@@ -208,15 +208,18 @@ class _NightscoutStandIn:
                         date_lte = self._first_find(qs, "dateString][$lte")
                         if date_lte:
                             items = [e for e in items if (e.get("dateString") or "") <= date_lte]
+                        items = self._apply_find(items, qs)
                         return self._json(200, items[:cnt])
                     if p == "/api/v1/treatments.json":
                         items = list(outer.treatments)
                         cnt = int(qs.get("count", "10"))
                         items.sort(key=lambda t: t.get("created_at", ""), reverse=True)
+                        items = self._apply_find(items, qs)
                         return self._json(200, items[:cnt])
                     if p == "/api/v1/devicestatus.json":
                         items = list(outer.devicestatus)
                         cnt = int(qs.get("count", "10"))
+                        items = self._apply_find(items, qs)
                         return self._json(200, items[:cnt])
                     if p == "/api/v1/profile.json":
                         return self._json(200, outer.profile)
@@ -393,6 +396,98 @@ class _NightscoutStandIn:
                     if k == want:
                         return v
                 return None
+
+            _FIND_KEY_RE = re.compile(r"^find\[([^\[\]]+)\](?:\[(\$[a-zA-Z]+)\])?$")
+
+            @classmethod
+            def _apply_find(cls, items, qs):
+                """Evaluate generic Mongo-style find[field][$op] filters.
+
+                Supports the operator subset the CLI's whitelist advertises
+                for the comparisons the stand-in can make: eq/ne (default),
+                gt/gte/lt/lte (numeric when both sides parse as numbers,
+                else string), in/nin (JSON array), exists, regex. Unknown
+                ops pass through.
+                """
+                conds = []
+                for k, v in qs.items():
+                    m = cls._FIND_KEY_RE.match(k)
+                    if m:
+                        conds.append((m.group(1), m.group(2) or "$eq", v))
+                if not conds:
+                    return items
+
+                def _get(rec, path):
+                    cur = rec
+                    for part in path.split("."):
+                        if not isinstance(cur, dict):
+                            return None
+                        cur = cur.get(part)
+                    return cur
+
+                def _num(x):
+                    try:
+                        return float(x)
+                    except (TypeError, ValueError):
+                        return None
+
+                out = []
+                for rec in items:
+                    keep = True
+                    for field, op, raw in conds:
+                        val = _get(rec, field)
+                        want = raw
+                        try:
+                            parsed = json.loads(raw)
+                            if isinstance(parsed, (int, float, bool)) or parsed is None:
+                                want = parsed
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                        if op == "$exists":
+                            got = val is not None
+                            keep = keep and (got if want in (True, "true", "1") else not got)
+                            continue
+                        if val is None:
+                            keep = False
+                            continue
+                        if op in ("$in", "$nin"):
+                            try:
+                                lst = json.loads(raw) if isinstance(raw, str) else raw
+                            except json.JSONDecodeError:
+                                lst = []
+                            lst = lst if isinstance(lst, list) else [lst]
+                            member = any(
+                                val == x or (_num(val) is not None and _num(val) == _num(x))
+                                for x in lst
+                            )
+                            keep = keep and (member if op == "$in" else not member)
+                            continue
+                        # Numeric compare when both sides are numbers.
+                        a, b = _num(val), _num(want)
+                        if a is not None and b is not None:
+                            eq = a == b
+                            ok = {
+                                "$eq": eq, "$ne": not eq,
+                                "$gt": a > b, "$gte": a >= b,
+                                "$lt": a < b, "$lte": a <= b,
+                            }.get(op)
+                            if ok is None:
+                                ok = (str(val) == str(want)) if op == "$eq" else True
+                        else:
+                            sval, swant = str(val), str(want)
+                            if op == "$regex":
+                                ok = re.search(swant, sval) is not None
+                            else:
+                                eq = sval == swant
+                                ok = {
+                                    "$eq": eq, "$ne": not eq,
+                                    "$gt": sval > swant, "$gte": sval >= swant,
+                                    "$lt": sval < swant, "$lte": sval <= swant,
+                                }.get(op, True)
+                        keep = keep and ok
+                    if keep:
+                        out.append(rec)
+                return out
 
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.port = self._httpd.server_address[1]
@@ -1522,3 +1617,134 @@ class TestDataQualityE2E:
         r = self._run([*path, "--help"])
         assert r.returncode == 0, r.stderr
         assert "Options:" in r.stdout
+
+
+class TestFindQueryE2E:
+    """E2E: Mongo-style --find filters across the v1 collection commands."""
+
+    CLI_BASE = _resolve_cli("cli-anything-nightscout")
+
+    def _run(self, args, env=None, check=True):
+        env_full = os.environ.copy()
+        if env:
+            env_full.update(env)
+        return subprocess.run(
+            self.CLI_BASE + list(args),
+            capture_output=True, text=True, check=check, env=env_full, timeout=30,
+        )
+
+    def _conn_env(self, server_url_and_secret, tmp_path):
+        url, secret = server_url_and_secret
+        return {
+            "NIGHTSCOUT_URL": url,
+            "NIGHTSCOUT_API_SECRET": secret,
+            "NIGHTSCOUT_TOKEN": "",
+            "CLI_ANYTHING_HOME": str(tmp_path),
+        }
+
+    def test_entries_find_numeric_operator(self, server_url_and_secret, tmp_path):
+        """entries list --find 'sgv[$gte]=200' filters server-side."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        self._run(["--json", "entries", "add", "--sgv", "140"], env=env)
+        self._run(["--json", "entries", "add", "--sgv", "260"], env=env)
+        r = self._run(["--json", "entries", "list", "--count", "20",
+                       "--find", "sgv[$gte]=200"], env=env)
+        assert r.returncode == 0, r.stderr
+        rows = json.loads(r.stdout)
+        if not _is_live_mode():
+            assert rows, "expected the 260 reading to match"
+            assert all(float(e["sgv"]) >= 200 for e in rows)
+            assert any(float(e["sgv"]) == 260 for e in rows)
+
+    def test_entries_find_plain_equality(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        self._run(["--json", "entries", "add", "--sgv", "101", "--direction", "Flat"], env=env)
+        r = self._run(["--json", "entries", "list", "--count", "20",
+                       "--find", "sgv=101"], env=env)
+        assert r.returncode == 0, r.stderr
+        rows = json.loads(r.stdout)
+        if not _is_live_mode():
+            assert rows
+            assert all(float(e["sgv"]) == 101 for e in rows)
+
+    def test_entries_find_composes_with_type_filter(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        self._run(["--json", "entries", "add", "--sgv", "150"], env=env)
+        r = self._run(["--json", "entries", "list", "--count", "20",
+                       "--type", "sgv", "--find", "sgv[$gt]=100"], env=env)
+        assert r.returncode == 0, r.stderr
+        rows = json.loads(r.stdout)
+        if not _is_live_mode():
+            assert rows
+            assert all(e.get("type", "sgv") == "sgv" for e in rows)
+
+    def test_entries_find_rejects_where_operator(self, server_url_and_secret, tmp_path):
+        """$where executes server-side JS — the CLI must refuse it loudly."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "entries", "list", "--find", "sgv[$where]=1"],
+                      env=env, check=False)
+        assert r.returncode != 0
+        assert "--find" in (r.stderr + r.stdout)
+        assert "where" in (r.stderr + r.stdout).lower()
+
+    def test_entries_find_rejects_missing_value(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "entries", "list", "--find", "not-a-filter"],
+                      env=env, check=False)
+        assert r.returncode != 0
+        assert "KEY=VALUE" in (r.stderr + r.stdout)
+
+    def test_treatments_find_by_event_type_and_carbs(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        self._run(["--json", "treatments", "add", "--event-type", "Meal Bolus",
+                   "--carbs", "45", "--insulin", "4.0"], env=env)
+        self._run(["--json", "treatments", "add", "--event-type", "Correction Bolus",
+                   "--insulin", "0.8"], env=env)
+        r = self._run(["--json", "treatments", "list", "--count", "20",
+                       "--find", "carbs[$exists]=true"], env=env)
+        assert r.returncode == 0, r.stderr
+        rows = json.loads(r.stdout)
+        if not _is_live_mode():
+            assert rows, "expected the Meal Bolus (with carbs) to match"
+            assert all(t.get("carbs") is not None for t in rows)
+
+    def test_devicestatus_find_nested_field(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        # Post a devicestatus with a nested uploader.battery document.
+        payload = json.dumps({"uploader": {"battery": 15}})
+        r = self._run(["--json", "devicestatus", "add", "--body-json", payload], env=env)
+        assert r.returncode == 0, r.stderr
+        r = self._run(["--json", "devicestatus", "list", "--count", "20",
+                       "--find", "uploader.battery[$lt]=20"], env=env)
+        assert r.returncode == 0, r.stderr
+        rows = json.loads(r.stdout)
+        if not _is_live_mode():
+            assert rows
+            assert all(
+                isinstance(d.get("uploader"), dict) and d["uploader"].get("battery") < 20
+                for d in rows
+            )
+
+    def test_find_human_output_still_renders(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        self._run(["--json", "entries", "add", "--sgv", "133"], env=env)
+        r = self._run(["entries", "list", "--count", "5", "--find", "sgv[$gte]=100"],
+                      env=env)
+        assert r.returncode == 0, r.stderr
+        assert "entries" in r.stdout.lower()
+
+    def test_find_works_in_workflow_with_report(self, server_url_and_secret, tmp_path):
+        """Workflow: filter highs, then TIR over the full window still works."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        for v in (95, 150, 240):
+            self._run(["--json", "entries", "add", "--sgv", str(v)], env=env)
+        r = self._run(["--json", "entries", "list", "--count", "10",
+                       "--find", "sgv[$gte]=180"], env=env)
+        assert r.returncode == 0, r.stderr
+        highs = json.loads(r.stdout)
+        if not _is_live_mode():
+            assert highs
+            assert all(float(e["sgv"]) >= 180 for e in highs)
+        r = self._run(["--json", "report", "tir", "--count", "10"], env=env)
+        assert r.returncode == 0, r.stderr
+        assert "tir_pct" in json.loads(r.stdout)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as _dt
 from typing import Any
 
+from cli_anything.nightscout.core import query as query_mod
 from cli_anything.nightscout.utils import nightscout_backend as backend
 
 COMMON_EVENT_TYPES = (
@@ -79,7 +80,13 @@ def list_treatments(
     event_type: str | None = None,
     date_gte: str | None = None,
     date_lte: str | None = None,
+    find: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
+    """List treatments; `find` adds an arbitrary Mongo-style server filter.
+
+    `find` is in the shape produced by ``core.query.parse_find`` (e.g.
+    ``{"carbs[$gte]": "30"}``). Keys colliding with the typed filters win.
+    """
     params: dict[str, Any] = {"count": count}
     if event_type:
         params["find[eventType]"] = event_type
@@ -87,6 +94,8 @@ def list_treatments(
         params["find[created_at][$gte]"] = date_gte
     if date_lte:
         params["find[created_at][$lte]"] = date_lte
+    if find:
+        params.update(query_mod.find_params(find))
     return backend.get(
         "/treatments.json",
         base_url=conn["server_url"],

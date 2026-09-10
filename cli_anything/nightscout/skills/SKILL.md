@@ -83,7 +83,7 @@ cli-anything-nightscout
 | `treatments` | `latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`, `active`, `event-types`, `temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event` | Treatment events. The named verbs cover the structured Care Portal event types and validate the field combinations before sending. |
 | `profile` | `active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `basal-total`, `create`, `update`, `delete` | Profile records, schedule lookups, scheduled basal U/day |
 | `devicestatus` | `latest`, `list`, `add`, `delete`, `pump`, `uploader`, `loop` | Device status snapshots. `pump`/`uploader`/`loop` **parse** the free-form payload (battery, reservoir, suspend state, loop cycle) instead of returning raw JSON. |
-| `sensors` | `sessions` | **CGM sensor-session detection** — windows between `Sensor Start` / `Sensor Change` treatments. Use this for sensor-change history. |
+| `sensors` | `sessions`, `data` | **CGM sensor-session detection** — windows between `Sensor Start` / `Sensor Change` treatments. Use this for sensor-change history; `data` slices CGM entries per session with per-segment glucose statistics (min/max/mean, CGM bands, in-range %). |
 | `properties` | `get [names]` | **Derived state from `/api/v2/properties`** — IOB, COB, bgnow, delta, loop, sensor age. The endpoint every HA integration uses. |
 | `notifications` | `ack`, `admin` | Acknowledge alarms; list admin notices |
 | `activity` | `latest`, `list`, `get`, `add`, `delete` | Activity / exercise records (API v3) |

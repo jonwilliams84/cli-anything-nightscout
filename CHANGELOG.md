@@ -4,6 +4,28 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.10.0] — 2026-09-10
+
+- **New command: `sensors data`** — per-sensor-session glucose segments.
+  Slices the CGM entries in a window by sensor session (the windows between
+  `Sensor Start` / `Sensor Change` treatments that `sensors sessions`
+  detects) and reports each segment's reading count, first/last reading,
+  covered span, min/max/mean (mg/dL), the standard CGM distribution bands
+  (< 54 / 54-69 / 70-180 / 181-250 / > 250) and the in-range percentage.
+  Readings older than the first detected marker land in segment `0`
+  (`session_start: null`); the newest session is `ongoing: true`. Options:
+  `--days N` (default 30), `--from/--to` ISO overrides, `--min-readings N`
+  (default 1, hides thin segments), `--json`. Empty sessions are listed with
+  `readings: 0` and `null` statistics rather than dropped.
+- New core function `sensors.session_segments()` built on the previously
+  CLI-unexposed `sensors.split_entries_by_session()`; band thresholds
+  overridable via the `bands` parameter.
+- Tests: 14 unit tests in `test_core.py` (`TestSessionSegments` core math +
+  `TestSensorsDataCommand` CliRunner wiring) + 3 E2E tests in
+  `test_full_e2e.py::TestRefineCLISubprocess` (JSON shape, human output,
+  `--min-readings` filtering). Docs: README, NIGHTSCOUT.md, TEST.md, both
+  SKILL.md files.
+
 ## [2.9.0] — 2026-09-06
 
 - Updated `cli_anything/nightscout/core/devicestatus.py`, `cli_anything/nightscout/core/entries.py`, `cli_anything/nightscout/core/treatments.py`, `cli_anything/nightscout/nightscout_cli.py`, `tests/test_core.py`, `tests/test_full_e2e.py`. (6 files changed, 442 insertions(+), 6 deletions(-))

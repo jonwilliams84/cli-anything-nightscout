@@ -43,7 +43,7 @@ summary) are computed locally from data the server returns.
 | `treatments` | `latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`, `temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`, `event-types`, `active` | Treatment events (boluses, meals, site/sensor changes) + the structured Care Portal event types |
 | `profile` | `active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `basal-total`, `create`, `update`, `delete` | Profile records, schedule lookups and scheduled basal totals |
 | `devicestatus` | `latest`, `list`, `add`, `delete`, `pump`, `uploader`, `loop` | Device status — raw records plus parsed pump / uploader / closed-loop views |
-| `sensors` | `sessions` | CGM sensor-session detection (windows between `Sensor Start` / `Sensor Change` events) — canonical source for sensor-change history |
+| `sensors` | `sessions`, `data` | CGM sensor-session detection (windows between `Sensor Start` / `Sensor Change` events) — canonical source for sensor-change history; `data` slices the CGM entries by session with per-segment statistics |
 | `properties` | `get` | Derived state from `/api/v2/properties` — IOB, COB, bgnow, delta, loop, sensor age |
 | `notifications` | `ack`, `admin` | Alarm acknowledgement and admin notices |
 | `activity` | `latest`, `list`, `get`, `add`, `delete` | Activity / exercise records (API v3) |
@@ -286,6 +286,18 @@ Rules that matter:
   *denominator* (composing with the same events `sensors sessions` reads), but
   the gap still appears in the list with `explained: true`. Suppressing it
   would let a genuinely dead uploader disappear behind a sensor change.
+- **Per-session glucose segments (v2.10.0+).** `sensors data` slices the CGM
+  entries in the window by sensor session (the same `Sensor Start` /
+  `Sensor Change` windows `sensors sessions` detects) and reports each
+  segment's reading count, first/last reading, covered span, min/max/mean
+  (mg/dL), the standard CGM bands (< 54 / 54-69 / 70-180 / 181-250 / > 250)
+  and the in-range percentage. Readings older than the first detected marker
+  land in segment `0` (`session_start: null`); the newest session is
+  `ongoing: true` and keeps `session_end: null`. Empty sessions are listed
+  with `readings: 0` and `null` statistics — an empty sensor day is shown,
+  not dropped — and `--min-readings N` (default 1) hides the thin ones.
+  Segment stats weight each reading equally and never notice a hole; pair
+  them with `report data-quality` before quoting anything.
 - **Unknown is never zero.** No `cal` records → `found: false`, not a clean
   bill of health; Libre and most Loop uploaders never emit them. An entry with
   no `unfiltered` field → `raw_mgdl: null`. Nightscout's own `rawbg` returns

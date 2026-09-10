@@ -71,12 +71,24 @@ cli-anything-nightscout sensors sessions --days 90
 
 # With entry counts per session
 cli-anything-nightscout sensors sessions --days 90 --with-stats --json
+
+# Per-session glucose segments: readings, min/max/mean, CGM bands
+cli-anything-nightscout sensors data --days 90 --json
 ```
 
 Sessions are derived from `Sensor Start` / `Sensor Change` treatment events
 stored on the server — the same events Nightscout uses for its sensor-age
 pill in the web UI. This is the canonical answer for "when did Sophie last
 change her sensor?".
+
+`sensors data` (v2.10.0+) goes one step further: it slices the CGM entries
+by session and computes a per-segment statistical profile — reading count,
+first/last reading, covered span, min/max/mean (mg/dL), the standard CGM
+distribution bands (< 54 / 54–69 / 70–180 / 181–250 / > 250 mg/dL) and the
+in-range percentage. Readings older than the first detected marker land in
+segment `0` (`session_start: null`); the newest session is `ongoing: true`.
+Use `--min-readings N` to hide thin segments and `--from/--to` to pin an
+exact window instead of `--days`.
 
 ### Care Portal event types (v2.2.0+)
 
@@ -364,7 +376,7 @@ cli-anything-nightscout session info
 | `treatments` | Treatment events incl. boluses, meals, site/sensor changes (`latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`, `active`, `event-types`) plus validated Care Portal verbs (`temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`) |
 | `profile` | Profile records (`active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `basal-total`, `create`, `update`, `delete`) |
 | `devicestatus` | Pump/CGM status (`latest`, `list`, `add`, `delete`) plus parsed views (`pump`, `uploader`, `loop`) |
-| `sensors` | CGM sensor-session detection from `Sensor Start` / `Sensor Change` treatments (`sessions`) |
+| `sensors` | CGM sensor-session detection from `Sensor Start` / `Sensor Change` treatments (`sessions`, `data`) |
 | `properties` | Derived state from `/api/v2/properties` — IOB, COB, bgnow, delta, loop, sensor age (`get`) |
 | `notifications` | Alarm `ack` + `admin` notices |
 | `activity` | Activity / exercise records — API v3 (`latest`, `list`, `get`, `add`, `delete`) |

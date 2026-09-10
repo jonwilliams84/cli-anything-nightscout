@@ -38,7 +38,7 @@ from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-VERSION = "2.9.0"
+VERSION = "2.10.0"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -289,7 +289,7 @@ def repl(ctx: click.Context) -> None:
         "devicestatus": "Device status: latest, list, add, delete",
         "food": "Food database: list, quickpicks, regular, add, update, delete",
         "activity": "Activity records: latest, list, get, add, delete",
-        "sensors": "CGM sensor sessions: sessions",
+        "sensors": "CGM sensor sessions: sessions, data",
         "properties": "Derived state (IOB/COB/bgnow/loop): get",
         "notifications": "Alarms: ack, admin",
         "report": "Computed reports: tir, summary, daily, gmi, agp, hypos, mage, risk, by-weekday, excursions, sensor-life, iob-cob",
@@ -1954,6 +1954,68 @@ def sensors_sessions(ctx: click.Context, days: int, with_stats: bool) -> None:
                 f"  #{s['session_index']:>2}  {s['start'][:19]} → {end_disp[:19]:<19s}  {s['duration_days']:>5.1f}d  {s['marker_event_type']}"
                 + (f"  {s.get('entries_count', 0)} entries" if with_stats else "")
             )
+
+
+@sensors_grp.command("data")
+@click.option("--days", default=30, type=int, help="History window in days (default 30)")
+@click.option("--from", "date_gte", default=None, help="ISO lower bound (overrides --days)")
+@click.option("--to", "date_lte", default=None, help="ISO upper bound (overrides --days)")
+@click.option(
+    "--min-readings",
+    default=1,
+    type=int,
+    help="Hide segments with fewer readings (default 1; 0 shows empty sessions)",
+)
+@click.pass_context
+def sensors_data(
+    ctx: click.Context, days: int, date_gte: str | None, date_lte: str | None, min_readings: int
+) -> None:
+    """Per-sensor-session glucose segments with per-session statistics.
+
+    Groups the CGM entries in the window by sensor session (windows between
+    ``Sensor Start`` / ``Sensor Change`` treatments) and reports each
+    segment's reading count, min/max/mean (mg/dL), first/last reading,
+    covered span, and the standard CGM distribution bands
+    (< 54, 54-69, 70-180, 181-250, > 250 mg/dL) with the in-range percent.
+    Readings older than the first detected marker land in segment 0
+    (``session_start: null``).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    conn = _conn(ctx)
+    _require_url(conn)
+    if date_gte and date_lte:
+        iso_s, iso_e = date_gte, date_lte
+    else:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+        iso_s = start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        iso_e = end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    txs = treatments_mod.list_treatments(conn=conn, count=10000, date_gte=iso_s, date_lte=iso_e)
+    sgvs = entries_mod.list_entries(
+        conn=conn, count=100000, type_="sgv", date_gte=iso_s, date_lte=iso_e
+    )
+    sessions = sensors_mod.sensor_sessions(txs)
+    segments = sensors_mod.session_segments(sgvs, sessions)
+    if min_readings > 0:
+        segments = [s for s in segments if s["readings"] >= min_readings]
+    if _is_json(ctx):
+        _emit(ctx, segments)
+    else:
+        click.echo(f"  {len(segments)} sensor segment(s)  window {iso_s[:19]} → {iso_e[:19]}")
+        for s in segments:
+            end_disp = (s.get("session_end") or "(ongoing)")[:19]
+            click.echo(
+                f"  #{s['session_index']:>2}  {(s.get('session_start') or '(pre-first)')[:19]:<19s}"
+                f" → {end_disp:<19s}  {s['readings']:>6} readings"
+            )
+            if s["readings"]:
+                click.echo(
+                    f"      min {s['min_mgdl']:g}  max {s['max_mgdl']:g}  mean {s['mean_mgdl']:g} mg/dL"
+                    f"  in-range {s['in_range_percent']:g}%"
+                    f"  (severe-low {s['severe_low']} / low {s['low']} / in-range {s['in_range']}"
+                    f" / high {s['high']} / very-high {s['very_high']})"
+                )
 
 
 # ─── v3 generic CRUD ───────────────────────────────────────────────────────

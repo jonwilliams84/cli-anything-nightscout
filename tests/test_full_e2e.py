@@ -1093,6 +1093,50 @@ class TestRefineCLISubprocess:
         assert "threshold_hours" in data
         assert data["threshold_hours"] == 168.0
 
+    # ---- sensors data (per-session glucose segments) ----
+
+    def test_sensors_data_json(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        # Seed a sensor marker so at least one session exists, plus entries.
+        self._run(["--json", "treatments", "add",
+                    "--event-type", "Sensor Change",
+                    "--notes", "test"], env=env)
+        self._run(["--json", "entries", "add", "--sgv", "100"], env=env)
+        self._run(["--json", "entries", "add", "--sgv", "150"], env=env)
+        r = self._run(["--json", "sensors", "data", "--days", "7"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert isinstance(data, list)
+        assert len(data) >= 1, "expected at least one segment (pre-first or session)"
+        for seg in data:
+            for key in ("session_index", "session_start", "session_end", "ongoing",
+                        "readings", "min_mgdl", "max_mgdl", "mean_mgdl",
+                        "in_range", "in_range_percent"):
+                assert key in seg, f"missing key {key}: {seg}"
+        # The seeded readings must land somewhere in the segmentation.
+        assert sum(s["readings"] for s in data) >= 2
+
+    def test_sensors_data_human_output(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        self._run(["--json", "treatments", "add",
+                    "--event-type", "Sensor Change",
+                    "--notes", "test"], env=env)
+        self._run(["--json", "entries", "add", "--sgv", "120"], env=env)
+        r = self._run(["sensors", "data", "--days", "7"], env=env)
+        assert r.returncode == 0, r.stderr
+        assert "sensor segment" in r.stdout
+        assert "readings" in r.stdout
+
+    def test_sensors_data_min_readings_filters_empty_segments(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "sensors", "data", "--days", "7",
+                        "--min-readings", "1"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert isinstance(data, list)
+        # Every listed segment clears the threshold.
+        assert all(s["readings"] >= 1 for s in data)
+
     # ---- treatments update (via stand-in) ----
 
     def test_treatments_update_changes_carbs(self, server_url_and_secret, tmp_path):

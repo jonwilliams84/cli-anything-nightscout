@@ -251,3 +251,138 @@ def split_entries_by_session(
                 buckets.setdefault(idx, []).append(entry)
                 break
     return buckets
+
+
+# ── per-session glucose segments ───────────────────────────────────────────
+
+# Distribution bands in mg/dL, matching the standard CGM reporting bands:
+# < 54 severe low, 54–69 low, 70–180 in range, 181–250 high, > 250 very high.
+GLUCOSE_BANDS_MGDL: dict[str, float] = {
+    "severe_low": 54.0,
+    "low": 70.0,
+    "in_range": 180.0,
+    "high": 250.0,
+}
+
+
+def _sgv_value(entry: dict[str, Any]) -> float | None:
+    """Pull the numeric glucose value (mg/dL) from an sgv entry."""
+    for key in ("sgv", "value"):
+        v = entry.get(key)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return float(v)
+    return None
+
+
+def session_segments(
+    entries: list[dict],
+    sessions: list[dict],
+    *,
+    now: _dt.datetime | None = None,
+    bands: dict[str, float] | None = None,
+) -> list[dict[str, Any]]:
+    """Summarize the glucose readings inside each detected sensor session.
+
+    Groups ``entries`` with :func:`split_entries_by_session` and computes a
+    small statistical profile per segment — reading count, min/max/mean
+    (mg/dL), first/last reading timestamps, the time span actually covered,
+    and the standard CGM distribution bands (< 54, 54–69, 70–180, 181–250,
+    > 250 mg/dL) with the in-range percentage.
+
+    Returns a list of segment dicts ordered oldest → newest:
+
+      * ``session_index == 0`` is the *pre-first-marker* bucket — readings
+        older than the first detected ``Sensor Start``/``Sensor Change``
+        treatment. It has no session window (``session_start`` is ``None``).
+      * The ongoing (newest) session keeps ``session_end: None`` and
+        ``ongoing: true``.
+      * Segments with no readings are still listed, with ``readings: 0``
+        and ``None`` statistics — an empty sensor day is reported, not
+        dropped, so callers can see coverage holes the way the rest of
+        this harness reports gaps.
+
+    ``bands`` may override the default thresholds (keys ``severe_low``,
+    ``low``, ``in_range``, ``high``; mg/dL values).
+    """
+    b = bands or GLUCOSE_BANDS_MGDL
+    by_index: dict[int, dict[str, Any]] = {
+        s["session_index"]: {
+            "session_index": int(s["session_index"]),
+            "session_start": s["start"],
+            "session_end": s.get("end"),
+            "ongoing": s.get("end") is None,
+            "marker_event_type": s.get("marker_event_type"),
+            "readings": 0,
+            "first_reading": None,
+            "last_reading": None,
+            "span_minutes": None,
+            "min_mgdl": None,
+            "max_mgdl": None,
+            "mean_mgdl": None,
+            "severe_low": 0,
+            "low": 0,
+            "in_range": 0,
+            "high": 0,
+            "very_high": 0,
+            "in_range_percent": None,
+        }
+        for s in sessions
+    }
+    pre_first: dict[str, Any] = {
+        "session_index": 0,
+        "session_start": None,
+        "session_end": None,
+        "ongoing": False,
+        "marker_event_type": None,
+        "readings": 0,
+        "first_reading": None,
+        "last_reading": None,
+        "span_minutes": None,
+        "min_mgdl": None,
+        "max_mgdl": None,
+        "mean_mgdl": None,
+        "severe_low": 0,
+        "low": 0,
+        "in_range": 0,
+        "high": 0,
+        "very_high": 0,
+        "in_range_percent": None,
+    }
+
+    buckets = split_entries_by_session(entries, sessions)
+    for idx, seg_entries in buckets.items():
+        seg = by_index.get(idx, pre_first)
+        vals: list[float] = []
+        dts: list[_dt.datetime] = []
+        for e in seg_entries:
+            v = _sgv_value(e)
+            if v is not None:
+                vals.append(v)
+                if v < b["severe_low"]:
+                    seg["severe_low"] += 1
+                elif v < b["low"]:
+                    seg["low"] += 1
+                elif v <= b["in_range"]:
+                    seg["in_range"] += 1
+                elif v <= b["high"]:
+                    seg["high"] += 1
+                else:
+                    seg["very_high"] += 1
+            edt = _entry_dt(e)
+            if edt is not None:
+                dts.append(edt)
+        seg["readings"] = len(seg_entries)
+        if vals:
+            seg["min_mgdl"] = round(min(vals), 1)
+            seg["max_mgdl"] = round(max(vals), 1)
+            seg["mean_mgdl"] = round(sum(vals) / len(vals), 1)
+            seg["in_range_percent"] = round(seg["in_range"] * 100.0 / len(vals), 1)
+        if dts:
+            dts.sort()
+            seg["first_reading"] = _to_iso_z(dts[0])
+            seg["last_reading"] = _to_iso_z(dts[-1])
+            seg["span_minutes"] = round((dts[-1] - dts[0]).total_seconds() / 60.0, 1)
+
+    segments = [pre_first] if (buckets.get(0) or pre_first["readings"]) else []
+    segments.extend(by_index[k] for k in sorted(by_index))
+    return segments

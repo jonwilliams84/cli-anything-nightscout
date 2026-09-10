@@ -760,3 +760,28 @@ CI gate (pytest + ruff check + ruff format + bandit) exits 0.
   `report accuracy` fallbacks already covered at the core layer.
 - **`core/watch.py` 86 %** — the socket.io reconnection branches need a
   fake socket transport; a candidate for a future pass.
+
+### Test results — 2026-09-10 (v2.10.0 — `sensors data`)
+
+New coverage for the previously CLI-unexposed per-session glucose
+segmentation: `core/sensors.py::session_segments()` (built on
+`split_entries_by_session()`) and the `sensors data` command.
+
+| File | New tests | Scope |
+|------|-----------|-------|
+| `test_core.py` | **14** | `TestSessionSegments`: no sessions/no entries → empty; entries without sessions → pre-first segment; no pre-first bucket when all entries follow the first marker; per-session statistics (count/min/max/mean/first/last/span/in-range percent); the five CGM distribution bands (< 54 / 54-69 / 70-180 / 181-250 / > 250); custom `bands`; ongoing session keeps `session_end: null` + `ongoing: true`; timestamp-less entries are skipped exactly like the bucketing does; empty sessions listed with `readings: 0` / `null` stats; `value`-keyed entries accepted. Plus 4 `TestSensorsDataCommand` CliRunner tests (JSON shape, human table, `--min-readings` filtering, `--from/--to` override wiring). |
+| `test_full_e2e.py` | **3** | `TestRefineCLISubprocess`: `sensors data --days 7 --json` shape (segment keys, seeded readings counted), human table output, `--min-readings 1` filtering. |
+
+The top-level `--json` flag is passed before the subcommand (Click parses it
+there); the E2E tests seed a `Sensor Change` marker and entries via the CLI
+itself so they pass against both the stand-in server and a live one.
+
+```text
+$ python -m pytest tests --cov=cli_anything --cov-fail-under=78 -q
+1494 passed; Total coverage: 94.66 %
+
+nightscout_cli.py: 91 % · core/sensors.py: 95 %
+```
+
+Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
+exits 0.

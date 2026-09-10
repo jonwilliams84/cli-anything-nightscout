@@ -8,6 +8,7 @@ import importlib
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -1345,3 +1346,213 @@ class TestListHelpersFindParam:
         params = pm.call_args.kwargs["params"]
         assert params["find[uploader.battery][$lt]"] == "20"
         assert params["find[created_at][$lte]"] == "2025-02-01"
+
+
+# ─── core/sensors — per-session glucose segments ───────────────────────────
+
+
+def _iso_at(hours_after: float) -> str:
+    base = datetime(2025, 3, 1, 12, 0, 0, tzinfo=timezone.utc)
+    return (base + timedelta(hours=hours_after)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _sgv_entry(hours_after: float, mgdl: float) -> dict:
+    return {"type": "sgv", "sgv": int(mgdl), "dateString": _iso_at(hours_after),
+            "date": 1740830400000 + int(hours_after * 3600_000)}
+
+
+class TestSessionSegments:
+    """session_segments() summarizes glucose inside each sensor session."""
+
+    def setup_method(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        self.sensors = sensors_mod
+
+    def _markers(self, *hour_offsets: float) -> list[dict]:
+        return [
+            {"eventType": "Sensor Change", "created_at": _iso_at(h)} for h in hour_offsets
+        ]
+
+    def test_no_sessions_no_entries_is_empty(self):
+        assert self.sensors.session_segments([], []) == []
+
+    def test_no_sessions_entries_lands_in_pre_first_segment(self):
+        segs = self.sensors.session_segments([_sgv_entry(0, 100)], [])
+        assert len(segs) == 1
+        assert segs[0]["session_index"] == 0
+        assert segs[0]["session_start"] is None
+        assert segs[0]["readings"] == 1
+
+    def test_pre_first_bucket_only_when_entries_exist_before_first_marker(self):
+        # Marker at h=0; entries only after it → no pre-first segment.
+        sessions = self.sensors.sensor_sessions(self._markers(0, 24))
+        entries = [_sgv_entry(2, 100), _sgv_entry(3, 110)]
+        segs = self.sensors.session_segments(entries, sessions)
+        assert [s["session_index"] for s in segs] == [1, 2]
+        assert segs[0]["readings"] == 2
+
+    def test_per_session_statistics(self):
+        sessions = self.sensors.sensor_sessions(self._markers(0, 24))
+        entries = [
+            _sgv_entry(1, 100),
+            _sgv_entry(2, 140),
+            _sgv_entry(3, 180),
+            _sgv_entry(25, 200),
+        ]
+        segs = self.sensors.session_segments(entries, sessions)
+        s1 = next(s for s in segs if s["session_index"] == 1)
+        s2 = next(s for s in segs if s["session_index"] == 2)
+        assert s1["readings"] == 3
+        assert s1["min_mgdl"] == 100.0
+        assert s1["max_mgdl"] == 180.0
+        assert s1["mean_mgdl"] == round((100 + 140 + 180) / 3, 1)
+        assert s1["first_reading"] == _iso_at(1)
+        assert s1["last_reading"] == _iso_at(3)
+        assert s1["span_minutes"] == round(2 * 60, 1)
+        assert s1["in_range"] == 3
+        assert s1["in_range_percent"] == 100.0
+        assert s2["readings"] == 1
+        assert s2["high"] == 1
+
+    def test_distribution_bands(self):
+        sessions = self.sensors.sensor_sessions(self._markers(0))
+        entries = [
+            _sgv_entry(1, 40),   # severe low (<54)
+            _sgv_entry(2, 60),   # low (54-69)
+            _sgv_entry(3, 120),  # in range (70-180)
+            _sgv_entry(4, 200),  # high (181-250)
+            _sgv_entry(5, 300),  # very high (>250)
+        ]
+        seg = self.sensors.session_segments(entries, sessions)[0]
+        assert (seg["severe_low"], seg["low"], seg["in_range"], seg["high"],
+                seg["very_high"]) == (1, 1, 1, 1, 1)
+        assert seg["in_range_percent"] == 20.0
+
+    def test_ongoing_session_keeps_end_null(self):
+        sessions = self.sensors.sensor_sessions(self._markers(0, 24))
+        entries = [_sgv_entry(26, 110)]
+        segs = self.sensors.session_segments(entries, sessions)
+        s2 = next(s for s in segs if s["session_index"] == 2)
+        assert s2["ongoing"] is True
+        assert s2["session_end"] is None
+        assert s2["session_start"] == _iso_at(24)
+
+    def test_entries_without_timestamp_are_skipped_like_the_bucketing(self):
+        # split_entries_by_session silently drops entries with no resolvable
+        # timestamp (documented behavior); segments inherit that, without crashing.
+        sessions = self.sensors.sensor_sessions(self._markers(0))
+        entries = [{"type": "sgv"}, {"type": "sgv", "sgv": 100, "dateString": _iso_at(1)}]
+        seg = self.sensors.session_segments(entries, sessions)[0]
+        assert seg["readings"] == 1
+        assert seg["min_mgdl"] == 100.0
+        assert seg["in_range"] == 1
+        assert seg["span_minutes"] == 0.0
+
+    def test_custom_bands(self):
+        sessions = self.sensors.sensor_sessions(self._markers(0))
+        entries = [_sgv_entry(1, 100), _sgv_entry(2, 150)]
+        seg = self.sensors.session_segments(
+            entries, sessions, bands={"severe_low": 0, "low": 0, "in_range": 120, "high": 300}
+        )[0]
+        assert seg["in_range"] == 1
+        assert seg["high"] == 1
+        assert seg["very_high"] == 0
+
+    def test_empty_session_is_listed_with_zero_readings(self):
+        # Two markers with no readings inside the first session window.
+        sessions = self.sensors.sensor_sessions(self._markers(0, 24))
+        entries = [_sgv_entry(50, 110)]
+        segs = self.sensors.session_segments(entries, sessions)
+        s1 = next(s for s in segs if s["session_index"] == 1)
+        assert s1["readings"] == 0
+        assert s1["min_mgdl"] is None
+        assert s1["in_range_percent"] is None
+        assert s1["first_reading"] is None
+
+    def test_mmol_style_values_are_still_reported(self):
+        # Entries without 'sgv' but with 'value' (some bridges emit this).
+        sessions = self.sensors.sensor_sessions(self._markers(0))
+        entries = [{"type": "sgv", "value": 99, "dateString": _iso_at(1)}]
+        seg = self.sensors.session_segments(entries, sessions)[0]
+        assert seg["readings"] == 1
+        assert seg["min_mgdl"] == 99.0
+
+
+class TestSensorsDataCommand:
+    """`sensors data` — CLI wiring over mocked core fetches (CliRunner)."""
+
+    def _invoke(self, args, as_json=True):
+        from click.testing import CliRunner
+
+        from cli_anything.nightscout import nightscout_cli as mod
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        runner = CliRunner()
+        full_args = ["--url", "https://ns.example.com", "--api-secret", "testsecret12chars"]
+        full_args += ["--json"] if as_json else []
+        full_args += args
+        with (
+            mock.patch.object(mod.treatments_mod, "list_treatments", return_value=[]) as tx_mock,
+            mock.patch.object(mod.entries_mod, "list_entries", return_value=[]) as sg_mock,
+            mock.patch.object(
+                sensors_mod, "sensor_sessions",
+                return_value=[{"session_index": 1, "start": "2025-03-01T12:00:00.000Z",
+                               "end": "2025-03-02T12:00:00.000Z", "duration_days": 1.0,
+                               "marker_event_type": "Sensor Change",
+                               "entries_count": None, "entries_first": None, "entries_last": None}],
+            ),
+            mock.patch.object(
+                sensors_mod, "session_segments",
+                return_value=[
+                    {"session_index": 1, "session_start": "2025-03-01T12:00:00.000Z",
+                     "session_end": "2025-03-02T12:00:00.000Z", "ongoing": False,
+                     "marker_event_type": "Sensor Change", "readings": 3,
+                     "first_reading": "2025-03-01T13:00:00.000Z",
+                     "last_reading": "2025-03-01T15:00:00.000Z", "span_minutes": 120.0,
+                     "min_mgdl": 90.0, "max_mgdl": 180.0, "mean_mgdl": 130.0,
+                     "severe_low": 0, "low": 1, "in_range": 1, "high": 1, "very_high": 0,
+                     "in_range_percent": 33.3},
+                    {"session_index": 2, "session_start": "2025-03-02T12:00:00.000Z",
+                     "session_end": None, "ongoing": True,
+                     "marker_event_type": "Sensor Start", "readings": 0,
+                     "first_reading": None, "last_reading": None, "span_minutes": None,
+                     "min_mgdl": None, "max_mgdl": None, "mean_mgdl": None,
+                     "severe_low": 0, "low": 0, "in_range": 0, "high": 0, "very_high": 0,
+                     "in_range_percent": None},
+                ],
+            ) as seg_mock,
+        ):
+            result = runner.invoke(mod.cli, full_args, standalone_mode=False,
+                                   catch_exceptions=True)
+        return result, tx_mock, sg_mock, seg_mock
+
+    def test_json_output(self):
+        result, tx, sg, seg = self._invoke(
+            ["sensors", "data", "--days", "7", "--min-readings", "0"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert isinstance(data, list) and len(data) == 2
+        assert data[0]["session_index"] == 1
+        assert data[1]["ongoing"] is True
+
+    def test_human_output(self):
+        result, *_ = self._invoke(["sensors", "data", "--days", "7"], as_json=False)
+        assert result.exit_code == 0, result.exception
+        assert "sensor segment" in result.output
+        assert "readings" in result.output
+        assert "in-range" in result.output
+        assert "min 90" in result.output
+
+    def test_min_readings_filters(self):
+        result, *_ = self._invoke(["sensors", "data", "--min-readings", "1"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert [s["session_index"] for s in data] == [1]
+
+    def test_from_to_overrides_days(self):
+        result, tx, sg, seg = self._invoke(
+            ["sensors", "data", "--from", "2025-01-01", "--to", "2025-01-31"])
+        assert result.exit_code == 0, result.exception
+        assert tx.call_args.kwargs["date_gte"] == "2025-01-01"
+        assert sg.call_args.kwargs["date_lte"] == "2025-01-31"

@@ -38,7 +38,7 @@ from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-VERSION = "2.10.0"
+VERSION = "2.10.1"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────

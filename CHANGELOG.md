@@ -4,6 +4,18 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.10.1] — 2026-09-16
+
+- **Fix: CodeQL Analyze failing on main.** The `codeql.yml` workflow now sets
+  `CODEQL_ACTION_OVERLAY_ANALYSIS: "false"`. Improved incremental (overlay)
+  analysis kept failing mid-run with disk-space exhaustion on the hosted runner
+  ("This job attempted to run with improved incremental analysis but it did not
+  complete successfully"), which failed the whole `CodeQL Analyze` job. Disabling
+  the overlay feature makes CodeQL run the supported classic analysis mode that
+  fits the runner's disk budget. No code or tests were affected — this release
+  only syncs the packaged CLI version (`cli-anything-nightscout --version` now
+  reports `2.10.1`) and repairs the security-analysis pipeline.
+
 ## [2.10.0] — 2026-09-10
 
 - **New command: `sensors data`** — per-sensor-session glucose segments.

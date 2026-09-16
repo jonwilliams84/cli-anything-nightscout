@@ -14,6 +14,13 @@ jobs:
   analyze:
     name: CodeQL Analyze
     runs-on: ubuntu-latest
+    env:
+      # Opt out of improved incremental (overlay) analysis: it repeatedly
+      # failed mid-run with disk-space exhaustion on the hosted runner
+      # (2026-09-16 run 34960465303), failing the whole analyze job. This
+      # env var is the action's supported off-switch for the feature, so the
+      # job runs the classic analysis mode that fits the runner's disk.
+      CODEQL_ACTION_OVERLAY_ANALYSIS: "false"
     steps:
       - uses: actions/checkout@v7
       - uses: github/codeql-action/init@v4

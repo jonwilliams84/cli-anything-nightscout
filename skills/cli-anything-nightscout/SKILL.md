@@ -88,7 +88,7 @@ cli-anything-nightscout
 | `notifications` | `ack`, `admin` | Acknowledge alarms; list admin notices |
 | `activity` | `latest`, `list`, `get`, `add`, `delete` | Activity / exercise records (API v3) |
 | `food` | `list`, `quickpicks`, `regular`, `add`, `update`, `delete` | Food database |
-| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages`, `data-quality`, `accuracy` | Computed reports + composed snapshots. `data-quality` and `accuracy` grade the **data**, not the glucose. |
+| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages`, `data-quality`, `accuracy`, `day` | Computed reports + composed snapshots. `data-quality` and `accuracy` grade the **data**, not the glucose; `day` is the one-day clinical snapshot. |
 | `v3` | `list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history` | Generic CRUD + sync over any v3 collection |
 | `watch` | (socket.io) | Real-time entries/treatments stream (`pip install '.[watch]'`) |
 | `session` | `info`, `save`, `load`, `clear` | Session state (cache + history) |
@@ -179,6 +179,7 @@ whether the harness already covers it. Common misses:
 | Overall rig health in one call | `report device-health` | Pump + uploader + loop + which device went quiet. Branch on the single top-level `level`. |
 | Recent CGM values | `entries latest --count N` or `entries current` | `current` is a lighter single-record endpoint. |
 | Time-in-Range / GMI / daily summary | `report tir` / `report gmi` / `report daily` | Local computation over fetched entries. |
+| **What happened on <date>? (one-day snapshot)** | `report day [--date YYYY-MM-DD] [--tz Z]` | Composes glucose summary + bands (<54/>250 extremes), hypo events, bolus/carb totals, treatment mix and care events for one calendar day. No data → `found: false`, never a zero day; unfinished day → `day_in_progress: true`. `--include-basal` adds reconstructed basal. |
 | Edit a logged carb/insulin value | `treatments update <id> --carbs N` | v1 PUT, merges with the existing record. |
 | Set / cancel a temp basal or temp target | `treatments temp-basal` / `treatments temp-target` | `--duration 0` cancels. `--percent` is a relative delta, not an absolute rate. Do **not** hand-roll these with `treatments add` — the dedicated verbs validate the field combination. |
 | Switch profile, log a combo bolus, log exercise | `treatments profile-switch` / `treatments combo-bolus` / `treatments exercise` | For `combo-bolus`, `--insulin` is the TOTAL dose and the splits must sum to 100. |

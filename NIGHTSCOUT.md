@@ -48,7 +48,7 @@ summary) are computed locally from data the server returns.
 | `notifications` | `ack`, `admin` | Alarm acknowledgement and admin notices |
 | `activity` | `latest`, `list`, `get`, `add`, `delete` | Activity / exercise records (API v3) |
 | `food` | `list`, `quickpicks`, `regular`, `add`, `update`, `delete` | Food database |
-| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages`, `loop`, `data-quality`, `accuracy` | Computed reports + composed snapshots |
+| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages`, `loop`, `data-quality`, `accuracy`, `day` | Computed reports + composed snapshots; `day` is the one-day clinical snapshot |
 | `v3` | `list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history` | Generic CRUD + sync over any v3 collection |
 | `watch` | (socket.io) | Real-time entries/treatments stream (needs `pip install '.[watch]'`) |
 | `session` | `info`, `save`, `load`, `clear` | Session state and last-fetched cache |
@@ -309,6 +309,32 @@ Rules that matter:
 
 The intended workflow is to run `report data-quality` *first* and treat its
 `capture_pct` / `level` as a qualifier on every glucose statistic that follows.
+
+## One-day snapshot (v2.11.0+)
+
+`report day [--date YYYY-MM-DD] [--tz Z] [--units U] [--include-basal
+[--profile NAME]]` composes the five commands an agent would otherwise chain
+for a single calendar day:
+
+- **glucose** — count, mean/stdev/CV/GMI, min/max with the first and last
+  reading timestamps of the day.
+- **bands** — the consensus TIR/TBR/TAR split (70–180 mg/dL or 3.9–10.0
+  mmol/L by `--units`) plus the level-2 extremes `below_54_count` /
+  `above_250_count`. With no usable readings these are `null`, never 0.
+- **hypo_events** — distinct ≥15-min dips below the low threshold (same
+  rules as `report hypos`).
+- **insulin** — bolus units/count and carbs/carb-event count for the day,
+  bolus-only exactly like `report tdd` (`includes_basal: false`);
+  `--include-basal` adds a `basal` block with the day's scheduled vs
+  delivered units (same reconstruction as `report basal`).
+- **treatments** — `treatment_count`, `events_by_type` breakdown and
+  `care_events` (site/sensor/insulin/pump changes with timestamps).
+
+Honesty rails: a date with neither readings nor treatments is
+`found: false` (glucose/bands/insulin are `null`); an unfinished day is
+`day_in_progress: true`; readings without treatments (or the reverse) emit a
+warning. `--date` defaults to *today* in the `--tz` zone; an invalid date is
+rejected client-side.
 
 ## Auth resolution order (highest precedence first)
 

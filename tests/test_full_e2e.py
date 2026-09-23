@@ -1349,6 +1349,67 @@ class TestRefineCLISubprocess:
         assert isinstance(data, list)
 
 
+    # ---- v2.11.0: report day — one-day clinical snapshot ----
+
+    def test_report_day_empty_date_found_false(self, server_url_and_secret, tmp_path):
+        """A date with no data must read found:false, never a zero day."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "report", "day",
+                        "--date", "2001-01-01", "--tz", "UTC"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["date"] == "2001-01-01"
+        assert data["found"] is False
+        assert data["glucose"] is None
+        assert data["insulin"] is None
+
+    def test_report_day_composes_a_posted_bolus(self, server_url_and_secret, tmp_path):
+        """`report day` picks up treatments and events for today."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "treatments", "add",
+                        "--event-type", "Meal Bolus",
+                        "--carbs", "42", "--insulin", "4.2"], env=env)
+        assert r.returncode == 0, r.stderr
+        r = self._run(["--json", "report", "day", "--tz", "UTC"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["found"] is True
+        assert data["day_in_progress"] is True
+        assert data["insulin"]["bolus_units"] >= 4.2
+        assert data["insulin"]["carbs_g"] >= 42
+        assert data["events_by_type"].get("Meal Bolus", 0) >= 1
+        assert isinstance(data["bands"], dict)
+        print(f"\n  day snapshot: {data['glucose'] and data['glucose'].get('count', 0)} readings, "
+              f"{data['insulin']['bolus_units']}U bolus")
+
+    def test_report_day_human_output(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["report", "day", "--tz", "UTC"], env=env)
+        assert r.returncode == 0, r.stderr
+        assert "report day" in r.stdout
+        assert "insulin" in r.stdout
+
+    def test_report_day_invalid_date_fails(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["report", "day", "--date", "09/22/2026"],
+                       env=env, check=False)
+        assert r.returncode != 0
+        assert "invalid date" in (r.stdout + r.stderr)
+
+    def test_report_day_include_basal(self, server_url_and_secret, tmp_path):
+        """--include-basal adds the reconstructed basal block for the day."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "report", "day", "--tz", "UTC",
+                        "--include-basal"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert "basal" in data
+        if not _is_live_mode():
+            assert data["basal"]["found"] is True
+            assert data["basal"]["scheduled_units"] > 0
+            print(f"\n  basal: scheduled {data['basal']['scheduled_units']}U, "
+                  f"delivered {data['basal']['delivered_units']}U")
+
 # ─── v2.5.0: data-trustworthiness surface (calibration / accuracy / capture) ──
 
 @pytest.fixture(scope="module")

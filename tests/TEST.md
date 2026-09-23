@@ -785,3 +785,25 @@ nightscout_cli.py: 91 % · core/sensors.py: 95 %
 
 Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
 exits 0.
+
+### Test results — 2026-09-23 (v2.11.0 — `report day`)
+
+New coverage for the one-day clinical snapshot: `core/day_report.py`
+(`day_window()` + `day_report()`) and the `report day` command, which
+composes glucose summary, band distribution, hypo events, insulin/carb
+totals, treatment mix and care events for a single calendar day.
+
+| File | New tests | Scope |
+|------|-----------|-------|
+| `test_core.py` | **23** | `TestDayWindow` (4): UTC bounds/ISO query strings, day-boundary shift under a non-UTC tz (`Europe/London` local midnight = 23:00Z), `day_in_progress` flag via a `now` override, invalid dates raise `ValueError`. `TestDayReport` (11): glucose block (day slicing excludes neighbours), consensus bands + level-2 extremes (`below_54_count` boundary at 54 mg/dL), severe-low counting, hypo events require ≥15 min, bolus-only insulin/carbs totals (a `Temp Basal` never adds units), `events_by_type` + `care_events`, tz-boundary day slicing, empty date → `found: false` with null blocks, `day_in_progress` warning, half-missing-data warnings, mmol display fields, invalid date. `TestReportDayCommand` (8): JSON shape + window bounds pushed to the server queries, `--include-basal` basal block, `--date` defaults to today, invalid date fails cleanly, human rendering, human empty-day, human basal line. |
+| `test_full_e2e.py` | **5** | `TestRefineCLISubprocess`: empty date reads `found: false`; a posted Meal Bolus appears in `insulin` + `events_by_type` with `day_in_progress: true`; human output; invalid date rejected client-side; `--include-basal` returns the `basal` block with the seeded schedule. |
+
+```text
+$ /work/venv/bin/python -m pytest tests --cov=cli_anything --cov-fail-under=78 -q
+1522 passed; Total coverage: 94.50 %
+
+nightscout_cli.py: 91 % · core/day_report.py: 94 %
+```
+
+Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
+exits 0.

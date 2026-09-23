@@ -16,6 +16,7 @@ import click
 from cli_anything.nightscout.core import activity as activity_mod
 from cli_anything.nightscout.core import basal as basal_mod
 from cli_anything.nightscout.core import calibration as calibration_mod
+from cli_anything.nightscout.core import day_report as day_report_mod
 from cli_anything.nightscout.core import device_health as health_mod
 from cli_anything.nightscout.core import devicestatus as ds_mod
 from cli_anything.nightscout.core import entries as entries_mod
@@ -38,7 +39,7 @@ from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-VERSION = "2.10.1"
+VERSION = "2.11.0"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -3851,6 +3852,197 @@ def report_tdd(
         click.echo(
             "  (bolus only — basal delivery is not included; pass --include-basal for a true TDD)"
         )
+
+
+@report_grp.command("day")
+@click.option(
+    "--date",
+    "date_str",
+    default=None,
+    help="Calendar day YYYY-MM-DD (default: today in the --tz zone).",
+)
+@click.option(
+    "--tz",
+    "tz_name",
+    default=None,
+    help="Day-boundary timezone (default: local system tz).",
+)
+@click.option(
+    "--units",
+    "units_flag",
+    default=None,
+    type=click.Choice(["mg/dl", "mmol", "mmol/l"]),
+    help="Override session units for the glucose blocks.",
+)
+@click.option(
+    "--include-basal",
+    is_flag=True,
+    default=False,
+    help="Add reconstructed basal delivery for the day (needs a profile).",
+)
+@click.option(
+    "--profile",
+    "profile_name",
+    default=None,
+    help="Named profile for --include-basal (default: the active one).",
+)
+@click.pass_context
+def report_day(
+    ctx: click.Context,
+    date_str: str | None,
+    tz_name: str | None,
+    units_flag: str | None,
+    include_basal: bool,
+    profile_name: str | None,
+) -> None:
+    """One-day clinical snapshot: glucose, bands, hypos, insulin, events.
+
+    Composes what would otherwise take five commands for a single calendar
+    day (day boundary = --tz): glucose summary (mean/CV/GMI/min/max),
+    consensus band split plus the level-2 extremes (<54 / >250 mg/dL),
+    distinct hypo events, bolus insulin + carbs totals (bolus-only, like
+    `report tdd`), a per-event-type treatment breakdown and the care-portal
+    events. A date with no data is `found: false`; an unfinished day is
+    flagged `day_in_progress`.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    tz = tz_name or _default_tz_name()
+    units = units_flag or conn.get("units", "mg/dl")
+    try:
+        window = day_report_mod.day_window(date_str or _today_in(tz), tz=tz)
+        entries = entries_mod.list_entries(
+            conn=conn,
+            count=_REPORT_DAY_FETCH_LIMIT,
+            date_gte=window["date_gte"],
+            date_lte=window["date_lte"],
+        )
+        _warn_truncation(entries, limit=_REPORT_DAY_FETCH_LIMIT, ctx=ctx)
+        txs = treatments_mod.list_treatments(
+            conn=conn,
+            count=_REPORT_DAY_FETCH_LIMIT,
+            date_gte=window["date_gte"],
+            date_lte=window["date_lte"],
+        )
+        _warn_truncation(txs, limit=_REPORT_DAY_FETCH_LIMIT, ctx=ctx)
+        res = day_report_mod.day_report(
+            entries if isinstance(entries, list) else [],
+            txs if isinstance(txs, list) else [],
+            date=window["date"],
+            units=units,
+            tz=tz,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+
+    if include_basal:
+        basal_res = _basal_report(
+            ctx,
+            conn,
+            start=window["start"],
+            end=window["end"],
+            tz=tz,
+            profile_name=profile_name,
+        )
+        row = next(
+            (d for d in basal_res.get("days") or [] if d.get("date") == window["date"]),
+            None,
+        )
+        res["basal"] = {
+            "found": bool(row) and bool(basal_res.get("found")),
+            "profile_name": basal_res.get("profile_name"),
+            "warnings": list(basal_res.get("warnings") or []),
+            **(row or {}),
+        }
+
+    if _is_json(ctx):
+        _emit(ctx, res)
+        return
+    _render_day_report(ctx, res, units)
+
+
+def _today_in(tz_name: str) -> str:
+    """Today's calendar date in ``tz_name`` as YYYY-MM-DD."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(tz_name)
+    except (KeyError, ValueError, ImportError):
+        tz = None
+    from datetime import datetime
+
+    now = datetime.now(tz) if tz else datetime.now()
+    return now.strftime("%Y-%m-%d")
+
+
+_REPORT_DAY_FETCH_LIMIT = 50000
+
+
+def _render_day_report(ctx: click.Context, res: dict[str, Any], units: str) -> None:
+    """Human rendering for `report day` (JSON is the agent-facing output)."""
+    mmol = _is_mmol_units(units)
+    head = f"  report day {res['date']} (tz: {res['tz']})"
+    if res["day_in_progress"]:
+        head += "  [day in progress]"
+    click.echo(head)
+    if not res["found"]:
+        click.echo("  no CGM readings and no treatments for this date")
+        for w in res["warnings"]:
+            click.echo(f"  ⚠ {w}")
+        return
+
+    g = res["glucose"] or {}
+    mean = g.get("mean_mmol") if mmol else g.get("mean_mgdl")
+    mn = g.get("min_mmol") if mmol else g.get("min_mgdl")
+    mx = g.get("max_mmol") if mmol else g.get("max_mgdl")
+    click.echo(f"  readings: {g.get('count', 0)}")
+    click.echo(
+        f"  mean {_fmt_glucose(mean, mmol)}  min {_fmt_glucose(mn, mmol)}  "
+        f"max {_fmt_glucose(mx, mmol)}  CV {g.get('cv_pct')}%  GMI {g.get('gmi_pct')}%"
+    )
+    if g.get("first_reading"):
+        click.echo(f"  first {g['first_reading']}  last {g['last_reading']}")
+
+    b = res["bands"] or {}
+    lo, hi = b.get("low_threshold"), b.get("high_threshold")
+    click.echo(
+        f"  TIR ({lo}–{hi}): {b.get('tir_pct', 0)}%   "
+        f"TBR: {b.get('tbr_pct', 0)}%   TAR: {b.get('tar_pct', 0)}%"
+    )
+    l2_lo = b.get("below_54_count")
+    l2_hi = b.get("above_250_count")
+    l2_lo_txt = "?" if l2_lo is None else str(l2_lo)
+    l2_hi_txt = "?" if l2_hi is None else str(l2_hi)
+    click.echo(f"  <54 mg/dL: {l2_lo_txt} readings   >250 mg/dL: {l2_hi_txt} readings")
+    click.echo(f"  hypo events: {res['hypo_count']}")
+    for ev in res["hypo_events"][:5]:
+        click.echo(
+            f"    - {ev.get('start')} ({ev.get('duration_min')} min, min {ev.get('min_mgdl')})"
+        )
+
+    ins = res["insulin"] or {}
+    basal_txt = ""
+    basal = res.get("basal")
+    if basal and basal.get("found"):
+        basal_txt = f" + {basal['delivered_units']}U basal (scheduled {basal['scheduled_units']}U)"
+    click.echo(
+        f"  insulin: {ins.get('bolus_units', 0)}U in {ins.get('bolus_count', 0)} bolus(es); "
+        f"{ins.get('carbs_g', 0)}g carbs{basal_txt}"
+    )
+    click.echo(f"  treatments: {res['treatment_count']}")
+    if res["events_by_type"]:
+        parts = [f"{k} ×{v}" for k, v in res["events_by_type"].items()]
+        click.echo("    " + ", ".join(parts))
+    if res["care_events"]:
+        click.echo("  care events:")
+        for ev in res["care_events"]:
+            click.echo(
+                f"    - {ev['event_type']}{(' @ ' + ev['timestamp']) if ev['timestamp'] else ''}"
+            )
+    for w in res["warnings"]:
+        click.echo(f"  ⚠ {w}")
+    if not res.get("basal"):
+        click.echo("  (insulin is bolus-only — pass --include-basal for reconstructed basal)")
 
 
 # ─── rig health: devicestatus payload parsing + consumable age counters ────

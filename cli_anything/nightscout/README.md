@@ -322,6 +322,32 @@ Notes that matter:
   entry with no `unfiltered` field gets `raw_mgdl: null`, not 0 — Nightscout's
   own `rawbg` returns 0 there, which is indistinguishable from a real reading.
 
+### The one-day snapshot (v2.11.0+)
+
+"what happened on <date>?" is the most common agent question, and before
+v2.11.0 it took five commands (`report summary` + `report tir` +
+`report hypos` + `report tdd` + `treatments list`). `report day` composes
+them for a single calendar day:
+
+```bash
+cli-anything-nightscout --json report day --date 2026-09-22 --tz Europe/London
+#   date, tz, found, day_in_progress, window
+#   glucose: count / mean / stdev / CV / GMI / min / max + first & last reading
+#   bands:   consensus TIR/TBR/TAR split + the level-2 extremes
+#            (below_54_count, above_250_count)
+#   hypo_events: distinct ≥15-min dips below the low threshold
+#   insulin: bolus units/count, carbs, carb events (bolus-only, like `report tdd`)
+#   events_by_type, care_events: the day's treatment mix and site/sensor events
+#   --include-basal adds the reconstructed basal block for the day
+```
+
+Honesty rules: a date with neither CGM readings nor treatments is
+`"found": false` — never a clean zero-everything day; an unfinished day is
+`"day_in_progress": true` (its averages describe a partial day); CGM data
+without treatments (and vice versa) raises a warning instead of implying the
+missing half is zero; with no readings, `below_54_count`/`above_250_count`
+are `null`, not 0.
+
 ### Dry-run is network-safe (v2.1.0+)
 
 `--dry-run` now describes the request without sending it — every mutating
@@ -381,7 +407,7 @@ cli-anything-nightscout session info
 | `notifications` | Alarm `ack` + `admin` notices |
 | `activity` | Activity / exercise records — API v3 (`latest`, `list`, `get`, `add`, `delete`) |
 | `food` | Food database (`list`, `quickpicks`, `regular`, `add`, `update`, `delete`) |
-| `report` | Computed reports: `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `tdd` (`--include-basal` for a true TDD), `basal`, plus composed snapshots `sensor-life`, `iob-cob`, `device-health`, `ages`, the closed-loop history `loop`, and the trustworthiness pair `data-quality` + `accuracy` |
+| `report` | Computed reports: `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `tdd` (`--include-basal` for a true TDD), `basal`, plus composed snapshots `sensor-life`, `iob-cob`, `device-health`, `ages`, the closed-loop history `loop`, the one-day snapshot `day`, and the trustworthiness pair `data-quality` + `accuracy` |
 | `v3` | Generic CRUD + sync over any v3 collection (`list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history`) |
 | `watch` | Real-time entries/treatments via socket.io (needs `pip install '.[watch]'`) |
 | `session` | Session state (`info`, `save`, `load`, `clear`) |

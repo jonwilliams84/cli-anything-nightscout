@@ -4,6 +4,35 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.11.0] — 2026-09-23
+
+- **New command: `report day`** — the one-day clinical snapshot. Answering
+  "what happened on <date>?" previously required chaining five commands
+  (`report summary`, `report tir`, `report hypos`, `report tdd`,
+  `treatments list`); `report day [--date YYYY-MM-DD] [--tz Z] [--units U]
+  [--include-basal [--profile NAME]]` composes them into a single call for
+  one calendar day (day boundary from `--tz`): glucose summary
+  (count/mean/stdev/CV/GMI/min/max + first and last reading), the consensus
+  band split plus the level-2 extremes (`below_54_count`, `above_250_count`),
+  distinct ≥15-min hypo events, bolus-only insulin + carb totals, the day's
+  `events_by_type` treatment mix, and the care-portal events
+  (site/sensor/insulin/pump changes) with timestamps. `--include-basal` adds
+  the reconstructed scheduled-vs-delivered basal block for the day.
+- New core module `core/day_report.py` (`day_window()` +
+  `day_report()`) composing the existing, independently tested analytics
+  blocks; honesty rails carried over from the rest of the harness: a date
+  with no data is `found: false` (never a zero-everything day), an unfinished
+  day is `day_in_progress: true` with a partial-day warning, readings without
+  treatments (or the reverse) warn instead of implying zeros, and with no
+  usable readings the level-2 extreme counts are `null`, not 0.
+- Tests: 23 unit tests in `test_core.py` (`TestDayWindow` + `TestDayReport`
+  core math + `TestReportDayCommand` CliRunner wiring) and 5 E2E tests in
+  `test_full_e2e.py::TestRefineCLISubprocess` (empty-date `found: false`,
+  composed bolus totals, human output, invalid-date rejection,
+  `--include-basal`). Docs: package README, NIGHTSCOUT.md, TEST.md, both
+  SKILL.md files.
+- `cli-anything-nightscout --version` now reports `2.11.0`.
+
 ## [2.10.1] — 2026-09-16
 
 - **Fix: CodeQL Analyze failing on main.** The `codeql.yml` workflow now sets

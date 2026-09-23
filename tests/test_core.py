@@ -1556,3 +1556,298 @@ class TestSensorsDataCommand:
         assert result.exit_code == 0, result.exception
         assert tx.call_args.kwargs["date_gte"] == "2025-01-01"
         assert sg.call_args.kwargs["date_lte"] == "2025-01-31"
+
+
+# ─── report day: one-day clinical snapshot (v2.11.0) ───────────────────────
+
+class TestDayWindow:
+    """`day_report.day_window` — calendar-day → UTC window resolution."""
+
+    def test_utc_bounds_and_iso_strings(self):
+        from cli_anything.nightscout.core import day_report as dr
+
+        w = dr.day_window("2026-09-22", tz="UTC")
+        assert w["date"] == "2026-09-22"
+        assert w["tz"] == "UTC"
+        assert w["date_gte"] == "2026-09-22T00:00:00.000Z"
+        assert w["date_lte"] == "2026-09-23T00:00:00.000Z"
+
+    def test_tz_boundary_shifts_the_window(self):
+        from cli_anything.nightscout.core import day_report as dr
+
+        w = dr.day_window("2026-09-22", tz="Europe/London")
+        # BST = UTC+1 → local midnight is 23:00Z the day before.
+        assert w["date_gte"] == "2026-09-21T23:00:00.000Z"
+        assert w["date_lte"] == "2026-09-22T23:00:00.000Z"
+
+    def test_day_in_progress_flag(self):
+        from cli_anything.nightscout.core import day_report as dr
+
+        now = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
+        w = dr.day_window("2026-09-22", tz="UTC", now=now)
+        assert w["day_in_progress"] is True
+        w = dr.day_window("2026-09-21", tz="UTC", now=now)
+        assert w["day_in_progress"] is False
+
+    def test_invalid_date_raises(self):
+        from cli_anything.nightscout.core import day_report as dr
+
+        with pytest.raises(ValueError, match="invalid date"):
+            dr.day_window("09/22/2026", tz="UTC")
+        with pytest.raises(ValueError):
+            dr.day_window("not-a-date", tz="UTC")
+
+
+class TestDayReport:
+    """`day_report.day_report` — the composed one-day snapshot."""
+
+    def _entries(self):
+        return [
+            {"type": "sgv", "sgv": 140, "dateString": "2026-09-22T01:00:00.000Z"},
+            {"type": "sgv", "sgv": 65, "dateString": "2026-09-22T02:00:00.000Z"},
+            {"type": "sgv", "sgv": 62, "dateString": "2026-09-22T02:05:00.000Z"},
+            {"type": "sgv", "sgv": 60, "dateString": "2026-09-22T02:10:00.000Z"},
+            {"type": "sgv", "sgv": 55, "dateString": "2026-09-22T02:15:00.000Z"},
+            {"type": "sgv", "sgv": 200, "dateString": "2026-09-22T12:00:00.000Z"},
+            {"type": "sgv", "sgv": 260, "dateString": "2026-09-22T12:30:00.000Z"},
+            {"type": "sgv", "sgv": 150, "dateString": "2026-09-23T02:00:00.000Z"},
+            {"type": "sgv", "sgv": 120, "dateString": "2026-09-21T23:59:00.000Z"},
+        ]
+
+    def _txs(self):
+        return [
+            {"eventType": "Meal Bolus", "insulin": 4.2, "carbs": 42,
+             "created_at": "2026-09-22T11:50:00.000Z"},
+            {"eventType": "Meal Bolus", "insulin": 3.0, "carbs": 30,
+             "created_at": "2026-09-22T18:00:00.000Z"},
+            {"eventType": "Sensor Change",
+             "created_at": "2026-09-22T09:12:00.000Z"},
+            {"eventType": "Temp Basal", "duration": 30, "absolute": 0.9,
+             "created_at": "2026-09-22T10:00:00.000Z"},
+            {"eventType": "Note", "notes": "x",
+             "created_at": "2026-09-21T10:00:00.000Z"},
+        ]
+
+    def test_glucose_block(self):
+        from cli_anything.nightscout.core import day_report as dr
+
+        res = dr.day_report(self._entries(), self._txs(), date="2026-09-22", tz="UTC")
+        assert res["found"] is True
+        g = res["glucose"]
+        assert g["count"] == 7  # the 09-21 23:59 and 09-23 readings are excluded
+        assert g["min_mgdl"] == 55.0
+        assert g["max_mgdl"] == 260.0
+        assert g["first_reading"] == "2026-09-22T01:00:00.000Z"
+        assert g["last_reading"] == "2026-09-22T12:30:00.000Z"
+
+    def test_bands_and_level2_extremes(self):
+        from cli_anything.nightscout.core import day_report as dr
+
+        res = dr.day_report(self._entries(), self._txs(), date="2026-09-22", tz="UTC")
+        b = res["bands"]
+        assert b["low_threshold"] == 70 and b["high_threshold"] == 180
+        # 65/62/60/55 below 70 → TBR; 140 in range; 200/260 above
+        assert b["tbr_pct"] == pytest.approx(57.14, abs=0.01)
+        assert b["tir_pct"] == pytest.approx(14.29, abs=0.01)
+        assert b["below_54_count"] == 0  # 55 mg/dL is not < 54
+        assert b["above_250_count"] == 1
+
+    def test_severe_low_counts_below_54(self):
+        from cli_anything.nightscout.core import day_report as dr
+
+        entries = [{"type": "sgv", "sgv": 50, "dateString": "2026-09-22T02:00:00.000Z"}]
+        res = dr.day_report(entries, [], date="2026-09-22", tz="UTC")
+        assert res["bands"]["below_54_count"] == 1
+
+    def test_hypo_events_need_15_minutes(self):
+        from cli_anything.nightscout.core import day_report as dr
+
+        res = dr.day_report(self._entries(), self._txs(), date="2026-09-22", tz="UTC")
+        # 02:00→02:15 at 65/62/60/55 = 15 min below 70 → one level-1 event.
+        assert res["hypo_count"] == 1
+        assert res["hypo_events"][0]["min_mgdl"] == 55.0
+
+    def test_insulin_bolus_only_carbs(self):
+        from cli_anything.nightscout.core import day_report as dr
+
+        res = dr.day_report(self._entries(), self._txs(), date="2026-09-22", tz="UTC")
+        assert res["insulin"]["bolus_units"] == pytest.approx(7.2)
+        assert res["insulin"]["bolus_count"] == 2
+        assert res["insulin"]["carbs_g"] == pytest.approx(72.0)
+        assert res["insulin"]["includes_basal"] is False
+
+    def test_events_by_type_and_care_events(self):
+        from cli_anything.nightscout.core import day_report as dr
+
+        res = dr.day_report(self._entries(), self._txs(), date="2026-09-22", tz="UTC")
+        assert res["events_by_type"] == {
+            "Meal Bolus": 2, "Sensor Change": 1, "Temp Basal": 1,
+        }
+        assert res["treatment_count"] == 4
+        assert res["care_events"] == [
+            {"event_type": "Sensor Change", "timestamp": "2026-09-22T09:12:00.000Z"}
+        ]
+
+    def test_day_slicing_by_tz_boundary(self):
+        from cli_anything.nightscout.core import day_report as dr
+
+        # 23:59Z on 09-21 is 00:59 London time on 09-22 → belongs to 09-22.
+        res = dr.day_report(self._entries(), [], date="2026-09-22", tz="Europe/London")
+        assert res["glucose"]["count"] == 8
+        assert res["bands"]["tir_pct"] == pytest.approx(25.0, abs=0.01)
+
+    def test_empty_date_found_false(self):
+        from cli_anything.nightscout.core import day_report as dr
+
+        res = dr.day_report(
+            self._entries(), self._txs(), date="2026-09-25", tz="UTC",
+            now=datetime(2026, 9, 26, tzinfo=timezone.utc),
+        )
+        assert res["found"] is False
+        assert res["glucose"] is None
+        assert res["bands"] is None
+        assert res["insulin"] is None
+        assert res["hypo_events"] == []
+        assert res["events_by_type"] == {}
+
+    def test_day_in_progress_warns(self):
+        from cli_anything.nightscout.core import day_report as dr
+
+        res = dr.day_report(
+            self._entries(), self._txs(), date="2026-09-22", tz="UTC",
+            now=datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc),
+        )
+        assert res["day_in_progress"] is True
+        assert any("partial day" in w for w in res["warnings"])
+
+    def test_warnings_when_one_half_is_missing(self):
+        from cli_anything.nightscout.core import day_report as dr
+
+        txs = [{"eventType": "Meal Bolus", "insulin": 1.0,
+                "created_at": "2026-09-22T11:50:00.000Z"}]
+        res = dr.day_report([], txs, date="2026-09-22", tz="UTC",
+                            now=datetime(2026, 9, 23, tzinfo=timezone.utc))
+        assert res["found"] is True
+        assert any("no CGM readings" in w for w in res["warnings"])
+
+        entries = [{"type": "sgv", "sgv": 100,
+                    "dateString": "2026-09-22T11:50:00.000Z"}]
+        res = dr.day_report(entries, [], date="2026-09-22", tz="UTC",
+                            now=datetime(2026, 9, 23, tzinfo=timezone.utc))
+        assert any("no treatment records" in w for w in res["warnings"])
+
+    def test_mmol_display_units(self):
+        from cli_anything.nightscout.core import day_report as dr
+
+        res = dr.day_report(self._entries(), self._txs(), date="2026-09-22",
+                            tz="UTC", units="mmol")
+        assert res["glucose"]["units"] == "mmol/l"
+        assert "mean_mmol" in res["glucose"]
+        assert res["bands"]["units"] == "mmol/l"
+
+    def test_invalid_date_raises(self):
+        from cli_anything.nightscout.core import day_report as dr
+
+        with pytest.raises(ValueError, match="invalid date"):
+            dr.day_report([], [], date="22-09-2026", tz="UTC")
+
+
+class TestReportDayCommand:
+    """`report day` — CLI wiring over mocked core fetches (CliRunner)."""
+
+    def _invoke(self, args, as_json=True, entries=None, txs=None, basal=None):
+        from click.testing import CliRunner
+
+        from cli_anything.nightscout import nightscout_cli as mod
+
+        entries = entries if entries is not None else [
+            {"type": "sgv", "sgv": 140, "dateString": "2026-09-22T01:00:00.000Z"},
+            {"type": "sgv", "sgv": 150, "dateString": "2026-09-22T01:05:00.000Z"},
+        ]
+        txs = txs if txs is not None else [
+            {"eventType": "Meal Bolus", "insulin": 4.2, "carbs": 42,
+             "created_at": "2026-09-22T11:50:00.000Z"},
+        ]
+        basal = basal if basal is not None else {
+            "found": True, "profile_name": "Default", "warnings": [],
+            "days": [{"date": "2026-09-22", "scheduled_units": 21.6,
+                      "delivered_units": 21.0, "temp_basal_minutes": 0.0,
+                      "suspended_minutes": 0.0, "unknown_minutes": 0.0,
+                      "partial": False}],
+        }
+        runner = CliRunner()
+        full_args = ["--url", "https://ns.example.com",
+                     "--api-secret", "testsecret12chars"]
+        full_args += ["--json"] if as_json else []
+        full_args += args
+        with (
+            mock.patch.object(mod.entries_mod, "list_entries",
+                              return_value=entries) as sg_mock,
+            mock.patch.object(mod.treatments_mod, "list_treatments",
+                              return_value=txs) as tx_mock,
+            mock.patch.object(mod, "_basal_report", return_value=basal) as ba_mock,
+        ):
+            result = runner.invoke(mod.cli, full_args, standalone_mode=False,
+                                   catch_exceptions=True)
+        return result, sg_mock, tx_mock, ba_mock
+
+    def test_json_shape(self):
+        result, sg, tx, _ = self._invoke(
+            ["report", "day", "--date", "2026-09-22", "--tz", "UTC"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["date"] == "2026-09-22"
+        assert data["found"] is True
+        assert data["glucose"]["count"] == 2
+        assert data["insulin"]["bolus_units"] == pytest.approx(4.2)
+        assert data["events_by_type"]["Meal Bolus"] == 1
+        # window bounds were pushed to the server queries
+        assert sg.call_args.kwargs["date_gte"] == "2026-09-22T00:00:00.000Z"
+        assert sg.call_args.kwargs["date_lte"] == "2026-09-23T00:00:00.000Z"
+        assert tx.call_args.kwargs["date_gte"] == "2026-09-22T00:00:00.000Z"
+
+    def test_include_basal_adds_basal_block(self):
+        result, *_ = self._invoke(
+            ["report", "day", "--date", "2026-09-22", "--tz", "UTC",
+             "--include-basal"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["basal"]["found"] is True
+        assert data["basal"]["scheduled_units"] == pytest.approx(21.6)
+        assert data["basal"]["delivered_units"] == pytest.approx(21.0)
+
+    def test_default_date_is_today(self):
+        result, sg, *_ = self._invoke(["report", "day", "--tz", "UTC"])
+        assert result.exit_code == 0, result.exception
+        expected = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        data = json.loads(result.output)
+        assert data["date"] == expected
+
+    def test_invalid_date_fails_cleanly(self):
+        result, *_ = self._invoke(["report", "day", "--date", "09/22/2026"])
+        assert result.exit_code != 0
+        assert "invalid date" in (result.output + str(result.exception))
+
+    def test_human_output(self):
+        result, *_ = self._invoke(
+            ["report", "day", "--date", "2026-09-22", "--tz", "UTC"],
+            as_json=False)
+        assert result.exit_code == 0, result.exception
+        assert "report day 2026-09-22" in result.output
+        assert "readings: 2" in result.output
+        assert "insulin:" in result.output
+        assert "bolus-only" in result.output
+
+    def test_human_empty_day(self):
+        result, *_ = self._invoke(
+            ["report", "day", "--date", "2026-09-22", "--tz", "UTC"],
+            as_json=False, entries=[], txs=[])
+        assert result.exit_code == 0, result.exception
+        assert "no CGM readings and no treatments" in result.output
+
+    def test_human_with_basal_line(self):
+        result, *_ = self._invoke(
+            ["report", "day", "--date", "2026-09-22", "--tz", "UTC",
+             "--include-basal"], as_json=False)
+        assert result.exit_code == 0, result.exception
+        assert "basal" in result.output

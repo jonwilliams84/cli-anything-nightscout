@@ -772,6 +772,11 @@ _BOLUS_EVENT_TYPES = frozenset(
         "Combo Bolus",
         "Bolus Wizard",
         "External Insulin",
+        # Medtronic CareLink uploaders (e.g. the Home Assistant Carelink
+        # integration) record every meal dose as eventType "Meal" with both
+        # `carbs` and `insulin` set. Without it here a 780G's meal insulin —
+        # ~70% of its bolus total — silently vanished from TDD.
+        "Meal",
     }
 )
 

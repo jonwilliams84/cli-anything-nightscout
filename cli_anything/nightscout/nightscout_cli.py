@@ -1391,7 +1391,7 @@ def report_tir(
         _warn_truncation(data, limit=10000, ctx=ctx)
     else:
         data = entries_mod.latest(count=count, conn=conn)
-    res = report_mod.time_in_range(data, low=low, high=high, units=units)
+    res = report_mod.time_in_range(data, low=low, high=high, units=units, input_units="mg/dl")
     if _is_json(ctx):
         _emit(ctx, res)
     else:
@@ -1440,7 +1440,7 @@ def report_summary(
         _warn_truncation(data, limit=10000, ctx=ctx)
     else:
         data = entries_mod.latest(count=count, conn=conn)
-    res = report_mod.summary(data, units=units)
+    res = report_mod.summary(data, units=units, input_units="mg/dl")
     if _is_json(ctx):
         _emit(ctx, res)
     else:
@@ -1468,7 +1468,7 @@ def report_gmi(ctx: click.Context, count: int, units_flag: str | None) -> None:
     units = units_flag or conn.get("units", "mg/dl")
     mmol = _is_mmol_units(units)
     data = entries_mod.latest(count=count, conn=conn)
-    res = report_mod.gmi(data, units=units)
+    res = report_mod.gmi(data, units=units, input_units="mg/dl")
     if _is_json(ctx):
         _emit(ctx, res)
     else:
@@ -1512,7 +1512,7 @@ def report_daily(
         _warn_truncation(data, limit=10000, ctx=ctx)
     else:
         data = entries_mod.latest(count=count, conn=conn)
-    res = report_mod.daily(data, units=units, tz=tz)
+    res = report_mod.daily(data, units=units, input_units="mg/dl", tz=tz)
     if _is_json(ctx):
         _emit(ctx, res)
     else:
@@ -3231,10 +3231,18 @@ def _post_treatment(
     """
     conn = _conn(ctx)
     _require_url(conn)
+    # Show the fields that decide WHERE the record lands, not just the
+    # verb-specific ones: a backfill with a mistyped --created-at is the
+    # mistake a dry run exists to catch.
     if _dry_run_block(
         ctx,
         "POST /treatments.json",
-        payload={"eventType": event_type, **preview},
+        payload={
+            "eventType": event_type,
+            "enteredBy": kwargs.get("entered_by"),
+            "created_at": kwargs.get("created_at") or "(now, at send time)",
+            **preview,
+        },
     ):
         return
     if pass_event_type:

@@ -8,6 +8,10 @@ from typing import Any
 from cli_anything.nightscout.core import query as query_mod
 from cli_anything.nightscout.utils import nightscout_backend as backend
 
+# Readings that fit inside Nightscout's default 4-day window for undated
+# entries queries (4 x 288 = 1152), less a margin for cadence jitter.
+UNDATED_WINDOW_COUNT = 1000
+
 VALID_TYPES = {"sgv", "mbg", "cal", "etr"}
 
 # Nightscout always stores `sgv` / `mbg` in mg/dL on the wire, even when the
@@ -93,14 +97,28 @@ def latest(
     conn: dict[str, Any],
     normalize_to: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Return the N most recent entries (default 1)."""
+    """Return the N most recent entries (default 1).
+
+    Nightscout applies a default time window (4 days) to any entries query
+    that has no date filter, so ``count`` alone can never reach further back
+    than ~1150 readings: ``count=25920`` (90 days) silently returned 1115.
+    Beyond :data:`UNDATED_WINDOW_COUNT` we therefore add an explicit date
+    floor wide enough for ``count`` readings at 5-minute cadence with 2x
+    headroom for gaps; the server still returns at most ``count``, newest
+    first. Small counts keep the undated query, so ``--count 1`` still finds
+    the last reading after a long uploader outage.
+    """
+    params: dict[str, Any] = {"count": count}
+    if count > UNDATED_WINDOW_COUNT:
+        floor_ms = int((time.time() - count * 5 * 60 * 2) * 1000)
+        params["find[date][$gte]"] = floor_ms
     result = backend.get(
         "/entries.json",
         base_url=conn["server_url"],
         version="v1",
         api_secret=conn.get("api_secret"),
         token=conn.get("api_token"),
-        params={"count": count},
+        params=params,
     )
     if normalize_to is not None:
         result = normalize_entries(result, to_units=normalize_to)

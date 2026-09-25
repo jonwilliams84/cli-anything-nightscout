@@ -4,6 +4,31 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.11.1] — 2026-09-25
+
+Four fixes found running a 90-day clinic report against a Medtronic 780G /
+CareLink Nightscout. Every one of them produced a confident wrong answer
+rather than an error.
+
+- **`report tir|summary|gmi|daily` in mmol mode read mg/dL as mmol/L.**
+  Nightscout stores `sgv` in mg/dL even on a mmol-display server, and these
+  four (unlike `mage`, `agp`, `by-weekday`) didn't pass `input_units="mg/dl"`,
+  so with `NIGHTSCOUT_UNITS=mmol` a 7.6 mmol/L mean became 137.6 mmol/L,
+  every reading was "above range", and GMI came out at 62%.
+- **`entries latest --count N` (and every `--count` report) stopped at 4
+  days.** Nightscout applies a default 4-day window to undated entries
+  queries, so `count=25920` (90 days) silently returned ~1115 readings.
+  Counts above 1000 now send an explicit date floor (2x headroom for gaps);
+  small counts stay undated so `--count 1` still finds the last reading
+  after a long outage.
+- **`report tdd` / `report day` ignored CareLink's `Meal` doses.** The HA
+  Carelink uploader records each meal dose as `eventType: "Meal"` with
+  `insulin` set; it was not in the bolus set, dropping ~70% of a 780G's
+  bolus insulin (2.6 U/day reported vs 8.8 U/day real).
+- **Care Portal dry runs showed `created_at` and `enteredBy`.** They were
+  sent but not previewed, so a dry run could not catch a mistyped backfill
+  timestamp; an omitted one now previews as `(now, at send time)`.
+
 ## [2.11.0] — 2026-09-23
 
 - **New command: `report day`** — the one-day clinical snapshot. Answering

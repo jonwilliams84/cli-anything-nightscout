@@ -22,6 +22,7 @@ from cli_anything.nightscout.core import devicestatus as ds_mod
 from cli_anything.nightscout.core import entries as entries_mod
 from cli_anything.nightscout.core import excursions as excursions_mod
 from cli_anything.nightscout.core import food as food_mod
+from cli_anything.nightscout.core import logbook as logbook_mod
 from cli_anything.nightscout.core import loop_report as loop_report_mod
 from cli_anything.nightscout.core import notifications as notifications_mod
 from cli_anything.nightscout.core import profile as profile_mod
@@ -39,7 +40,7 @@ from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-VERSION = "2.11.0"
+VERSION = "2.12.0"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -4051,6 +4052,219 @@ def _render_day_report(ctx: click.Context, res: dict[str, Any], units: str) -> N
         click.echo(f"  ⚠ {w}")
     if not res.get("basal"):
         click.echo("  (insulin is bolus-only — pass --include-basal for reconstructed basal)")
+
+
+# ─── v2.12.0: report logbook — the multi-day treatment log ─────────────────
+
+
+def _render_logbook_events(
+    ctx: click.Context, rows: list[dict[str, Any]], units: str, limit: int
+) -> None:
+    """Human event-table for one logbook day (JSON is the agent-facing output)."""
+    mmol = _is_mmol_units(units)
+    shown = rows[:limit]
+    for row in shown:
+        parts = [f"  {row.get('time') or '??:??':<5}  {row['event_type']}"]
+        if row.get("insulin") is not None:
+            parts.append(f"{row['insulin']}U insulin")
+        if row.get("carbs_g") is not None:
+            parts.append(f"{row['carbs_g']}g carbs")
+        if row.get("bg_mgdl") is not None:
+            if mmol:
+                parts.append(f"bg {report_mod._from_mgdl(row['bg_mgdl'], 'mmol/l')} mmol/L")
+            else:
+                parts.append(f"bg {row['bg_mgdl']} mg/dL")
+        if row.get("duration_minutes") is not None:
+            parts.append(f"{row['duration_minutes']} min")
+        if row.get("rate") is not None:
+            parts.append(f"rate {row['rate']}U/h")
+        if row.get("note"):
+            parts.append(f"note: {row['note']}")
+        click.echo(" | ".join(parts))
+    hidden = len(rows) - len(shown)
+    if hidden > 0:
+        click.echo(f"  … and {hidden} more events today (JSON is never cut)")
+
+
+def _render_logbook(ctx: click.Context, res: dict[str, Any], units: str, limit: int) -> None:
+    """Human rendering for `report logbook` (JSON is the agent-facing output)."""
+    mmol = _is_mmol_units(units)
+    head = f"  report logbook {res['from_date']} → {res['to_date']} (tz: {res['tz']})"
+    click.echo(head)
+    if not res["found"]:
+        click.echo("  no CGM readings and no treatments in the whole window")
+        for w in res["warnings"]:
+            click.echo(f"  ⚠ {w}")
+        return
+
+    wb = res["window"].get("bands") or {}
+    wt = res["window"].get("totals") or {}
+    click.echo(
+        f"  window TIR ({wb.get('low_threshold')}–{wb.get('high_threshold')}): "
+        f"{wb.get('tir_pct', 0)}%   TBR: {wb.get('tbr_pct', 0)}%   TAR: {wb.get('tar_pct', 0)}%"
+    )
+    click.echo(
+        f"  insulin: {wt.get('insulin_units', 0)}U in {wt.get('bolus_count', 0)} bolus(es); "
+        f"{wt.get('carbs_g', 0)}g carbs (bolus only, basal not included)"
+    )
+    if res["events_by_type"]:
+        parts = [f"{k} ×{v}" for k, v in res["events_by_type"].items()]
+        click.echo("    " + ", ".join(parts))
+
+    for d in res["days"]:
+        head = f"  ── {d['date']}"
+        if d["day_in_progress"]:
+            head += "  [day in progress]"
+        click.echo(head)
+        g = d["glucose"] or {}
+        if g:
+            mean = g.get("mean_mmol") if mmol else g.get("mean_mgdl")
+            mn = g.get("min_mmol") if mmol else g.get("min_mgdl")
+            mx = g.get("max_mmol") if mmol else g.get("max_mgdl")
+            click.echo(
+                f"    {g.get('count', 0)} readings  mean {_fmt_glucose(mean, mmol)}  "
+                f"min {_fmt_glucose(mn, mmol)}  max {_fmt_glucose(mx, mmol)}  "
+                f"TIR {(d['bands'] or {}).get('tir_pct', 0)}%"
+            )
+            click.echo(f"    hypo events: {d['hypo_count']}")
+        else:
+            click.echo("    no CGM readings this day")
+        ins = d["insulin"]
+        if ins:
+            click.echo(
+                f"    insulin: {ins.get('bolus_units', 0)}U in {ins.get('bolus_count', 0)} "
+                f"bolus(es); {ins.get('carbs_g', 0)}g carbs"
+            )
+        if d["events"]:
+            _render_logbook_events(ctx, d["events"], units, limit)
+        elif not d["found"]:
+            click.echo("    no treatments and no readings this day")
+        for w in d["warnings"]:
+            click.echo(f"    ⚠ {w}")
+    for w in res["warnings"]:
+        click.echo(f"  ⚠ {w}")
+
+
+@report_grp.command("logbook")
+@click.option(
+    "--days",
+    default=3,
+    type=int,
+    help="Window size ending at --to or today (default 3).",
+)
+@click.option(
+    "--from",
+    "date_from",
+    default=None,
+    help="First day YYYY-MM-DD (overrides --days).",
+)
+@click.option(
+    "--to",
+    "date_to",
+    default=None,
+    help="Last day YYYY-MM-DD (default: today in the --tz zone).",
+)
+@click.option(
+    "--tz",
+    "tz_name",
+    default=None,
+    help="Day-boundary timezone (default: local system tz).",
+)
+@click.option(
+    "--units",
+    "units_flag",
+    default=None,
+    type=click.Choice(["mg/dl", "mmol", "mmol/l"]),
+    help="Override session units for the glucose blocks.",
+)
+@click.option(
+    "--low",
+    type=float,
+    default=None,
+    help="Band low threshold in mg/dL (default 70).",
+)
+@click.option(
+    "--high",
+    type=float,
+    default=None,
+    help="Band high threshold in mg/dL (default 180).",
+)
+@click.option(
+    "--limit",
+    default=20,
+    type=int,
+    help="Max event rows per day printed (JSON is never cut).",
+)
+@click.pass_context
+def report_logbook(
+    ctx: click.Context,
+    days: int,
+    date_from: str | None,
+    date_to: str | None,
+    tz_name: str | None,
+    units_flag: str | None,
+    low: float | None,
+    high: float | None,
+    limit: int,
+) -> None:
+    """The multi-day treatment logbook: date-by-date CGM bands + event log.
+
+    The web UI's Reports ▸ Logbook as a CLI command. For each calendar day
+    (day boundary = --tz) it prints the glucose summary, the band split with
+    the level-2 extremes, distinct hypo events, bolus insulin + carbs and the
+    ordered treatment event log. A date with no data is `found: false`, never
+    a zero day; an unfinished day is flagged `day_in_progress`.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    tz = tz_name or _default_tz_name()
+    units = units_flag or conn.get("units", "mg/dl")
+    if days < 1:
+        raise click.ClickException("--days must be at least 1")
+    try:
+        import datetime as _dt
+
+        to_date = date_to or _today_in(tz)
+        if date_from:
+            from_date = date_from
+        else:
+            end_day = (
+                _dt.datetime.strptime(to_date, "%Y-%m-%d").replace(tzinfo=_dt.timezone.utc).date()
+            )
+            from_date = (end_day - _dt.timedelta(days=days - 1)).strftime("%Y-%m-%d")
+        win_from = day_report_mod.day_window(from_date, tz=tz)
+        win_to = day_report_mod.day_window(to_date, tz=tz)
+        entries = entries_mod.list_entries(
+            conn=conn,
+            count=_REPORT_DAY_FETCH_LIMIT,
+            date_gte=win_from["date_gte"],
+            date_lte=win_to["date_lte"],
+        )
+        _warn_truncation(entries, limit=_REPORT_DAY_FETCH_LIMIT, ctx=ctx)
+        txs = treatments_mod.list_treatments(
+            conn=conn,
+            count=_REPORT_DAY_FETCH_LIMIT,
+            date_gte=win_from["date_gte"],
+            date_lte=win_to["date_lte"],
+        )
+        _warn_truncation(txs, limit=_REPORT_DAY_FETCH_LIMIT, ctx=ctx)
+        res = logbook_mod.build_logbook(
+            entries if isinstance(entries, list) else [],
+            txs if isinstance(txs, list) else [],
+            from_date=from_date,
+            to_date=to_date,
+            units=units,
+            tz=tz,
+            low=low,
+            high=high,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+
+    if _is_json(ctx):
+        _emit(ctx, res)
+        return
+    _render_logbook(ctx, res, units, limit)
 
 
 # ─── rig health: devicestatus payload parsing + consumable age counters ────

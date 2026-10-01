@@ -807,3 +807,29 @@ nightscout_cli.py: 91 % · core/day_report.py: 94 %
 
 Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
 exits 0.
+
+### Test results — 2026-10-01 (v2.12.0 — `report logbook`)
+
+New coverage for the web **Reports ▸ Logbook** as a CLI command: the
+`logbook` core module (`build_logbook()` + `event_row()`) composes the
+per-day CGM/treatment blocks for an inclusive date range, and the
+`report logbook` command wires it to the server fetches.
+
+| File | New tests | Scope |
+|------|-----------|-------|
+| `test_core.py` | **28** | `TestEventRow` (4): fields renamed to logbook names (`carbs` → `carbs_g`, `glucose` → `bg_mgdl`, `duration` → `duration_minutes`, `notes` → `note`) with numeric coercion; fields the server did not send are omitted, never zeroed; unparseable timestamp → `time: null`; non-numeric values kept verbatim. `TestBuildLogbook` (13): inclusive date-range slicing (the previous day's 23:59 reading stays with its own day), events per day in chronological order, missing-field honesty, window bounds include both endpoints, window totals exclude basal (`includes_basal: false`), empty window → `found: false` + bands `null` + per-day null blocks, entries-without-treatments window warning, `to` before `from` raises, `day_in_progress` via a `now` override, `--low/--high` thresholds feeding both bands and hypo detection, mmol display alongside mg/dL storage (sgv is *not* reinterpreted as mmol), tz-boundary day slicing (`Europe/London`). `TestReportLogbookCommand` (11): JSON shape + fetch bounds matching the requested range, `--days N` ending today, `--days` measured back from an explicit `--to`, invalid dates fail client-side, reversed range fails, `--days 0` rejected, human rendering (event rows with insulin/carbs), human empty window, human `--limit` truncation ("… and N more events today"). |
+| `test_full_e2e.py` | **4** | `TestRefineCLISubprocess`: empty past window reads `found: false` day-by-day; a posted Meal Bolus appears in today's `events` with insulin/carbs and window totals (totals compared, since the module-scoped stand-in server accumulates rows across tests); human output; reversed range rejected client-side. |
+
+The stand-in server needed no changes — logbook reuses the existing
+`/api/v1/entries.json` + `/api/v1/treatments.json` GET surface, so the
+tests pass against both the stand-in and a live server.
+
+```text
+$ /work/venv/bin/python -m pytest tests --cov=cli_anything --cov-fail-under=78 -q
+1560 passed; Total coverage: 94.40 %
+
+nightscout_cli.py: 91 % · core/logbook.py: 100 %
+```
+
+Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
+exits 0.

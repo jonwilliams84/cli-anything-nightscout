@@ -1851,3 +1851,334 @@ class TestReportDayCommand:
              "--include-basal"], as_json=False)
         assert result.exit_code == 0, result.exception
         assert "basal" in result.output
+
+
+# ─── report logbook: the multi-day treatment log (v2.12.0) ─────────────────
+
+class TestEventRow:
+    """`logbook.event_row` — compact treatment log row."""
+
+    def test_copies_present_fields_under_logbook_names(self):
+        from cli_anything.nightscout.core import logbook as lb
+
+        row = lb.event_row({
+            " eventType": None,
+            "created_at": "2026-09-22T11:50:00.000Z",
+            "eventType": "Meal Bolus",
+            "insulin": 4.2,
+            "carbs": 42,
+            "glucose": 115,
+            "duration": 30,
+            "rate": 0.9,
+            "percent": 50,
+            "notes": "post-lunch",
+        })
+        assert row["time"] == "11:50"
+        assert row["event_type"] == "Meal Bolus"
+        assert row["insulin"] == 4.2
+        assert row["carbs_g"] == 42.0
+        assert row["bg_mgdl"] == 115.0
+        assert row["duration_minutes"] == 30.0
+        assert row["rate"] == 0.9
+        assert row["percent"] == 50.0
+        assert row["note"] == "post-lunch"
+
+    def test_omits_fields_the_server_did_not_send(self):
+        """A bolus without carbs has no carbs_g key — a missing field is not a zero."""
+        from cli_anything.nightscout.core import logbook as lb
+
+        row = lb.event_row({
+            "created_at": "2026-09-22T11:50:00.000Z",
+            "eventType": "Correction Bolus",
+            "insulin": 1.1,
+        })
+        assert "carbs_g" not in row
+        assert "bg_mgdl" not in row
+        assert "duration_minutes" not in row
+        assert "note" not in row
+        assert "rate" not in row
+
+    def test_unparseable_timestamp_gives_null_time(self):
+        from cli_anything.nightscout.core import logbook as lb
+
+        row = lb.event_row({"eventType": "Note"})
+        assert row["time"] is None
+        assert row["event_type"] == "Note"
+
+    def test_non_numeric_field_is_kept_verbatim(self):
+        from cli_anything.nightscout.core import logbook as lb
+
+        row = lb.event_row({"eventType": "Temp Basal", "duration": "thirty"})
+        assert row["duration_minutes"] == "thirty"
+
+
+class TestBuildLogbook:
+    """`logbook.build_logbook` — the composed multi-day logbook."""
+
+    def _entries(self):
+        return [
+            {"type": "sgv", "sgv": 140, "dateString": "2026-09-21T23:59:00.000Z"},
+            {"type": "sgv", "sgv": 150, "dateString": "2026-09-22T01:00:00.000Z"},
+            {"type": "sgv", "sgv": 65, "dateString": "2026-09-22T02:00:00.000Z"},
+            {"type": "sgv", "sgv": 62, "dateString": "2026-09-22T02:05:00.000Z"},
+            {"type": "sgv", "sgv": 60, "dateString": "2026-09-22T02:10:00.000Z"},
+            {"type": "sgv", "sgv": 55, "dateString": "2026-09-22T02:15:00.000Z"},
+            {"type": "sgv", "sgv": 200, "dateString": "2026-09-22T12:00:00.000Z"},
+            {"type": "sgv", "sgv": 260, "dateString": "2026-09-22T12:30:00.000Z"},
+            {"type": "sgv", "sgv": 150, "dateString": "2026-09-23T02:00:00.000Z"},
+            {"type": "sgv", "sgv": 90, "dateString": "2026-09-24T02:00:00.000Z"},
+        ]
+
+    def _txs(self):
+        return [
+            {"eventType": "Meal Bolus", "insulin": 4.2, "carbs": 42,
+             "created_at": "2026-09-22T11:50:00.000Z"},
+            {"eventType": "Meal Bolus", "insulin": 3.0, "carbs": 30,
+             "created_at": "2026-09-22T18:00:00.000Z"},
+            {"eventType": "Temp Basal", "duration": 30, "absolute": 0.9,
+             "created_at": "2026-09-22T10:00:00.000Z"},
+            {"eventType": "Sensor Change",
+             "created_at": "2026-09-22T09:12:00.000Z"},
+            {"eventType": "Note", "notes": "holiday",
+             "created_at": "2026-09-23T09:00:00.000Z"},
+            {"eventType": "Correction Bolus", "insulin": 1.1,
+             "created_at": "2026-09-24T08:00:00.000Z"},
+        ]
+
+    def _build(self, from_date="2026-09-22", to_date="2026-09-24", **kw):
+        from cli_anything.nightscout.core import logbook as lb
+
+        now = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+        return lb.build_logbook(
+            self._entries(), self._txs(),
+            from_date=from_date, to_date=to_date,
+            now=now, tz="UTC", **kw)
+
+    def test_day_list_is_inclusive_and_sliced(self):
+        res = self._build()
+        assert res["day_count"] == 3
+        assert [d["date"] for d in res["days"]] == [
+            "2026-09-22", "2026-09-23", "2026-09-24"]
+        # the 09-21 23:59 reading belongs to the previous day
+        assert res["days"][0]["glucose"]["count"] == 7
+        assert res["days"][1]["glucose"]["count"] == 1
+        assert res["days"][2]["glucose"]["count"] == 1
+
+    def test_events_are_per_day_and_chronological(self):
+        res = self._build()
+        day0 = res["days"][0]
+        times = [e["time"] for e in day0["events"]]
+        assert times == ["09:12", "10:00", "11:50", "18:00"]
+        types = {e["event_type"] for e in day0["events"]}
+        assert {"Sensor Change", "Temp Basal", "Meal Bolus"} <= types
+
+    def test_events_omit_missing_not_zero(self):
+        fix = self._build()
+        corr = [e for e in fix["days"][2]["events"]
+                if e["event_type"] == "Correction Bolus"][0]
+        assert corr["insulin"] == 1.1
+        assert "carbs_g" not in corr
+
+    def test_window_includes_day_before_and_after_bounds(self):
+        res = self._build("2026-09-21", "2026-09-23")
+        # 09-21 23:59 sgv is inside this range now; the 09-24 bolus is not
+        assert res["days"][0]["glucose"]["count"] == 1
+        assert res["window"]["bands"]["tir_pct"] > 0
+        assert res["window"]["totals"]["insulin_units"] == pytest.approx(7.2)
+
+    def test_window_totals_exclude_basal(self):
+        res = self._build()
+        assert res["window"]["includes_basal"] is False
+        assert res["window"]["totals"]["insulin_units"] == pytest.approx(8.3)
+
+    def test_empty_window_found_false(self):
+        res = self._build("2001-01-01", "2001-01-02")
+        assert res["found"] is False
+        assert res["window"]["bands"] is None
+        assert any("no CGM readings and no treatments" in w for w in res["warnings"])
+        for d in res["days"]:
+            assert d["found"] is False
+            assert d["glucose"] is None
+            assert d["events"] == []
+
+    def test_entries_without_treatments_warns(self):
+        from cli_anything.nightscout.core import logbook as lb
+
+        now = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+        res = lb.build_logbook(
+            self._entries(), [],
+            from_date="2026-09-22", to_date="2026-09-22",
+            tz="UTC", now=now)
+        assert any("no treatment records" in w for w in res["warnings"])
+
+    def test_to_before_from_raises(self):
+        with pytest.raises(ValueError, match="before from_date"):
+            self._build("2026-09-24", "2026-09-22")
+
+    def test_invalid_date_in_range_raises(self):
+        with pytest.raises(ValueError, match="invalid date in range"):
+            self._build("2026-09-xx", "2026-09-22")
+
+    def test_treatments_without_entries_warns(self):
+        from cli_anything.nightscout.core import logbook as lb
+
+        now = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+        res = lb.build_logbook(
+            [], self._txs(),
+            from_date="2026-09-22", to_date="2026-09-22",
+            tz="UTC", now=now)
+        assert any("no CGM readings" in w for w in res["warnings"])
+
+    def test_day_in_progress_flag(self):
+        from cli_anything.nightscout.core import logbook as lb
+
+        now = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
+        res = lb.build_logbook(
+            self._entries(), self._txs(),
+            from_date="2026-09-22", to_date="2026-09-22",
+            tz="UTC", now=now)
+        assert res["days"][0]["day_in_progress"] is True
+
+    def test_custom_thresholds_feed_bands_and_hypos(self):
+        res = self._build(low=80, high=200)
+        day0 = res["days"][0]
+        # with low=80: 65,62,60,55 below; 140,150 in; 200,260 above
+        assert day0["bands"]["tbr_pct"] == pytest.approx(57.14, abs=0.01)
+        assert res["window"]["bands"]["low_threshold"] == 80.0
+        assert res["days"][0]["hypo_count"] >= 1
+
+    def test_mmol_units_report_both_scales(self):
+        res = self._build(units="mmol")
+        assert "mmol" in res["days"][0]["glucose"]["units"]
+        assert res["days"][0]["glucose"]["mean_mmol"] < 20
+        assert res["days"][0]["glucose"]["mean_mgdl"] > 50
+
+    def test_tz_boundary_shifts_day_slices(self):
+        from cli_anything.nightscout.core import logbook as lb
+
+        # 2026-09-21T23:59Z is 2026-09-22 00:59 in Europe/London (BST, UTC+1)
+        now = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+        res = lb.build_logbook(
+            self._entries(), self._txs(),
+            from_date="2026-09-22", to_date="2026-09-22",
+            tz="Europe/London", now=now)
+        # the 09-21T23:59Z reading is inside London-day 22
+        assert res["days"][0]["glucose"]["count"] == 8
+
+
+class TestReportLogbookCommand:
+    """`report logbook` — CLI wiring over mocked core fetches (CliRunner)."""
+
+    def _invoke(self, args, as_json=True, entries=None, txs=None):
+        from click.testing import CliRunner
+
+        from cli_anything.nightscout import nightscout_cli as mod
+
+        entries = entries if entries is not None else [
+            {"type": "sgv", "sgv": 140, "dateString": "2026-09-22T01:00:00.000Z"},
+            {"type": "sgv", "sgv": 150, "dateString": "2026-09-22T01:05:00.000Z"},
+        ]
+        txs = txs if txs is not None else [
+            {"eventType": "Meal Bolus", "insulin": 4.2, "carbs": 42,
+             "created_at": "2026-09-22T11:50:00.000Z"},
+        ]
+        runner = CliRunner()
+        full_args = ["--url", "https://ns.example.com",
+                     "--api-secret", "testsecret12chars"]
+        full_args += ["--json"] if as_json else []
+        full_args += args
+        with (
+            mock.patch.object(mod.entries_mod, "list_entries",
+                              return_value=entries) as sg_mock,
+            mock.patch.object(mod.treatments_mod, "list_treatments",
+                              return_value=txs) as tx_mock,
+        ):
+            result = runner.invoke(mod.cli, full_args, standalone_mode=False,
+                                   catch_exceptions=True)
+        return result, sg_mock, tx_mock
+
+    def test_json_shape_with_explicit_range(self):
+        result, sg, tx = self._invoke([
+            "report", "logbook", "--from", "2026-09-22",
+            "--to", "2026-09-24", "--tz", "UTC"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["from_date"] == "2026-09-22"
+        assert data["to_date"] == "2026-09-24"
+        assert data["day_count"] == 3
+        assert data["found"] is True
+        day0 = data["days"][0]
+        assert day0["date"] == "2026-09-22"
+        assert day0["events"][0]["event_type"] == "Meal Bolus"
+        assert day0["events"][0]["insulin"] == 4.2
+        assert data["window"]["includes_basal"] is False
+        # the fetch bounds match the requested range
+        assert sg.call_args.kwargs["date_gte"] == "2026-09-22T00:00:00.000Z"
+        assert sg.call_args.kwargs["date_lte"] == "2026-09-25T00:00:00.000Z"
+        assert tx.call_args.kwargs["date_gte"] == "2026-09-22T00:00:00.000Z"
+
+    def test_default_window_is_days_ending_today(self):
+        result, sg, *_ = self._invoke(["report", "logbook", "--days", "3",
+                                       "--tz", "UTC"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        expected = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        assert data["to_date"] == expected
+        assert data["day_count"] == 3
+
+    def test_days_ending_at_explicit_to(self):
+        result, tg, *_ = self._invoke(["report", "logbook", "--days", "5",
+                                       "--to", "2026-09-24", "--tz", "UTC"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["from_date"] == "2026-09-20"
+        assert data["to_date"] == "2026-09-24"
+        assert tg.call_args.kwargs["date_lte"] == "2026-09-25T00:00:00.000Z"
+
+    def test_invalid_date_fails_cleanly(self):
+        result, *_ = self._invoke(["report", "logbook", "--from", "09/22/2026"])
+        assert result.exit_code != 0
+        assert "invalid date" in (result.output + str(result.exception))
+
+    def test_to_before_from_fails_cleanly(self):
+        result, *_ = self._invoke(["report", "logbook", "--from", "2026-09-24",
+                                   "--to", "2026-09-22"])
+        assert result.exit_code != 0
+        assert "before from_date" in (result.output + str(result.exception))
+
+    def test_days_must_be_positive(self):
+        result, *_ = self._invoke(["report", "logbook", "--days", "0"])
+        assert result.exit_code != 0
+
+    def test_human_output_with_events_and_threshold_note(self):
+        result, *_ = self._invoke(
+            ["report", "logbook", "--from", "2026-09-22", "--to", "2026-09-22",
+             "--tz", "UTC"],
+            as_json=False)
+        assert result.exit_code == 0, result.exception
+        assert "report logbook 2026-09-22" in result.output
+        assert "Meal Bolus" in result.output
+        assert "4.2U insulin" in result.output
+        assert "42.0g carbs" in result.output
+        assert "hypo events" in result.output
+
+    def test_human_empty_window(self):
+        result, *_ = self._invoke(
+            ["report", "logbook", "--from", "2026-09-22", "--to", "2026-09-22",
+             "--tz", "UTC"],
+            as_json=False, entries=[], txs=[])
+        assert result.exit_code == 0, result.exception
+        assert "no CGM readings and no treatments" in result.output
+
+    def test_human_truncates_long_event_lists(self):
+        txs = [
+            {"eventType": "Note", "notes": f"note-{i}",
+             "created_at": f"2026-09-22T{i:02d}:00:00.000Z"}
+            for i in range(5)
+        ]
+        result, *_ = self._invoke(
+            ["report", "logbook", "--from", "2026-09-22", "--to", "2026-09-22",
+             "--tz", "UTC", "--limit", "2"],
+            as_json=False, txs=txs)
+        assert result.exit_code == 0, result.exception
+        assert "and 3 more events today" in result.output

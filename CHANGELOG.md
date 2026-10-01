@@ -4,6 +4,36 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.12.0] — 2026-10-01
+
+- **New command: `report logbook`** — the web UI's **Reports ▸ Logbook**
+  as a CLI command. `report day` answers "what happened on <date>?" for a
+  single date; `report logbook` answers "show me the last N days day by
+  day, with every bolus, temp and note" in one call. For an inclusive date
+  range (day boundary = `--tz`) it returns one block per day — glucose
+  summary, the consensus band split with the level-2 extremes (<54 / >250
+  mg/dL), distinct hypo events, bolus-only insulin/carbs — **plus
+  `events`**: the day's ordered treatment log, one compact row per
+  treatment (`time`, `event_type`, `insulin`, `carbs_g`, `bg_mgdl`,
+  `duration_minutes`, `rate`, `note`). A window block adds the band split
+  computed over the whole range and the insulin/carb totals and averages,
+  so the per-day rows still answer the "so what?".
+  - Honesty rails carried over from `report day`: a dataless day is
+    `found: false` with an empty `events` list, never a zero day; an
+    unfinished day is `day_in_progress: true`; CGM data without treatments
+    (and vice versa) warns at both the day and the window level; event
+    fields the server did not send are omitted, never zeroed.
+  - `--days N` (default 3) sizes the window ending at `--to` or today in
+    the `--tz` zone; an explicit `--from/--to` overrides it. `--low/--high`
+    override the 70/180 mg/dL threshold pair for both the band split and
+    the hypo detection; `--limit` caps the event table printed in human
+    mode only — `--json` output is never cut.
+  - Unit consistency: `units` is a display choice only — server `sgv` is
+    always treated as mg/dL (the v2.11.1 mmol lesson applied here too);
+    mmol display adds `*_mmol` fields alongside.
+- Fixed a stale module version literal (`nightscout_cli.VERSION` said
+  2.11.0 while the package shipped 2.12.0).
+
 ## [2.11.1] — 2026-09-25
 
 Four fixes found running a 90-day clinic report against a Medtronic 780G /

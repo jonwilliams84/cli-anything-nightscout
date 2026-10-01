@@ -1410,6 +1410,67 @@ class TestRefineCLISubprocess:
             print(f"\n  basal: scheduled {data['basal']['scheduled_units']}U, "
                   f"delivered {data['basal']['delivered_units']}U")
 
+    # ---- v2.12.0: report logbook — the multi-day treatment log ----
+
+    def test_report_logbook_empty_past_window_found_false(self, server_url_and_secret, tmp_path):
+        """Dates with no data must read found:false, never a zero day."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "report", "logbook",
+                        "--from", "2001-01-01", "--to", "2001-01-03",
+                        "--tz", "UTC"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["from_date"] == "2001-01-01"
+        assert data["to_date"] == "2001-01-03"
+        assert data["day_count"] == 3
+        assert data["found"] is False
+        assert data["window"]["bands"] is None
+        for d in data["days"]:
+            assert d["found"] is False
+            assert d["glucose"] is None
+            assert d["events"] == []
+
+    def test_report_logbook_picks_up_a_posted_bolus(self, server_url_and_secret, tmp_path):
+        """Posting a bolus puts it in today's logbook event list."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "treatments", "add",
+                        "--event-type", "Meal Bolus",
+                        "--carbs", "55", "--insulin", "5.0"], env=env)
+        assert r.returncode == 0, r.stderr
+        r = self._run(["--json", "report", "logbook", "--days", "1",
+                        "--tz", "UTC"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["day_count"] == 1
+        assert data["found"] is True
+        today = data["days"][0]
+        assert today["day_in_progress"] is True
+        bolus = [e for e in today["events"] if e["event_type"] == "Meal Bolus"]
+        # the module-scoped stand-in server accumulates boluses from the
+        # other tests in this class — compare the day's totals, not rows
+        assert bolus
+        assert sum(e["insulin"] for e in bolus) >= 5.0
+        assert sum(e.get("carbs_g", 0) for e in bolus) >= 55.0
+        assert today["insulin"]["includes_basal"] is False
+        assert data["window"]["totals"]["insulin_units"] >= 5.0
+        print(f"\n  logbook today: {len(today['events'])} events, "
+              f"{data['window']['totals']['insulin_units']}U bolus")
+
+    def test_report_logbook_human_output(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["report", "logbook", "--days", "2", "--tz", "UTC"],
+                      env=env)
+        assert r.returncode == 0, r.stderr
+        assert "report logbook" in r.stdout
+        assert "insulin" in r.stdout.lower()
+
+    def test_report_logbook_invalid_range_fails(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["report", "logbook", "--from", "2026-09-24",
+                        "--to", "2026-09-22"], env=env, check=False)
+        assert r.returncode != 0
+        assert "before from_date" in (r.stdout + r.stderr)
+
 # ─── v2.5.0: data-trustworthiness surface (calibration / accuracy / capture) ──
 
 @pytest.fixture(scope="module")

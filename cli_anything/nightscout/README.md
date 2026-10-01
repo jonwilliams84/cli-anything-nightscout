@@ -48,6 +48,7 @@ cli-anything-nightscout
 
 # One-shot commands
 cli-anything-nightscout status info
+cli-anything-nightscout --json report logbook --days 5
 cli-anything-nightscout entries latest --count 12
 cli-anything-nightscout entries list --type sgv --from 2025-04-01 --to 2025-05-01
 cli-anything-nightscout treatments add --event-type "Meal Bolus" --carbs 45 --insulin 4.5
@@ -347,6 +348,33 @@ Honesty rules: a date with neither CGM readings nor treatments is
 without treatments (and vice versa) raises a warning instead of implying the
 missing half is zero; with no readings, `below_54_count`/`above_250_count`
 are `null`, not 0.
+
+### The multi-day logbook (v2.12.0+)
+
+Nightscout's web **Reports ▸ Logbook** fuses the CGM band breakdown with the
+ordered treatment log. The CLI now does that for a whole date range:
+`report day` answers "what happened on <date>?", `report logbook` answers
+"show me the last five days day by day, with every bolus, temp and note":
+
+```bash
+cli-anything-nightscout --json report logbook --from 2026-09-22 --to 2026-09-26 --tz Europe/London
+#   from_date, to_date, tz, day_count, found
+#   days[]: one block per calendar day, each with everything `report day`
+#           returns (glucose, bands, hypo_events, bolus-only insulin,
+#           events_by_type, care_events)
+#   days[].events: the ordered treatment log — time, event_type, insulin,
+#           carbs_g, bg_mgdl, duration_minutes, rate, note. Fields the
+#           server did not send are omitted, never zeroed.
+#   window: the band split over the whole range + insulin/carb totals and
+#           averages (includes_basal: false)
+#   --days N sizes the window ending at --to or today; --low/--high
+#   override the 70/180 thresholds; --limit caps the human event table only
+```
+
+The same honesty rails as `report day`: a dataless day is `found: false`
+with an empty event list — never a zero day; an unfinished day is
+`day_in_progress: true`; readings-without-treatments (and the reverse)
+emit warnings at the day level and the window level.
 
 ### Dry-run is network-safe (v2.1.0+)
 

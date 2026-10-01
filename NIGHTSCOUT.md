@@ -336,6 +336,37 @@ Honesty rails: a date with neither readings nor treatments is
 warning. `--date` defaults to *today* in the `--tz` zone; an invalid date is
 rejected client-side.
 
+## Logbook (v2.12.0+)
+
+`report logbook [--days N] [--from YYYY-MM-DD --to YYYY-MM-DD] [--tz Z]
+[--units U] [--low MGDL] [--high MGDL] [--limit N]` is the web UI's
+**Reports ▸ Logbook** as a CLI command: for an inclusive date range
+(day boundary = `--tz`) it fuses the CGM band breakdown with the ordered
+treatment log, day by day — `report day` for *one* date, this for the
+window.
+
+Per day the JSON returns the same blocks as `report day` (glucose, bands
+with `below_54_count`/`above_250_count`, `hypo_events`, bolus-only
+`insulin`, `events_by_type`, `care_events`) **plus `events`** — one compact
+row per treatment in the day, chronological, with fields the server sent:
+`time` (HH:MM in the tz), `event_type`, `insulin`, `carbs_g`, `bg_mgdl`,
+`duration_minutes`, `rate`, `percent`, `note`. Keys the server did not send
+are **omitted, never zeroed** — a bolus without `carbs` has no `carbs_g`.
+
+- The window block adds the band split computed over the whole range and
+  the insulin/carb totals + averages (`includes_basal: false` — Temp
+  Basals are rates, not doses; pass `report basal` separately for delivery).
+- `--days N` (default 3) sizes the window ending at `--to` or today in the
+  `--tz` zone; an explicit `--from` overrides the sizing. `to` before
+  `from` and non-`YYYY-MM-DD` dates fail client-side.
+- `--low/--high` override the 70/180 threshold pair (mg/dL) for the band
+  split *and* the hypo detection.
+- `--limit` caps the event table printed in human mode only; `--json`
+  output is never cut.
+- A date with no data is `found: false` with an empty `events` list; an
+  unfinished day is `day_in_progress: true`; readings-without-treatments
+  (and vice versa) emit per-day warnings and the same window-level pair.
+
 ## Auth resolution order (highest precedence first)
 
 1. CLI flags `--url`, `--api-secret`, `--token`

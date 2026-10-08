@@ -1914,3 +1914,134 @@ class TestFindQueryE2E:
         r = self._run(["--json", "report", "tir", "--count", "10"], env=env)
         assert r.returncode == 0, r.stderr
         assert "tir_pct" in json.loads(r.stdout)
+
+
+class TestDistributionE2E:
+    """E2E: `report distribution` — v2.13.0 window-wide glucose distribution."""
+
+    CLI_BASE = _resolve_cli("cli-anything-nightscout")
+
+    def _run(self, args, env=None, check=True):
+        env_full = os.environ.copy()
+        if env:
+            env_full.update(env)
+        return subprocess.run(
+            self.CLI_BASE + list(args),
+            capture_output=True, text=True, check=check, env=env_full, timeout=30,
+        )
+
+    def _conn_env(self, server_url_and_secret, tmp_path):
+        url, secret = server_url_and_secret
+        return {
+            "NIGHTSCOUT_URL": url,
+            "NIGHTSCOUT_API_SECRET": secret,
+            "NIGHTSCOUT_TOKEN": "",
+            "CLI_ANYTHING_HOME": str(tmp_path),
+        }
+
+    def _post_readings(self, env, values):
+        for v in values:
+            r = self._run(["--json", "entries", "add", "--sgv", str(v)], env=env)
+            assert r.returncode == 0, r.stderr
+
+    def test_report_distribution_over_posted_entries(self, server_url_and_secret, tmp_path):
+        """Post a known spread of SGVs; percentiles/histogram must match."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        self._post_readings(env, [50, 60, 70, 80, 90, 100, 110, 120, 130, 140])
+        r = self._run(["--json", "report", "distribution", "--days", "2"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert "found" in data
+        if _is_live_mode():
+            assert "percentile_mgdl" in data
+            return
+        assert data["found"] is True
+        assert data["count"] >= 10
+        pct = data["percentile_mgdl"]
+        # Stand-in is module-scoped and accumulates entries from other
+        # tests, so the expected values are read back from the server
+        # with the SAME window the report asked for.
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        iso_e = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        iso_s = (_dt.now(_tz.utc) - _td(days=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        r = self._run(["--json", "entries", "list", "--count", "500",
+                        "--type", "sgv",
+                        "--from", iso_s, "--to", iso_e], env=env)
+        assert r.returncode == 0, r.stderr
+        vals = sorted(float(e["sgv"]) for e in json.loads(r.stdout))
+        assert len(vals) == data["count"]
+        # statistics.median agrees with linear interpolation at p50.
+        assert pct["p50"] == pytest.approx(
+            __import__("statistics").median(vals), abs=0.01)
+        assert pct["p5"] <= pct["p25"] <= pct["p75"] <= pct["p95"]
+        assert data["ranges"]["tbr_pct"] > 0  # the posted 50/60 are below 70
+        assert sum(b["count"] for b in data["bins"]) == data["count"]
+        assert data["bins"][-1]["to_mgdl"] is None  # open-ended top bin
+        assert data["outliers"]["below"] == 0
+        print(f"\n  distribution: median {pct['p50']} mg/dL, "
+              f"TIR {data['ranges']['tir_pct']}% over {data['count']} readings")
+
+    def test_report_distribution_empty_window_found_false(self, server_url_and_secret, tmp_path):
+        """A long-past window has no data → found:false, never a zero dist."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "report", "distribution",
+                        "--from", "2001-01-01", "--to", "2001-01-02"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        if _is_live_mode():
+            assert "found" in data
+            return
+        assert data["found"] is False
+        assert data["count"] == 0
+        assert data["bins"] == []
+
+    def test_report_distribution_mmol_display(self, server_url_and_secret, tmp_path):
+        """--units mmol adds *_mmol fields; server sgv stays mg/dL-sourced."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        self._post_readings(env, [80, 100, 200])
+        r = self._run(["--json", "report", "distribution", "--days", "2",
+                        "--units", "mmol"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        if _is_live_mode():
+            return
+        assert data["units"] == "mmol/l"
+        assert "percentile_mmol" in data and "iqr_mmol" in data
+        # The mg/dL percentiles stay authoritative; mmol is derived.
+        for k, v in data["percentile_mmol"].items():
+            assert v == pytest.approx(
+                data["percentile_mgdl"][k] / 18.018, abs=0.01)
+
+    def test_report_distribution_human_output(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        self._post_readings(env, [70, 120, 180])
+        r = self._run(["report", "distribution", "--days", "2"], env=env)
+        assert r.returncode == 0, r.stderr
+        assert "readings:" in r.stdout
+        assert "mg/dL" in r.stdout
+        assert "ranges" in r.stdout
+        assert "bins" in r.stdout
+
+    def test_workflow_distribution_matches_tir(self, server_url_and_secret, tmp_path):
+        """`report distribution` ranges must equal `report tir` over the same window."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        self._post_readings(env, [60, 100, 190])
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        iso_e = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        iso_s = (_dt.now(_tz.utc) - _td(days=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        r = self._run(["--json", "report", "tir", "--from", iso_s, "--to", iso_e],
+                      env=env)
+        assert r.returncode == 0, r.stderr
+        tir = json.loads(r.stdout)
+        r = self._run(["--json", "report", "distribution",
+                        "--from", iso_s, "--to", iso_e], env=env)
+        assert r.returncode == 0, r.stderr
+        dist = json.loads(r.stdout)
+        if _is_live_mode():
+            # A live server may hold readings outside the posted set; both
+            # reports may not agree — only assert shape there.
+            assert "ranges" in dist
+            return
+        assert dist["ranges"]["tir_pct"] == tir["tir_pct"]
+        assert dist["ranges"]["tbr_pct"] == tir["tbr_pct"]
+        assert dist["ranges"]["tar_pct"] == tir["tar_pct"]

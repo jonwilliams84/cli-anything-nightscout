@@ -88,7 +88,7 @@ cli-anything-nightscout
 | `notifications` | `ack`, `admin` | Acknowledge alarms; list admin notices |
 | `activity` | `latest`, `list`, `get`, `add`, `delete` | Activity / exercise records (API v3) |
 | `food` | `list`, `quickpicks`, `regular`, `add`, `update`, `delete` | Food database |
-| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages`, `data-quality`, `accuracy`, `day` | Computed reports + composed snapshots. `data-quality` and `accuracy` grade the **data**, not the glucose; `day` is the one-day clinical snapshot. |
+| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages`, `data-quality`, `accuracy`, `day`, `logbook`, `distribution` | Computed reports + composed snapshots. `data-quality` and `accuracy` grade the **data**, not the glucose; `day` is the one-day clinical snapshot; `logbook` the multi-day treatment log; `distribution` the window-wide percentiles + histogram. |
 | `v3` | `list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history` | Generic CRUD + sync over any v3 collection |
 | `watch` | (socket.io) | Real-time entries/treatments stream (`pip install '.[watch]'`) |
 | `session` | `info`, `save`, `load`, `clear` | Session state (cache + history) |
@@ -201,6 +201,7 @@ whether the harness already covers it. Common misses:
 | "Does Nightscout have X collection?" | `v3 list <collection>` | Generic v3 CRUD for arbitrary collections. |
 | Search by text/notes | `v3 search <collection> --query <regex>` | Multi-field regex; combine with `--filter k=v`. |
 | Incremental sync (changes since…) | `v3 history <collection> --since-ms <ms>` | Returns mutations since the given timestamp. |
+| **Full glucose distribution (percentiles + histogram)** | `report distribution [--days N/--from ISO --to ISO]` | p1–p99 (interpolated), IQR, fixed-edge histogram (`--bin-width`, default 40 mg/dL, open-ended >=400 top bin), plus the band split under the same thresholds (`ranges`). Empty window → `found: false`; mmol display adds `*_mmol` twins. |
 
 If a question looks like it should be answerable from Nightscout, run
 `--help` on the relevant group **before** falling back to local notes or

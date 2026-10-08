@@ -367,6 +367,35 @@ are **omitted, never zeroed** — a bolus without `carbs` has no `carbs_g`.
   unfinished day is `day_in_progress: true`; readings-without-treatments
   (and vice versa) emit per-day warnings and the same window-level pair.
 
+## Distribution (v2.13.0+)
+
+`report distribution [--days N] [--from ISO --to ISO] [--units U]
+[--low MGDL] [--high MGDL] [--bin-width MGDL]` answers "what is the SHAPE
+of my glucose over the whole window?" — the global picture `report tir`
+(three band percentages) and `report agp` (percentiles per hour of day)
+each only half-give.
+
+JSON: `found`, `count`, `units`, `low/high_threshold` (display units),
+mean/stdev/min/max `*_mgdl` (+ `*_mmol` under mmol display), `cv_pct`,
+`gmi_pct`, `percentile_mgdl` (`p1`…`p99`, linear-interpolated over all
+valid sgv readings), `iqr_mgdl` (p75–p25), `bins[]` (fixed-edge
+histogram: `from_mgdl`/`to_mgdl`, mmol twins under mmol display, `label`,
+`count`, `pct`), `outliers` (readings below the 0 floor), and `ranges` —
+the band split under the same `--low/--high` thresholds, byte-identical
+to `report tir` over the same window.
+
+- Histogram edges are fixed: 0–400 mg/dL in `--bin-width` (default 40)
+  steps; readings at or above the ceiling go into the open-ended top bin
+  (`to_mgdl: null`), so two windows/sensors are directly comparable.
+- Zero valid readings is `found: false` with empty `bins`/`percentiles`
+  — never an all-zero distribution; a single reading is its own
+  every-percentile.
+- Thresholds are interpreted in display units and default to the
+  consensus 70–180 mg/dL / 3.9–10.0 mmol/L pair, exactly like `report
+  tir`.
+- Human mode prints the percentile row, the populated histogram bins with
+  a count/pct/#-bar, and the band split; `--json` is never summarized.
+
 ## Auth resolution order (highest precedence first)
 
 1. CLI flags `--url`, `--api-secret`, `--token`

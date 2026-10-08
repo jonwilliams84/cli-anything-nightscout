@@ -2182,3 +2182,262 @@ class TestReportLogbookCommand:
             as_json=False, txs=txs)
         assert result.exit_code == 0, result.exception
         assert "and 3 more events today" in result.output
+
+
+# ─── report distribution: percentiles + histogram (v2.13.0) ────────────────
+
+
+class TestDistributionCore:
+    """`report.distribution` — window-wide percentiles and fixed-edge histogram."""
+
+    def _entries(self, values, start="2026-09-22T00:00:00.000Z", step_h=1):
+        base = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        out = []
+        for i, v in enumerate(values):
+            ts = base + timedelta(hours=step_h * i)
+            out.append({"type": "sgv", "sgv": v,
+                        "dateString": ts.strftime("%Y-%m-%dT%H:%M:%S.000Z")})
+        return out
+
+    def test_percentile_helper_exact_and_interpolated(self):
+        from cli_anything.nightscout.core import report as rep
+
+        vals = [60, 70, 80, 90, 100]
+        assert rep._percentile(sorted(vals), 50) == 80.0
+        assert rep._percentile(sorted(vals), 0) == 60.0
+        assert rep._percentile(sorted(vals), 100) == 100.0
+        # [100, 200]: p50 lands exactly halfway.
+        assert rep._percentile([100, 200], 50) == 150.0
+
+    def test_known_percentiles_ten_readings(self):
+        from cli_anything.nightscout.core import report as rep
+
+        vals = [50, 60, 70, 80, 90, 100, 110, 120, 130, 140]
+        res = rep.distribution(self._entries(vals), units="mg/dl", input_units="mg/dl")
+        assert res["found"] is True
+        assert res["count"] == 10
+        assert res["percentile_mgdl"]["p50"] == 95.0
+        assert res["percentile_mgdl"]["p25"] == 72.5
+        assert res["percentile_mgdl"]["p75"] == 117.5
+        assert res["iqr_mgdl"] == 45.0
+        assert res["percentile_mgdl"]["p5"] == 54.5
+        assert res["min_mgdl"] == 50.0
+        assert res["max_mgdl"] == 140.0
+
+    def test_single_reading_is_its_own_percentile(self):
+        from cli_anything.nightscout.core import report as rep
+
+        res = rep.distribution(self._entries([100]), units="mg/dl", input_units="mg/dl")
+        assert res["found"] is True
+        assert res["count"] == 1
+        assert all(v == 100.0 for v in res["percentile_mgdl"].values())
+
+    def test_empty_window_found_false(self):
+        from cli_anything.nightscout.core import report as rep
+
+        res = rep.distribution([], units="mg/dl")
+        assert res["found"] is False
+        assert res["count"] == 0
+        assert res["bins"] == []
+        assert res["percentile_mgdl"] == {}
+
+    def test_non_sgv_and_none_sgv_are_ignored(self):
+        from cli_anything.nightscout.core import report as rep
+
+        entries = self._entries([100, 120]) + [
+            {"type": "mbg", "mbg": 999, "dateString": "2026-09-22T03:00:00.000Z"},
+            {"type": "sgv", "sgv": None, "dateString": "2026-09-22T04:00:00.000Z"},
+        ]
+        res = rep.distribution(entries, units="mg/dl", input_units="mg/dl")
+        assert res["count"] == 2
+
+    def test_bins_sum_to_count_and_pct_to_100(self):
+        from cli_anything.nightscout.core import report as rep
+
+        vals = [50, 60, 70, 80, 90, 100, 110, 120, 130, 140]
+        res = rep.distribution(self._entries(vals), units="mg/dl", input_units="mg/dl")
+        assert sum(b["count"] for b in res["bins"]) == 10
+        assert sum(b["pct"] for b in res["bins"]) == pytest.approx(100.0)
+        labels = [b["count"] for b in res["bins"]]
+        # 40–80: 50/60/70; 80–120: 80..110; 120–160: 120..140
+        assert labels[1] == 3
+        assert labels[2] == 4
+        assert labels[3] == 3
+        assert labels[0] == 0
+
+    def test_open_top_bin_swallows_high_readings(self):
+        from cli_anything.nightscout.core import report as rep
+
+        res = rep.distribution(self._entries([420, 380]), units="mg/dl", input_units="mg/dl")
+        top = res["bins"][-1]
+        assert top["from_mgdl"] == 400.0
+        assert top["to_mgdl"] is None
+        assert top["count"] == 1  # the 420
+        assert res["max_mgdl"] == 420.0
+
+    def test_custom_bin_width(self):
+        from cli_anything.nightscout.core import report as rep
+
+        res = rep.distribution(
+            self._entries([50, 150, 350]), units="mg/dl", input_units="mg/dl",
+            bin_width_mgdl=100.0,
+        )
+        # 0-100 / 100-200 / 200-300 / 300-400 / (no >=400 bins beyond the edge set)
+        assert sum(b["count"] for b in res["bins"]) == 3
+        assert [b["count"] for b in res["bins"]][:4] == [1, 1, 0, 1]
+
+    def test_mmol_mode_adds_mmol_fields(self):
+        from cli_anything.nightscout.core import report as rep
+
+        vals = [50, 60, 70, 80, 90, 100, 110, 120, 130, 140]
+        res = rep.distribution(self._entries(vals), units="mmol", input_units="mg/dl")
+        assert res["units"] == "mmol/l"
+        assert res["percentile_mmol"]["p50"] == round(95.0 / 18.018, 2)
+        assert res["iqr_mmol"] == round(45.0 / 18.018, 2)
+        assert "mean_mmol" in res and "from_mmol" in res["bins"][0]
+        # mg/dL values stay authoritative in the histogram.
+        assert res["bins"][0]["from_mgdl"] == 0.0
+
+    def test_ranges_block_uses_the_same_thresholds(self):
+        from cli_anything.nightscout.core import report as rep
+
+        res = rep.distribution(self._entries([50, 100, 140, 200]), units="mg/dl")
+        assert res["low_threshold"] == 70.0 and res["high_threshold"] == 180.0
+        r = res["ranges"]
+        assert r["tbr_pct"] == 25.0  # only the 50
+        assert r["tar_pct"] == 25.0  # only the 200
+        assert r["tir_pct"] == 50.0
+
+    def test_custom_low_high_recompute_ranges(self):
+        from cli_anything.nightscout.core import report as rep
+
+        res = rep.distribution(self._entries([50, 100, 140, 200]),
+                               units="mg/dl", low=110, high=130)
+        r = res["ranges"]
+        assert r["low_threshold"] == 110 and r["high_threshold"] == 130
+        assert r["tir_pct"] == 0.0
+        assert r["tbr_pct"] == 50.0
+        assert r["tar_pct"] == 50.0
+
+    def test_negative_reading_is_counts_as_outlier_below(self):
+        from cli_anything.nightscout.core import report as rep
+
+        entries = self._entries([100]) + [{"type": "sgv", "sgv": -5,
+                                          "dateString": "2026-09-22T09:00:00.000Z"}]
+        res = rep.distribution(entries, units="mg/dl", input_units="mg/dl")
+        assert res["outliers"]["below"] == 1
+        assert "found" in res and res["found"] is True
+
+    def test_first_and_last_reading_iso(self):
+        from cli_anything.nightscout.core import report as rep
+
+        vals = [50, 60, 70, 80, 90, 100, 110, 120, 130, 140]
+        res = rep.distribution(self._entries(vals), units="mg/dl", input_units="mg/dl")
+        assert res["first_reading_at"] == "2026-09-22T00:00:00.000Z"
+        assert res["last_reading_at"] == "2026-09-22T09:00:00.000Z"
+
+    def test_gmi_and_cv_ride_along(self):
+        from cli_anything.nightscout.core import report as rep
+
+        vals = [50, 60, 70, 80, 90, 100, 110, 120, 130, 140]
+        res = rep.distribution(self._entries(vals), units="mg/dl", input_units="mg/dl")
+        assert res["mean_mgdl"] == 95.0
+        assert res["gmi_pct"] == pytest.approx(3.31 + 0.02392 * 95, abs=0.01)
+        assert res["stdev_mgdl"] == pytest.approx(28.72, abs=0.05)
+
+
+class TestReportDistributionCommand:
+    """`report distribution` — CLI wiring over mocked core fetches (CliRunner)."""
+
+    def _invoke(self, args, as_json=True, entries=None):
+        from click.testing import CliRunner
+
+        from cli_anything.nightscout import nightscout_cli as mod
+
+        entries = entries if entries is not None else [
+            {"type": "sgv", "sgv": v,
+             "dateString": f"2026-09-22T{i:02d}:00:00.000Z"}
+            for i, v in enumerate([50, 60, 70, 80, 90, 100, 110, 120, 130, 140])
+        ]
+        runner = CliRunner()
+        full_args = ["--url", "https://ns.example.com",
+                     "--api-secret", "testsecret12chars"]
+        full_args += ["--json"] if as_json else []
+        full_args += args
+        with (
+            mock.patch.object(mod.entries_mod, "list_entries",
+                              return_value=entries) as sg_mock,
+        ):
+            result = runner.invoke(mod.cli, full_args, standalone_mode=False,
+                                   catch_exceptions=True)
+        return result, sg_mock
+
+    def test_json_shape_default_window(self):
+        result, sg = self._invoke(["report", "distribution", "--days", "1"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["found"] is True
+        assert data["count"] == 10
+        assert data["percentile_mgdl"]["p50"] == 95.0
+        assert data["ranges"]["tir_pct"] == 80.0
+        assert sum(b["count"] for b in data["bins"]) == 10
+
+    def test_from_to_window_plumbs_into_fetch(self):
+        result, sg = self._invoke(["report", "distribution", "--from", "2026-09-22",
+                                   "--to", "2026-09-23"])
+        assert result.exit_code == 0, result.exception
+        assert sg.call_args.kwargs["date_gte"] == "2026-09-22T00:00:00.000Z"
+        assert sg.call_args.kwargs["date_lte"] == "2026-09-23T00:00:00.000Z"
+        assert sg.call_args.kwargs["type_"] == "sgv"
+
+    def test_low_high_plumb_into_ranges(self):
+        result, _ = self._invoke(["report", "distribution", "--low", "100",
+                                  "--high", "120"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["low_threshold"] == 100
+        assert data["high_threshold"] == 120
+
+    def test_bin_width_plumbs_through(self):
+        result, _ = self._invoke(["report", "distribution", "--bin-width", "100"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        # 100 wide bins over 0–400 → top bin is open-ended at >=400.
+        assert data["bins"][0]["to_mgdl"] == 100.0
+        assert data["bins"][-1]["to_mgdl"] is None
+
+    def test_mmol_mode(self):
+        result, _ = self._invoke(["report", "distribution", "--units", "mmol"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["units"] == "mmol/l"
+        assert data["percentile_mmol"]["p50"] == round(95.0 / 18.018, 2)
+
+    def test_json_empty_window_found_false(self):
+        result, _ = self._invoke(["report", "distribution", "--days", "1"], entries=[])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["found"] is False
+        assert data["count"] == 0
+
+    def test_human_output_shows_percentiles_and_bins(self):
+        result, _ = self._invoke(
+            ["report", "distribution", "--days", "1"], as_json=False)
+        assert result.exit_code == 0, result.exception
+        assert "readings: 10" in result.output
+        assert "p50 95" in result.output
+        assert "IQR" in result.output
+        assert "80–120 mg/dL" in result.output
+        assert "ranges (70–180 mg/dL):  in 80.0%" in result.output
+
+    def test_human_empty_window_says_so(self):
+        result, _ = self._invoke(
+            ["report", "distribution", "--days", "1"], as_json=False, entries=[])
+        assert result.exit_code == 0, result.exception
+        assert "no sgv readings" in result.output
+
+    def test_zero_bin_width_falls_back_to_default(self):
+        result, _ = self._invoke(["report", "distribution", "--bin-width", "0"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert len(data["bins"]) > 5  # fell back to the 40-wide default

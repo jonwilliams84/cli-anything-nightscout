@@ -4,6 +4,34 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.13.0] — 2026-10-08
+
+- **New command: `report distribution`** — the window-wide glucose
+  distribution: percentiles plus a fixed-edge histogram. `report tir`
+  collapses a window into three band percentages and `report agp` splits
+  the percentiles by hour of day, but neither answers "what is the SHAPE
+  of my glucose over the whole window?" — `report distribution` gives the
+  global p1–p99 (linear-interpolated over every valid sgv reading), the
+  p75–p25 IQR, and a histogram over fixed mg/dL edges (`--bin-width`,
+  default 40, floor 0, ceiling 400 with an open-ended top bin) so two
+  windows, weeks or sensors are directly comparable bytewise.
+  - Composed of the existing primitives so definitions cannot drift:
+    mean/stdev/CV/GMI come from the same code as `report summary`, and
+    the band split rides along under `ranges` — byte-identical to
+    `report tir` given the same `--low/--high` thresholds over the same
+    window (`report distribution --from/--to` + `report tir --from/--to`
+    must agree, and the E2E workflow test checks exactly that).
+  - Honesty rails: a window with no valid readings is `found: false` with
+    empty `bins`/`percentiles`, never an all-zero distribution; a single
+    reading is its own every-percentile, never a fabricated 0.
+  - `--days N` (default 14) sizes the window ending now; explicit
+    `--from/--to` overrides it. `--low/--high` override the 70/180 mg/dL
+    consensus pair. Unit consistency as elsewhere since v2.11.1: `units`
+    is display only — server `sgv` is always read as mg/dL, and mmol
+    display adds `*_mmol` twins (percentiles, IQR, bin edges) alongside.
+- Fixed the stale module version literal (`nightscout_cli.VERSION` said
+  2.12.0 while the package ships 2.13.0).
+
 ## [2.12.0] — 2026-10-01
 
 - **New command: `report logbook`** — the web UI's **Reports ▸ Logbook**

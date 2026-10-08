@@ -40,7 +40,7 @@ from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-VERSION = "2.12.0"
+VERSION = "2.13.0"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -1456,6 +1456,104 @@ def report_summary(
         click.echo(f"  max:   {_fmt_glucose(mx, mmol)}")
         click.echo(f"  CV:    {res['cv_pct']}%")
         click.echo(f"  GMI:   {res['gmi_pct']}% (est. A1C)")
+
+
+# ─── v2.13.0: report distribution — the window-wide glucose histogram ──────
+
+
+@report_grp.command("distribution")
+@click.option("--days", default=14, type=int, help="Look-back window in days (default 14)")
+@click.option("--from", "date_gte", default=None, help="ISO start (overrides --days)")
+@click.option("--to", "date_lte", default=None, help="ISO end")
+@click.option(
+    "--low", default=None, type=float, help="Low threshold (default: 70 mg/dL or 3.9 mmol/L)"
+)
+@click.option(
+    "--high", default=None, type=float, help="High threshold (default: 180 mg/dL or 10.0 mmol/L)"
+)
+@click.option(
+    "--units",
+    "units_flag",
+    default=None,
+    type=click.Choice(["mg/dl", "mmol", "mmol/l"]),
+    help="Override session units for this report",
+)
+@click.option(
+    "--bin-width",
+    default=40.0,
+    type=float,
+    help="Histogram bin width in mg/dL (default 40; 0–400 mg/dL floor/ceiling)",
+)
+@click.pass_context
+def report_distribution(
+    ctx: click.Context,
+    days: int,
+    date_gte: str | None,
+    date_lte: str | None,
+    low: float | None,
+    high: float | None,
+    units_flag: str | None,
+    bin_width: float,
+) -> None:
+    """Full glucose distribution: percentiles + fixed-edge histogram.
+
+    `report tir` collapses a window into three band percentages and
+    `report agp` splits percentiles by hour of day; this one answers
+    "what is the SHAPE of my glucose over the whole window?" — global
+    percentiles (p1–p99, linear-interpolated) plus a histogram over fixed
+    40 mg/dL edges so two windows are directly comparable. The band split
+    from the same thresholds rides along under `ranges`.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    units = units_flag or conn.get("units", "mg/dl")
+    mmol = _is_mmol_units(units)
+    data, iso_s, iso_e = _entries_window(
+        ctx, conn, days=days, date_gte=date_gte, date_lte=date_lte, type_="sgv"
+    )
+    res = report_mod.distribution(
+        data,
+        low=low,
+        high=high,
+        units=units,
+        input_units="mg/dl",
+        bin_width_mgdl=bin_width,
+    )
+    if _is_json(ctx):
+        _emit(ctx, res)
+        return
+    u = "mmol/L" if mmol else "mg/dL"
+    if not res.get("found"):
+        click.echo(f"  no sgv readings between {iso_s[:10]} and {iso_e[:10]} in the {u} window")
+        click.echo("  (empty CGM window — distribution is not computed, not zero)")
+        return
+    click.echo(
+        f"  window: {iso_s[:10]} … {iso_e[:10]}   readings: {res['count']}"
+        f"  (first {str(res.get('first_reading_at', '?'))[:19]}, last {str(res.get('last_reading_at', '?'))[:19]})"
+    )
+    mean = res.get("mean_mmol") if mmol else res.get("mean_mgdl")
+    stdev = res.get("stdev_mmol") if mmol else res.get("stdev_mgdl")
+    mn = res.get("min_mmol") if mmol else res.get("min_mgdl")
+    mx = res.get("max_mmol") if mmol else res.get("max_mgdl")
+    click.echo(f"  mean {_fmt_glucose(mean, mmol)}  stdev {_fmt_glucose(stdev, mmol)}")
+    click.echo(f"  min  {_fmt_glucose(mn, mmol)}  max  {_fmt_glucose(mx, mmol)}")
+    click.echo(f"  CV {res['cv_pct']}%   GMI {res['gmi_pct']}% (est. A1C)")
+    p = res.get("percentile_mmol") if mmol else res.get("percentile_mgdl")
+    order = [f"p{n}" for n in sorted(int(k[1:]) for k in p)]
+    click.echo("  " + "  ".join(f"{k} {p[k]:g}" for k in order) + f"  ({u})")
+    iqr = res.get("iqr_mmol") if mmol else res.get("iqr_mgdl")
+    click.echo(f"  IQR: {iqr:g} {u}")
+    r = res["ranges"]
+    lo, hi = r["low_threshold"], r["high_threshold"]
+    click.echo(
+        f"  ranges ({lo:g}–{hi:g} {u}):  in {r['tir_pct']}%  below {r['tbr_pct']}%  above {r['tar_pct']}%"
+    )
+    click.echo(f"  bins ({bin_width:g} mg/dL edges):")
+    for b in res["bins"]:
+        if not b["count"]:
+            continue
+        bar = "#" * max(1, round(b["pct"] / 2.5))
+        click.echo(f"    {b['label']:<18s} {b['count']:>5d}  {b['pct']:>6.2f}%  {bar}")
 
 
 @report_grp.command("gmi")

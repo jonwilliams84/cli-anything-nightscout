@@ -299,6 +299,198 @@ def daily(
     return rows
 
 
+# ── distribution ─────────────────────────────────────────────────────────
+
+# Percentiles reported by default. The consensus band (5th–95th) brackets
+# the "normal operating range"; the median is the typical reading.
+DEFAULT_DISTRIBUTION_PERCENTILES: tuple[int, ...] = (1, 5, 10, 25, 50, 75, 90, 95, 99)
+DEFAULT_BIN_WIDTH_MGDL = 40.0
+MAX_HISTOGRAM_EDGE_MGDL = 400.0  # readings below the floor are counted as outliers
+
+
+def _percentile(sorted_values: list[float], p: int) -> float | None:
+    """Linear-interpolated percentile of an already-sorted list.
+
+    Never errors on small samples: a single reading is its own p1..p99.
+    """
+    n = len(sorted_values)
+    if n == 0:
+        return None
+    if n == 1:
+        return float(sorted_values[0])
+    k = (n - 1) * (p / 100.0)
+    f = math.floor(k)
+    c = math.ceil(k)
+    if f == c:
+        return float(sorted_values[int(k)])
+    return sorted_values[f] * (c - k) + sorted_values[c] * (k - f)
+
+
+def distribution(
+    entries: list[dict[str, Any]],
+    *,
+    units: str = "mg/dl",
+    input_units: str | None = None,
+    low: float | None = None,
+    high: float | None = None,
+    percentiles: tuple[int, ...] = DEFAULT_DISTRIBUTION_PERCENTILES,
+    bin_width_mgdl: float = DEFAULT_BIN_WIDTH_MGDL,
+) -> dict[str, Any]:
+    """Full glucose distribution over a window: percentiles + histogram.
+
+    Answers "what is the SHAPE of my glucose?" — ``report tir`` collapses a
+    window into three band percentages, and ``report agp`` splits
+    percentiles by hour of day; this is the one global picture of every
+    valid sgv reading in the window, over fixed mg/dL edges so two windows
+    are directly comparable.
+
+    Composed of the existing primitives so the definitions never drift:
+
+    * ``summary()`` → mean/stdev/CV/GMI/min/max (spread to the top level)
+    * ``time_in_range()`` → band split under the SAME ``low``/``high``
+      thresholds, returned under ``ranges``
+    * linear-interpolated percentiles over all valid readings
+    * a histogram over fixed mg/dL edges (``bin_width_mgdl``, default 40,
+      floor 0, ceiling :data:`MAX_HISTOGRAM_EDGE_MGDL` — the top bin is
+      open-ended ``>=`` the last edge so no reading escapes the table;
+      a negative reading would be ``outliers.below``, which no real sgv
+      is, but an agent-supplied record could be).
+
+    Honesty rails: zero valid readings is ``found: false`` — a dataless
+    window is not a perfect distribution; a single reading is its own
+    every-percentile, never 0.
+
+    Output fields mirror ``summary``: ``*_mgdl`` always; ``*_mmol`` added
+    when ``units='mmol'``.
+    """
+    units, input_units = _resolve_units(units, input_units)
+    mmol = _is_mmol(units)
+    s = summary(entries, units=units, input_units=input_units)
+    tir = time_in_range(entries, low=low, high=high, units=units, input_units=input_units)
+
+    sgv_entries = _filter_sgv(entries)
+    values = sorted(v for v in (_entry_mgdl(e, input_units) for e in sgv_entries) if v is not None)
+
+    if not values:
+        out: dict[str, Any] = {
+            "found": False,
+            "count": 0,
+            "units": s["units"],
+            "low_threshold": tir["low_threshold"],
+            "high_threshold": tir["high_threshold"],
+            "percentile_mgdl": {},
+            "iqr_mgdl": None,
+            "bins": [],
+            "outliers": {"below": 0, "above": 0},
+        }
+        if mmol:
+            out["percentile_mmol"] = {}
+            out["iqr_mmol"] = None
+        return out
+
+    def _disp(v_mgdl: float) -> float:
+        return _round_mmol(v_mgdl) if mmol else round(v_mgdl, 2)
+
+    percentile_mgdl: dict[str, float] = {}
+    percentile_mmol: dict[str, float] = {}
+    for p in percentiles:
+        v = _percentile(values, p)
+        if v is None:
+            continue
+        key = "p100" if p >= 100 else f"p{p}"
+        percentile_mgdl[key] = round(v, 2)
+        if mmol:
+            percentile_mmol[key] = _round_mmol(v)
+
+    p25 = _percentile(values, 25)
+    p75 = _percentile(values, 75)
+    iqr_mgdl = round(p75 - p25, 2) if (p25 is not None and p75 is not None) else None
+
+    bin_width = (
+        float(bin_width_mgdl) if bin_width_mgdl and bin_width_mgdl > 0 else DEFAULT_BIN_WIDTH_MGDL
+    )
+    n_bins = max(1, int(MAX_HISTOGRAM_EDGE_MGDL // bin_width))
+
+    bins: list[dict[str, Any]] = []
+    for i in range(n_bins + 1):
+        lo_mgdl = i * bin_width
+        open_ended = i == n_bins
+        edge = {
+            "from_mgdl": round(lo_mgdl, 1),
+            "to_mgdl": None if open_ended else round((i + 1) * bin_width, 1),
+        }
+        if open_ended:
+            label = (
+                f">= {_disp(lo_mgdl):g} mg/dL"
+                if not mmol
+                else f">= {_round_mmol(lo_mgdl):g} mmol/L"
+            )
+            if mmol:
+                edge["from_mmol"] = _round_mmol(lo_mgdl)
+        else:
+            hi_mgdl = (i + 1) * bin_width
+            if mmol:
+                label = f"{_round_mmol(lo_mgdl):g}–{_round_mmol(hi_mgdl):g} mmol/L"
+                edge["from_mmol"] = _round_mmol(lo_mgdl)
+                edge["to_mmol"] = _round_mmol(hi_mgdl)
+            else:
+                label = f"{round(lo_mgdl):g}–{round(hi_mgdl):g} mg/dL"
+        bins.append({**edge, "label": label, "count": 0, "pct": 0.0})
+
+    outliers_below = 0
+    for v in values:
+        if v < 0:
+            outliers_below += 1
+            continue
+        idx = int(v // bin_width)
+        bins[n_bins if idx >= n_bins else idx]["count"] += 1
+
+    total = len(values)
+    for b in bins:
+        b["pct"] = round(b["count"] / total * 100, 2)
+
+    times = [
+        e.get("dateString") or e.get("date")
+        for e in sgv_entries
+        if e.get("dateString") or e.get("date")
+    ]
+    first_reading = min(times) if times else None
+    last_reading = max(times) if times else None
+
+    out = {
+        "found": True,
+        "count": len(values),
+        "units": s["units"],
+        "low_threshold": tir["low_threshold"],
+        "high_threshold": tir["high_threshold"],
+        "mean_mgdl": s["mean_mgdl"],
+        "stdev_mgdl": s["stdev_mgdl"],
+        "min_mgdl": s["min_mgdl"],
+        "max_mgdl": s["max_mgdl"],
+        "cv_pct": s["cv_pct"],
+        "gmi_pct": s["gmi_pct"],
+        "percentile_mgdl": percentile_mgdl,
+        "iqr_mgdl": iqr_mgdl,
+        "bins": bins,
+        "outliers": {"below": outliers_below, "above": 0},
+        "first_reading_at": first_reading,
+        "last_reading_at": last_reading,
+        "ranges": tir,
+    }
+    if mmol:
+        out.update(
+            {
+                "mean_mmol": s.get("mean_mmol"),
+                "stdev_mmol": s.get("stdev_mmol"),
+                "min_mmol": s.get("min_mmol"),
+                "max_mmol": s.get("max_mmol"),
+                "percentile_mmol": percentile_mmol,
+                "iqr_mmol": None if iqr_mgdl is None else _round_mmol(iqr_mgdl),
+            }
+        )
+    return out
+
+
 # ── AGP hourly pattern ───────────────────────────────────────────────────
 
 

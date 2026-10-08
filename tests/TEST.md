@@ -833,3 +833,31 @@ nightscout_cli.py: 91 % · core/logbook.py: 100 %
 
 Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
 exits 0.
+
+### Test results — 2026-10-08 (v2.13.0 — `report distribution`)
+
+New coverage for the window-wide glucose distribution: the `distribution()`
+report in `core/report.py` composes `summary()` + `time_in_range()` with
+linear-interpolated percentiles and a fixed-edge histogram, and the
+`report distribution` command wires it to the shared `_entries_window`
+fetch helper (the same `--days`/`--from/--to` dance every other report
+uses, so the window cannot drift).
+
+| File | New tests | Scope |
+|------|-----------|-------|
+| `test_core.py` | **24** | `TestDistributionCore` (14): `_percentile` exact/interpolated endpoints; known percentiles over a 10-reading ramp (p50 95, p25 72.5, p75 117.5, IQR 45); a single reading is its own p1–p99; empty window → `found: false` with empty bins/percentiles; non-sgv and `sgv: None` readings ignored; bin counts sum to the reading count and pcts to 100 with known 40-wide band membership; readings at/above 400 land in the open-ended top bin (`to_mgdl: null`); custom `--bin-width 100`; mmol display adds `percentile_mmol`/`iqr_mmol`/mmol bin edges while histogram stays mg/dL-sourced; `ranges` block shares the same thresholds (default 70/180 and a custom 110/130 pair); a negative (agent-supplied) reading counts as `outliers.below`; first/last reading ISO stamps; mean/CV/GMI ride along from `summary()`. `TestReportDistributionCommand` (10): JSON shape, window bounds plumbing into `entries.list_entries` (`type_="sgv"`, gte/lte), `--low/--high` plumbing, `--bin-width` plumbing, mmol mode, JSON empty window `found: false`, human output (percentiles/IQR/ranges/populated bins), human empty window message, `--bin-width 0` falls back to the 40-wide default. |
+| `test_full_e2e.py` | **5** | `TestDistributionE2E`: posted spread of SGVs read back with the SAME window the report asked for (the module-scoped stand-in server accumulates rows across tests, so the expectation is computed from the server's own answer — `statistics.median` equals linear interpolation at p50), percentiles monotonic p5≤p25≤p75≤p95, bins sum to count, TBR > 0 for the sub-70 readings; empty 2001 window → `found: false`; mmol display twins track mg/dL/18.018; human output lines; workflow consistency — `report distribution`'s `ranges` equals `report tir` over the identical date window. |
+
+No stand-in server changes — `report distribution` reuses the existing
+`/api/v1/entries.json` GET surface, so the E2E tests pass against both the
+stand-in and a live server.
+
+```text
+$ /work/venv/bin/python -m pytest tests --cov=cli_anything --cov-fail-under=78 -q
+1590 passed; Total coverage: 94.47 %
+
+nightscout_cli.py: 91 % · core/report.py: distribution fully covered
+```
+
+Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
+exits 0.

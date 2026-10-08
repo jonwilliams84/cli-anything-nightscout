@@ -376,6 +376,33 @@ with an empty event list — never a zero day; an unfinished day is
 `day_in_progress: true`; readings-without-treatments (and the reverse)
 emit warnings at the day level and the window level.
 
+### The window-wide distribution (v2.13.0+)
+
+`report tir` collapses a window into three band percentages; `report agp`
+splits the percentiles by hour of day. Neither answers "what is the SHAPE
+of my glucose over the whole window?" — that is `report distribution`:
+
+```bash
+cli-anything-nightscout --json report distribution --days 14
+#   found, count, units, low/high_threshold
+#   mean/stdev/min/max_mgdl (+ *_mmol), cv_pct, gmi_pct — same definitions
+#         as `report summary`
+#   percentile_mgdl: p1/p5/p10/p25/p50/p75/p90/p95/p99 (linear-interpolated)
+#   iqr_mgdl: p75–p25 — the "typical" spread
+#   bins[]: fixed-edge histogram, 0–400 mg/dL in --bin-width (default 40)
+#           steps; the top bin is open-ended >=400 so no reading escapes;
+#           each bin carries from/to_mgdl, count and pct
+#   ranges: the band split from the SAME thresholds (identical to
+#           `report tir` over the same window) — no drifted definitions
+#   --days N / --from --to size the window; --low/--high override the
+#           70/180 pair; --bin-width resizes the histogram
+```
+
+Fixed-edge bins are the point: two windows, two weeks or two sensors can
+be compared bytewise. A window with no valid readings is `found: false`,
+never an empty/perfect distribution; a single reading is its own
+every-percentile rather than a fabricated 0.
+
 ### Dry-run is network-safe (v2.1.0+)
 
 `--dry-run` now describes the request without sending it — every mutating

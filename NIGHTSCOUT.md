@@ -48,7 +48,7 @@ summary) are computed locally from data the server returns.
 | `notifications` | `ack`, `admin` | Alarm acknowledgement and admin notices |
 | `activity` | `latest`, `list`, `get`, `add`, `delete` | Activity / exercise records (API v3) |
 | `food` | `list`, `quickpicks`, `regular`, `add`, `update`, `delete` | Food database |
-| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages`, `loop`, `data-quality`, `accuracy`, `day` | Computed reports + composed snapshots; `day` is the one-day clinical snapshot |
+| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `distribution`, `intraday`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages`, `loop`, `data-quality`, `accuracy`, `day` | Computed reports + composed snapshots; `day` is the one-day clinical snapshot |
 | `v3` | `list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history` | Generic CRUD + sync over any v3 collection |
 | `watch` | (socket.io) | Real-time entries/treatments stream (needs `pip install '.[watch]'`) |
 | `session` | `info`, `save`, `load`, `clear` | Session state and last-fetched cache |
@@ -395,6 +395,34 @@ to `report tir` over the same window.
   tir`.
 - Human mode prints the percentile row, the populated histogram bins with
   a count/pct/#-bar, and the band split; `--json` is never summarized.
+
+## Intraday grid (v2.14.0+)
+
+`report intraday [--days N] [--from ISO --to ISO] [--tz Z] [--units U]
+[--low X] [--high X]` is the web UI's **Intradays / day-to-day** view:
+"every day around 15:00 I blow through 250" is invisible to `report agp`
+(it collapses days into one hourly profile) and to `report daily` (it
+collapses hours into day totals). `report intraday` keeps both dimensions
+at once — **one row per day, one cell per hour that has readings**.
+
+JSON: `found`, `total_readings`, `units`, `low/high_threshold` (display
+units), and `days[]` — each with `date`, `count`,
+`mean/min/max_mgdl` (+ `*_mmol` under mmol display),
+`tir_pct`/`below_pct`/`above_pct`, and `cells[]` (one per *observed* hour:
+`hour`, `count`, `mean_mgdl` (+ `mean_mmol`), `tir_pct`,
+`in_range_count`/`below_count`/`above_count`).
+
+- `--tz` moves BOTH the day boundary and the hour bucket — a 23:30 UTC
+  reading belongs to the day and hour it is at the *clinic's* clock, not
+  UTC's. Default: the local system timezone, like `report agp`/`daily`.
+- Cell thresholds and day band splits use the consensus 70–180 mg/dL pair
+  (override with `--low/--high`, interpreted in display units), the same
+  definitions as `report tir`.
+- Day rows are byte-identical to `report daily` rows given the same window
+  and timezone — no drifted definitions, checked by the E2E workflow test.
+- Honesty rails: no valid readings → `found: false` with an empty `days`
+  list, never a zero grid; cells only cover observed hours — a missing
+  hour is genuinely missing data, never a fabricated 0.
 
 ## Auth resolution order (highest precedence first)
 

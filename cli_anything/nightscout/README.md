@@ -403,6 +403,33 @@ be compared bytewise. A window with no valid readings is `found: false`,
 never an empty/perfect distribution; a single reading is its own
 every-percentile rather than a fabricated 0.
 
+### The day × hour intraday grid (v2.14.0+)
+
+`report agp` collapses every day of the window into ONE hourly profile;
+`report daily` collapses every day into ONE row of totals. Neither keeps
+the day dimension and the hour dimension at the same time — "every day
+around 15:00 I blow through 250" is invisible to both. That is
+`report intraday`:
+
+```bash
+cli-anything-nightscout --json report intraday --days 7
+#   found, total_readings, units, low/high_threshold
+#   days[]: one row per day —
+#     date, count, mean/min/max_mgdl (+ *_mmol), tir/below/above_pct
+#     cells[]: one cell per hour that HAS readings —
+#              hour, count, mean_mgdl (+ mean_mmol), tir_pct,
+#              in_range_count / below_count / above_count
+#   --days N / --from --to size the window; --tz moves BOTH the day
+#           boundary and the hour bucket; --low/--high override the 70/180
+#           pair; --units mmol adds the mmol twins
+```
+
+Honesty rails: a window with no valid readings is `found: false` with an
+empty `days` list; cells only cover *observed* hours, so a missing hour is
+genuinely missing data, never a fabricated 0. The day rows are the same
+definitions as `report daily` — same window, same day boundary, equal
+numbers, guaranteed by the E2E workflow test.
+
 ### Dry-run is network-safe (v2.1.0+)
 
 `--dry-run` now describes the request without sending it — every mutating
@@ -462,7 +489,7 @@ cli-anything-nightscout session info
 | `notifications` | Alarm `ack` + `admin` notices |
 | `activity` | Activity / exercise records — API v3 (`latest`, `list`, `get`, `add`, `delete`) |
 | `food` | Food database (`list`, `quickpicks`, `regular`, `add`, `update`, `delete`) |
-| `report` | Computed reports: `tir`, `summary`, `daily`, `gmi`, `agp`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `tdd` (`--include-basal` for a true TDD), `basal`, plus composed snapshots `sensor-life`, `iob-cob`, `device-health`, `ages`, the closed-loop history `loop`, the one-day snapshot `day`, and the trustworthiness pair `data-quality` + `accuracy` |
+| `report` | Computed reports: `tir`, `summary`, `daily`, `gmi`, `agp`, `distribution`, `intraday`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `tdd` (`--include-basal` for a true TDD), `basal`, plus composed snapshots `sensor-life`, `iob-cob`, `device-health`, `ages`, the closed-loop history `loop`, the one-day snapshot `day`, the multi-day `logbook`, and the trustworthiness pair `data-quality` + `accuracy` |
 | `v3` | Generic CRUD + sync over any v3 collection (`list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history`) |
 | `watch` | Real-time entries/treatments via socket.io (needs `pip install '.[watch]'`) |
 | `session` | Session state (`info`, `save`, `load`, `clear`) |

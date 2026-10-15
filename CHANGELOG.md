@@ -4,6 +4,39 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.14.0] — 2026-10-15
+
+- **New command: `report intraday`** — the web UI's **Intradays / day-to-day**
+  view as a CLI command. `report agp` collapses every day of the window into
+  ONE hourly profile and `report daily` collapses every day into ONE row of
+  totals, so the day dimension and the hour dimension never appear at the
+  same time: "every day around 15:00 I blow through 250" is invisible to
+  both. `report intraday` keeps them apart — **one row per day, one cell
+  per hour that has readings**, each cell carrying `count`, `mean_mgdl`
+  (+ `mean_mmol`) and the band split (`tir_pct`, `in_range_count`,
+  `below_count`, `above_count`), each day row a self-contained day summary
+  (`mean/min/max_mgdl`, `tir_pct`/`below_pct`/`above_pct`) so the grid can
+  stand alone.
+  - Composed of the existing primitives so definitions cannot drift: the
+    day rows are byte-identical to `report daily` given the same window and
+    timezone (the E2E workflow test checks date/count/mean/min/max/TIR
+    agreement), the band split uses the same 70/180 mg/dL consensus pair as
+    `report tir`, and it reuses the same entries fetch as AGP.
+  - Honesty rails carried over from `report distribution`: a window with no
+    valid readings is `found: false` with an empty `days` list, never a
+    zero grid; cells only cover *observed* hours — a missing hour is
+    genuinely missing data, never a fabricated 0; non-sgv, undated and
+    `sgv: null` entries are filtered the same way the other reports filter.
+  - `--days N` (default 7) sizes the window ending now; explicit
+    `--from/--to` overrides it. `--tz` moves BOTH the day boundary and the
+    hour bucket (default: local tz) — a 23:30 UTC reading is the same
+    day/hour it belongs to, not UTC's. `--low/--high` override the 70/180
+    pair for the cell and day band splits. Unit consistency as elsewhere
+    since v2.11.1: server `sgv` is always read as mg/dL, and mmol display
+    adds `*_mmol` twins (day mean/min/max and cell means) alongside.
+- Fixed the stale module version literal (`nightscout_cli.VERSION` said
+  2.13.0 while the package ships 2.14.0).
+
 ## [2.13.0] — 2026-10-08
 
 - **New command: `report distribution`** — the window-wide glucose

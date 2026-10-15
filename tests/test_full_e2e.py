@@ -2045,3 +2045,138 @@ class TestDistributionE2E:
         assert dist["ranges"]["tir_pct"] == tir["tir_pct"]
         assert dist["ranges"]["tbr_pct"] == tir["tbr_pct"]
         assert dist["ranges"]["tar_pct"] == tir["tar_pct"]
+
+
+class TestIntradayE2E:
+    """E2E: `report intraday` — v2.14.0 day × hour glucose heatmap."""
+
+    CLI_BASE = _resolve_cli("cli-anything-nightscout")
+
+    def _run(self, args, env=None, check=True):
+        env_full = os.environ.copy()
+        if env:
+            env_full.update(env)
+        return subprocess.run(
+            self.CLI_BASE + list(args),
+            capture_output=True, text=True, check=check, env=env_full, timeout=30,
+        )
+
+    def _conn_env(self, server_url_and_secret, tmp_path):
+        url, secret = server_url_and_secret
+        return {
+            "NIGHTSCOUT_URL": url,
+            "NIGHTSCOUT_API_SECRET": secret,
+            "NIGHTSCOUT_TOKEN": "",
+            "CLI_ANYTHING_HOME": str(tmp_path),
+        }
+
+    def _post_readings(self, env, values):
+        for v in values:
+            r = self._run(["--json", "entries", "add", "--sgv", str(v)], env=env)
+            assert r.returncode == 0, r.stderr
+
+    def _window(self, days=2):
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        iso_e = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        iso_s = (_dt.now(_tz.utc) - _td(days=days)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        return iso_s, iso_e
+
+    def test_report_intraday_over_posted_entries(self, server_url_and_secret, tmp_path):
+        """Post known SGVs; the grid must account for every reading."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        self._post_readings(env, [100, 120, 180, 250])
+        r = self._run(["--json", "report", "intraday", "--days", "2"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        if _is_live_mode():
+            assert "found" in data and "days" in data
+            return
+        assert data["found"] is True
+        assert data["units"] == "mg/dl"
+        iso_s, iso_e = self._window(2)
+        r = self._run(["--json", "entries", "list", "--count", "500",
+                        "--type", "sgv", "--from", iso_s, "--to", iso_e], env=env)
+        assert r.returncode == 0, r.stderr
+        expected = len([e for e in json.loads(r.stdout) if "dateString" in e])
+        assert data["total_readings"] == expected
+        days = data["days"]
+        assert days and all(re.fullmatch(r"\d{4}-\d{2}-\d{2}", d["date"]) for d in days)
+        for d in days:
+            assert sum(c["count"] for c in d["cells"]) == d["count"]
+            for c in d["cells"]:
+                assert 0 <= c["hour"] <= 23
+                assert 0.0 <= c["tir_pct"] <= 100.0
+                assert c["mean_mgdl"] is not None
+            # Day mean is the reading-weighted mean of its hour cells.
+            weighted = sum(c["mean_mgdl"] * c["count"] for c in d["cells"]) / d["count"]
+            assert d["mean_mgdl"] == pytest.approx(weighted, abs=0.01)
+        assert "low_threshold_mgdl" in data and "high_threshold_mgdl" in data
+
+    def test_report_intraday_empty_window_found_false(self, server_url_and_secret, tmp_path):
+        """A long-past window has no data → found:false, never zero cells."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(["--json", "report", "intraday",
+                        "--from", "2001-01-01", "--to", "2001-01-02"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        if _is_live_mode():
+            assert "found" in data
+            return
+        assert data["found"] is False
+        assert data["days"] == []
+        assert data["total_readings"] == 0
+
+    def test_report_intraday_mmol_display(self, server_url_and_secret, tmp_path):
+        """--units mmol adds *_mmol twins; mg/dL stays authoritative."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        self._post_readings(env, [80, 100, 200])
+        r = self._run(["--json", "report", "intraday", "--days", "2",
+                        "--units", "mmol"], env=env)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        if _is_live_mode():
+            return
+        assert data["units"] == "mmol/l"
+        for d in data["days"]:
+            assert d["mean_mmol"] == pytest.approx(d["mean_mgdl"] / 18.018, abs=0.01)
+            for c in d["cells"]:
+                assert c["mean_mmol"] == pytest.approx(c["mean_mgdl"] / 18.018, abs=0.01)
+
+    def test_report_intraday_human_output(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        self._post_readings(env, [70, 120, 180])
+        r = self._run(["report", "intraday", "--days", "2"], env=env)
+        assert r.returncode == 0, r.stderr
+        assert "intraday" in r.stdout
+        assert "readings across" in r.stdout
+        assert "mg/dL" in r.stdout
+        assert "TIR%" in r.stdout
+        assert re.search(r"\d{4}-\d{2}-\d{2}", r.stdout)
+
+    def test_workflow_intraday_matches_daily(self, server_url_and_secret, tmp_path):
+        """Day rows must equal `report daily` over the same window — no drift."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        self._post_readings(env, [60, 100, 190])
+        iso_s, iso_e = self._window(2)
+        r = self._run(["--json", "report", "daily", "--from", iso_s, "--to", iso_e],
+                      env=env)
+        assert r.returncode == 0, r.stderr
+        daily = json.loads(r.stdout)
+        r = self._run(["--json", "report", "intraday", "--from", iso_s, "--to", iso_e],
+                      env=env)
+        assert r.returncode == 0, r.stderr
+        grid = json.loads(r.stdout)
+        if _is_live_mode():
+            assert "days" in grid
+            return
+        assert grid["found"] is True
+        by_date = {d["date"]: d for d in grid["days"]}
+        assert len(grid["days"]) == len(daily)
+        for row in daily:
+            g = by_date[row["date"]]
+            assert g["count"] == row["count"]
+            assert g["mean_mgdl"] == row["mean_mgdl"]
+            assert g["min_mgdl"] == row["min_mgdl"]
+            assert g["max_mgdl"] == row["max_mgdl"]
+            assert g["tir_pct"] == row["tir_pct"]
+            assert sum(c["count"] for c in g["cells"]) == row["count"]

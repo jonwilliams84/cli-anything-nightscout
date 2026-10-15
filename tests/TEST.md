@@ -861,3 +861,32 @@ nightscout_cli.py: 91 % · core/report.py: distribution fully covered
 
 Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
 exits 0.
+
+### Test results — 2026-10-15 (v2.14.0 — `report intraday`)
+
+New coverage for the day × hour glucose heatmap: the `intraday_grid()`
+report in `core/report.py` keeps the day dimension and the hour dimension
+together (visible to neither `report agp` nor `report daily` alone). The
+`report intraday` command wires it to the same window dance as the other
+reports (`--days` default 7, `--from/--to` override, `--tz` bucketing both
+the day boundary and the hour, `--low/--high` band overrides, mmol display
+twins).
+
+| File | New tests | Scope |
+|------|-----------|-------|
+| `test_core.py` | **8** | `TestIntradayGridCore`: day rows sorted with per-day summary (count/mean/min/max, TIR 66.67 over a 100/200/120/90 spread) and per-hour cells (hour 5 = 2 readings mean 150 TIR 50, hour 8 = 1 reading mean 120); empty window → `found: false` with empty `days`; tz shifts BOTH bucket dimensions (05:00 UTC → hour 14 in Asia/Tokyo; 15:30 UTC Sep 30 → Oct 1 00:30); mmol display adds day and cell `mean_mmol` twins that track mg/dL/18.018; custom `--low/--high` (100/180) drives below/in/above counts at the cell level and the day TIR; mbg, `sgv: null` and timestamp-less entries are ignored (and timestamp-less-only input is `found: false`, not a fabricated grid). |
+| `test_full_e2e.py` | **5** | `TestIntradayE2E`: posted SGVs read back through `entries list` with the SAME window (the module-scoped stand-in accumulates rows across tests, so the expectation is computed from the server's own answer); `total_readings` accounts for every reading; per-day cell counts sum to the day count; each day's mean is the reading-weighted mean of its cells; hour cells bounded 0–23; empty 2001 window → `found: false`; mmol twins track mg/dL/18.018 at day and cell level; human output (header row, TIR%, date rows); workflow consistency — every `report intraday` day row (`date`/`count`/`mean_mgdl`/`min_mgdl`/`max_mgdl`/`tir_pct`) equals the `report daily` row for the same date over the identical window. |
+
+No stand-in server changes — `report intraday` reuses the existing
+`/api/v1/entries.json` GET surface, so the E2E tests pass against both the
+stand-in and a live server.
+
+```text
+$ /work/venv/bin/python -m pytest tests --cov=cli_anything --cov-fail-under=78 -q
+1603 passed; Total coverage: 93.97 % (78 % gate)
+
+nightscout_cli.py: 89 % · core/report.py: intraday_grid fully covered
+```
+
+Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
+exits 0.

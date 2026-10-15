@@ -1150,3 +1150,123 @@ def active_treatments(
 
     active.sort(key=lambda r: r.get("started_at") or "", reverse=True)
     return active
+
+
+# ── Intraday grid (day × hour heatmap, v2.14.0) ──────────────────────────
+
+
+def intraday_grid(
+    entries: list[dict[str, Any]],
+    *,
+    units: str = "mg/dl",
+    input_units: str | None = None,
+    tz: tzinfo | str | None = None,
+    low: float | None = None,
+    high: float | None = None,
+) -> dict[str, Any]:
+    """Day × hour mean-glucose grid — the "Intradays" / day-to-day view.
+
+    ``report agp`` collapses every day of the window into one hourly
+    profile; ``report daily`` collapses every hour of each day into one
+    number. Neither keeps the day dimension and the hour dimension at the
+    same time, so "every Tuesday about 15:00 I blow through 250" is
+    invisible to both. :func:`intraday_grid` returns ONE row per day and,
+    inside it, ONE cell per hour that actually has readings:
+
+    * cells only cover observed hours — a missing hour is genuinely
+      missing data, never a fabricated 0/None row
+    * each cell carries ``count``, ``mean_mgdl`` (+ ``mean_mmol``), the
+      TIR band split at the SAME low/high thresholds (default 70/180
+      mg/dL, override with ``--low``/``--high``), as percentages
+    * each day row carries a day-level summary (mean/min/max/TIR) so the
+      grid can stand alone
+
+    ``tz`` controls both the day boundary and the hour bucket. Default
+    UTC; pass an IANA name (e.g. ``"Europe/London"``) to match the clinic-
+    local clock, or 23:30 readings land in the wrong day/hour.
+    """
+    units, input_units = _resolve_units(units, input_units)
+    mmol = _is_mmol(units)
+    if low is None:
+        low = DEFAULT_LOW_MMOL if mmol else DEFAULT_LOW_MGDL
+    if high is None:
+        high = DEFAULT_HIGH_MMOL if mmol else DEFAULT_HIGH_MGDL
+
+    low_mgdl = _to_mgdl(low, units)
+    high_mgdl = _to_mgdl(high, units)
+
+    by_day: dict[str, dict[int, list[float]]] = defaultdict(lambda: defaultdict(list))
+    for e in _filter_sgv(entries):
+        ts = e.get("dateString") or e.get("date")
+        day = _date_key(ts, tz=tz)
+        if day is None:
+            continue
+        hr = _hour_key(ts, tz=tz)
+        if hr is None:
+            continue
+        v = _entry_mgdl(e, input_units)
+        if v is None:
+            continue
+        by_day[day][hr].append(v)
+
+    def _band(vals: list[float]) -> tuple[int, int, int]:
+        in_range = sum(1 for v in vals if low_mgdl <= v <= high_mgdl)
+        below = sum(1 for v in vals if v < low_mgdl)
+        above = sum(1 for v in vals if v > high_mgdl)
+        return in_range, below, above
+
+    days_out: list[dict[str, Any]] = []
+    total = 0
+    for day in sorted(by_day):
+        cells: list[dict[str, Any]] = []
+        day_vals: list[float] = []
+        for hr in sorted(by_day[day]):
+            vals = sorted(by_day[day][hr])
+            day_vals = day_vals + vals
+            mean = sum(vals) / len(vals)
+            in_range, below, above = _band(vals)
+            cell: dict[str, Any] = {
+                "hour": hr,
+                "count": len(vals),
+                "mean_mgdl": round(mean, 2),
+                "tir_pct": round(in_range / len(vals) * 100, 2),
+                "in_range_count": in_range,
+                "below_count": below,
+                "above_count": above,
+            }
+            if mmol:
+                cell["mean_mmol"] = _round_mmol(mean)
+            cells.append(cell)
+
+        n = len(day_vals)
+        day_mean = sum(day_vals) / n
+        in_range, below, above = _band(day_vals)
+        row: dict[str, Any] = {
+            "date": day,
+            "count": n,
+            "mean_mgdl": round(day_mean, 2),
+            "min_mgdl": round(min(day_vals), 2),
+            "max_mgdl": round(max(day_vals), 2),
+            "tir_pct": round(in_range / n * 100, 2),
+            "below_pct": round(below / n * 100, 2),
+            "above_pct": round(above / n * 100, 2),
+            "units": "mmol/l" if mmol else "mg/dl",
+            "cells": cells,
+        }
+        if mmol:
+            row["mean_mmol"] = _round_mmol(day_mean)
+            row["min_mmol"] = _round_mmol(min(day_vals))
+            row["max_mmol"] = _round_mmol(max(day_vals))
+        days_out.append(row)
+        total += n
+
+    return {
+        "found": bool(days_out),
+        "total_readings": total,
+        "days": days_out,
+        "low_threshold": low,
+        "high_threshold": high,
+        "low_threshold_mgdl": round(low_mgdl, 2),
+        "high_threshold_mgdl": round(high_mgdl, 2),
+        "units": "mmol/l" if mmol else "mg/dl",
+    }

@@ -2441,3 +2441,132 @@ class TestReportDistributionCommand:
         assert result.exit_code == 0, result.exception
         data = json.loads(result.output)
         assert len(data["bins"]) > 5  # fell back to the 40-wide default
+
+
+# ─── report intraday: day × hour grid (v2.14.0) ────────────────────────────
+
+
+class TestIntradayGridCore:
+    """`report.intraday_grid` — day × hour mean-glucose heatmap."""
+
+    def _e(self, iso: str, sgv):
+        return {"type": "sgv", "sgv": sgv, "dateString": iso}
+
+    def test_day_rows_and_hour_cells(self):
+        from cli_anything.nightscout.core import report as rep
+
+        entries = [
+            self._e("2026-10-14T05:00:00.000Z", 100),
+            self._e("2026-10-14T05:30:00.000Z", 200),
+            self._e("2026-10-14T08:10:00.000Z", 120),
+            self._e("2026-10-15T05:00:00.000Z", 90),
+        ]
+        res = rep.intraday_grid(entries, units="mg/dl", input_units="mg/dl")
+        assert res["found"] is True
+        assert res["total_readings"] == 4
+        assert [d["date"] for d in res["days"]] == ["2026-10-14", "2026-10-15"]
+        assert res["units"] == "mg/dl"
+
+        d1 = res["days"][0]
+        assert d1["count"] == 3
+        assert d1["mean_mgdl"] == 140.0  # (100+200+120)/3
+        assert d1["min_mgdl"] == 100.0
+        assert d1["max_mgdl"] == 200.0
+        assert d1["tir_pct"] == 66.67  # 100 and 120 in; 200 above 180
+
+        cells = {c["hour"]: c for c in d1["cells"]}
+        assert set(cells) == {5, 8}  # only observed hours, sorted
+        assert cells[5]["count"] == 2
+        assert cells[5]["mean_mgdl"] == 150.0
+        assert cells[5]["tir_pct"] == 50.0
+        assert cells[5]["above_count"] == 1
+        assert cells[8]["count"] == 1
+        assert cells[8]["mean_mgdl"] == 120.0
+
+    def test_empty_window_found_false(self):
+        from cli_anything.nightscout.core import report as rep
+
+        res = rep.intraday_grid([], units="mg/dl")
+        assert res["found"] is False
+        assert res["total_readings"] == 0
+        assert res["days"] == []
+
+    def test_tz_moves_day_and_hour(self):
+        """05:00 UTC on Oct 14 is 14:00 in Tokyo — the cell must move."""
+        from cli_anything.nightscout.core import report as rep
+
+        res = rep.intraday_grid(
+            [self._e("2026-10-14T05:00:00.000Z", 100)],
+            units="mg/dl", input_units="mg/dl", tz="Asia/Tokyo",
+        )
+        d = res["days"][0]
+        assert d["date"] == "2026-10-14"
+        assert [c["hour"] for c in d["cells"]] == [14]
+
+    def test_tz_crosses_day_boundary(self):
+        """15:30 UTC on Sep 30 is 00:30 Oct 1 in Tokyo — the day must move."""
+        from cli_anything.nightscout.core import report as rep
+
+        res = rep.intraday_grid(
+            [self._e("2026-09-30T15:30:00.000Z", 100)],
+            units="mg/dl", input_units="mg/dl", tz="Asia/Tokyo",
+        )
+        assert [d["date"] for d in res["days"]] == ["2026-10-01"]
+        assert res["days"][0]["cells"][0]["hour"] == 0
+
+    def test_mmol_mode_adds_mmol_twins(self):
+        from cli_anything.nightscout.core import report as rep
+
+        entries = [
+            self._e("2026-10-14T05:00:00.000Z", 80),
+            self._e("2026-10-14T05:30:00.000Z", 100),
+            self._e("2026-10-14T05:40:00.000Z", 200),
+        ]
+        res = rep.intraday_grid(entries, units="mmol", input_units="mg/dl")
+        assert res["units"] == "mmol/l"
+        d = res["days"][0]
+        assert d["mean_mmol"] == round(d["mean_mgdl"] / 18.018, 2)
+        assert d["min_mmol"] == round(d["min_mgdl"] / 18.018, 2)
+        assert d["max_mmol"] == round(d["max_mgdl"] / 18.018, 2)
+        assert d["cells"][0]["mean_mmol"] == round(d["cells"][0]["mean_mgdl"] / 18.018, 2)
+
+    def test_custom_thresholds_drive_band_split(self):
+        from cli_anything.nightscout.core import report as rep
+
+        entries = [
+            self._e("2026-10-14T05:00:00.000Z", 80),
+            self._e("2026-10-14T05:30:00.000Z", 120),
+            self._e("2026-10-14T05:40:00.000Z", 200),
+        ]
+        res = rep.intraday_grid(
+            entries, units="mg/dl", input_units="mg/dl", low=100, high=180
+        )
+        assert res["low_threshold"] == 100.0
+        assert res["high_threshold"] == 180.0
+        cell = res["days"][0]["cells"][0]
+        assert cell["below_count"] == 1  # the 80
+        assert cell["in_range_count"] == 1  # the 120
+        assert cell["above_count"] == 1  # the 200
+        assert res["days"][0]["tir_pct"] == 33.33
+
+    def test_non_sgv_undated_and_none_sgv_ignored(self):
+        from cli_anything.nightscout.core import report as rep
+
+        entries = [
+            self._e("2026-10-14T05:00:00.000Z", 100),
+            {"type": "mbg", "mbg": 999, "dateString": "2026-10-14T06:00:00.000Z"},
+            {"type": "sgv", "sgv": None, "dateString": "2026-10-14T06:30:00.000Z"},
+            {"type": "sgv", "sgv": 110},  # no timestamp at all
+        ]
+        res = rep.intraday_grid(entries, units="mg/dl", input_units="mg/dl")
+        assert res["total_readings"] == 1
+        assert res["found"] is True
+
+    def test_only_untimed_entries_is_found_false(self):
+        from cli_anything.nightscout.core import report as rep
+
+        res = rep.intraday_grid(
+            [{"type": "sgv", "sgv": 100}], units="mg/dl", input_units="mg/dl"
+        )
+        assert res["found"] is False
+        assert res["days"] == []

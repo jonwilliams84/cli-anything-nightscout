@@ -40,7 +40,7 @@ from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-VERSION = "2.13.0"
+VERSION = "2.14.0"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -1624,6 +1624,94 @@ def report_daily(
             click.echo(
                 f"  {r['date']}   {r['count']:>5}   {mean!s:>5}     {mn!s:>5}  {mx!s:>5}   {r['tir_pct']:>5}"
             )
+
+
+# ─── v2.14.0: report intraday — the day × hour glucose heatmap ─────────────
+
+
+@report_grp.command("intraday")
+@click.option("--days", default=7, type=int, help="Window size in days (default 7)")
+@click.option("--units", "units_flag", default=None, type=click.Choice(["mg/dl", "mmol", "mmol/l"]))
+@click.option("--from", "date_gte", default=None, help="ISO date lower bound (overrides --days)")
+@click.option("--to", "date_lte", default=None)
+@click.option(
+    "--tz",
+    "tz_name",
+    default=None,
+    help="Day-boundary AND hour-bucket timezone (default: local system tz). "
+    "IANA name, e.g. 'Europe/London' or 'UTC'.",
+)
+@click.option("--low", type=float, default=None, help="In-range lower threshold (display units)")
+@click.option("--high", type=float, default=None, help="In-range upper threshold (display units)")
+@click.pass_context
+def report_intraday(
+    ctx: click.Context,
+    days: int,
+    units_flag: str | None,
+    date_gte: str | None,
+    date_lte: str | None,
+    tz_name: str | None,
+    low: float | None,
+    high: float | None,
+) -> None:
+    """Day × hour mean-glucose heatmap — the Intraday / day-to-day view.
+
+    `report agp` collapses every day into one hourly profile and
+    `report daily` collapses every day into one row of totals; neither
+    keeps day and hour together, so "every day around 15:00 I blow
+    through 250" is invisible to both. This keeps them apart: one row per
+    day, one cell per hour with readings, each cell with mean glucose and
+    the in-range split at the 70/180 band.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    conn = _conn(ctx)
+    _require_url(conn)
+    units = units_flag or conn.get("units", "mg/dl")
+    mmol = _is_mmol_units(units)
+    tz = tz_name or _default_tz_name()
+
+    if not date_gte and not date_lte:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+        date_gte = start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        date_lte = end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    data = entries_mod.list_entries(
+        conn=conn, count=100000, type_="sgv", date_gte=date_gte, date_lte=date_lte
+    )
+    _warn_truncation(data, limit=100000, ctx=ctx)
+    # Nightscout stores sgv in mg/dL; honor that explicitly.
+    res = report_mod.intraday_grid(
+        data, units=units, input_units="mg/dl", tz=tz, low=low, high=high
+    )
+    if _is_json(ctx):
+        _emit(ctx, res)
+    else:
+        u = "mmol/L" if mmol else "mg/dL"
+        click.echo(
+            f"  intraday — {res['total_readings']} readings across "
+            f"{len(res['days'])} days, day × hour mean ({u})"
+        )
+        if not res["found"]:
+            click.echo("  no glucose readings in the window")
+            return
+        click.echo(f"  {'date':<14s}" + "".join(f"{h:>6d}" for h in range(24)) + "  TIR%")
+        for d in res["days"]:
+            by_hour = {c["hour"]: c for c in d["cells"]}
+            row = f"  {d['date']:<14s}"
+            for h in range(24):
+                c = by_hour.get(h)
+                val = (
+                    c.get("mean_mmol")
+                    if c is not None and mmol
+                    else (c.get("mean_mgdl") if c is not None else None)
+                )
+                row += f"{val!s:>6}" if val is not None else f"{'—':>6}"
+            click.echo(row)
+        click.echo(
+            f"\n  values in {u}; each column is the mean glucose for that "
+            "hour of that day; — = no readings"
+        )
 
 
 @report_grp.command("agp")

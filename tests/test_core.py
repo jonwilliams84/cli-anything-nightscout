@@ -1,4 +1,3 @@
-
 """Unit tests for cli-anything-nightscout — pure-Python, no network."""
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ import pytest
 # Re-import project under a controlled CLI_ANYTHING_HOME so tests don't touch
 # the real ~/.cli-anything directory.
 
+
 @pytest.fixture()
 def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("CLI_ANYTHING_HOME", str(tmp_path))
@@ -29,9 +29,11 @@ def isolated_home(tmp_path, monkeypatch):
 
 # ─── nightscout_backend ────────────────────────────────────────────────────
 
+
 class TestBackend:
     def setup_method(self):
         from cli_anything.nightscout.utils import nightscout_backend as backend
+
         self.backend = backend
 
     def test_hash_api_secret_is_lowercase_sha1(self):
@@ -55,6 +57,7 @@ class TestBackend:
         assert len(result) == 40
         # Verify the source actually contains usedforsecurity=False
         import inspect
+
         src = inspect.getsource(self.backend.hash_api_secret)
         assert "usedforsecurity=False" in src
 
@@ -84,7 +87,9 @@ class TestBackend:
         assert self.backend._resolve_secret_hash(None) is None
 
     def test_normalize_url_adds_scheme(self):
-        assert self.backend.normalize_url("nightscout.example.com") == "https://nightscout.example.com"
+        assert (
+            self.backend.normalize_url("nightscout.example.com") == "https://nightscout.example.com"
+        )
 
     def test_normalize_url_strips_trailing_slash(self):
         assert self.backend.normalize_url("https://x/") == "https://x"
@@ -115,7 +120,8 @@ class TestBackend:
         # v2.1.0+: 204 returns a sentinel so callers can distinguish a true
         # No-Content ack from "got a record back".
         assert self.backend._handle_response(r) == {
-            "_status_code": 204, "_no_content": True,
+            "_status_code": 204,
+            "_no_content": True,
         }
 
     def test_handle_response_200_json(self):
@@ -160,16 +166,20 @@ class TestBackend:
     def test_request_passes_verify_to_requests(self, monkeypatch):
         """Smoke test: verify= kwarg lands on the underlying requests call."""
         captured = {}
+
         class FakeResp:
             status_code = 200
             text = "{}"
-            def json(self): return {}
+
+            def json(self):
+                return {}
+
         def fake_request(method, url, **kwargs):
             captured["verify"] = kwargs.get("verify")
             return FakeResp()
+
         monkeypatch.setattr(self.backend.requests, "request", fake_request)
-        self.backend.request("GET", "/status.json", base_url="https://x",
-                              verify=False)
+        self.backend.request("GET", "/status.json", base_url="https://x", verify=False)
         assert captured["verify"] is False
 
     def test_ssl_error_with_verify_on_raises_helpful_hint(self, monkeypatch):
@@ -178,8 +188,10 @@ class TestBackend:
         Self-signed certs are common (home k8s, .lan, .internal). A bare SSL
         traceback wastes the next agent's time digging — be explicit."""
         import requests as _req
+
         def fake_request(*a, **kw):
             raise _req.exceptions.SSLError("cert verify failed: self signed")
+
         monkeypatch.setattr(self.backend.requests, "request", fake_request)
         monkeypatch.delenv("NIGHTSCOUT_VERIFY_SSL", raising=False)
         monkeypatch.delenv("NIGHTSCOUT_CA_BUNDLE", raising=False)
@@ -193,13 +205,14 @@ class TestBackend:
     def test_ssl_error_with_verify_off_passes_through(self, monkeypatch):
         """If user explicitly disabled verify and STILL fails, don't double-wrap."""
         import requests as _req
+
         def fake_request(*a, **kw):
             raise _req.exceptions.SSLError("something weird")
+
         monkeypatch.setattr(self.backend.requests, "request", fake_request)
         # User has consciously disabled verify — the hint isn't useful here.
         with pytest.raises(_req.exceptions.SSLError):
-            self.backend.request("GET", "/status.json", base_url="https://x",
-                                  verify=False)
+            self.backend.request("GET", "/status.json", base_url="https://x", verify=False)
 
     def test_handle_response_500_non_json(self):
         r = mock.Mock()
@@ -212,6 +225,7 @@ class TestBackend:
 
 # ─── core/project ──────────────────────────────────────────────────────────
 
+
 class TestProject:
     def test_load_config_defaults_when_missing(self, isolated_home):
         project, _ = isolated_home
@@ -222,9 +236,14 @@ class TestProject:
 
     def test_save_then_load_roundtrip(self, isolated_home):
         project, _ = isolated_home
-        project.save_config({
-            "server_url": "https://x", "api_secret": "p", "api_token": "t", "units": "mmol",
-        })
+        project.save_config(
+            {
+                "server_url": "https://x",
+                "api_secret": "p",
+                "api_token": "t",
+                "units": "mmol",
+            }
+        )
         cfg = project.load_config()
         assert cfg["server_url"] == "https://x"
         assert cfg["api_secret"] == "p"
@@ -327,9 +346,11 @@ class TestProject:
 
 # ─── core/entries ──────────────────────────────────────────────────────────
 
+
 class TestEntries:
     def setup_method(self):
         from cli_anything.nightscout.core import entries
+
         self.entries = entries
 
     def test_epoch_ms_to_iso(self):
@@ -343,14 +364,22 @@ class TestEntries:
 
     def test_add_sgv_payload_shape(self):
         captured = {}
-        def fake_post(path, *, data, base_url, version, api_secret=None, token=None, params=None, **_):
+
+        def fake_post(
+            path, *, data, base_url, version, api_secret=None, token=None, params=None, **_
+        ):
             captured["path"] = path
             captured["data"] = data
             captured["version"] = version
             return data
+
         with mock.patch.object(self.entries.backend, "post", fake_post):
-            self.entries.add_sgv(sgv=120.5, date_ms=1700000000000, direction="Flat",
-                                 conn={"server_url": "https://x", "api_secret": "p"})
+            self.entries.add_sgv(
+                sgv=120.5,
+                date_ms=1700000000000,
+                direction="Flat",
+                conn={"server_url": "https://x", "api_secret": "p"},
+            )
         assert captured["path"] == "/entries.json"
         assert captured["version"] == "v1"
         assert captured["data"][0]["sgv"] == 120.5
@@ -360,13 +389,18 @@ class TestEntries:
 
     def test_list_entries_query_params(self):
         captured = {}
+
         def fake_get(path, *, base_url, version, api_secret=None, token=None, params=None, **_):
             captured["params"] = params
             return []
+
         with mock.patch.object(self.entries.backend, "get", fake_get):
             self.entries.list_entries(
-                conn={"server_url": "https://x"}, count=12, type_="sgv",
-                date_gte="2025-01-01", date_lte="2025-02-01",
+                conn={"server_url": "https://x"},
+                count=12,
+                type_="sgv",
+                date_gte="2025-01-01",
+                date_lte="2025-02-01",
             )
         assert captured["params"]["count"] == 12
         assert captured["params"]["find[type]"] == "sgv"
@@ -376,19 +410,28 @@ class TestEntries:
 
 # ─── core/treatments ───────────────────────────────────────────────────────
 
+
 class TestTreatments:
     def setup_method(self):
         from cli_anything.nightscout.core import treatments
+
         self.treatments = treatments
 
     def test_add_treatment_payload(self):
         captured = {}
-        def fake_post(path, *, data, base_url, version, api_secret=None, token=None, params=None, **_):
+
+        def fake_post(
+            path, *, data, base_url, version, api_secret=None, token=None, params=None, **_
+        ):
             captured["data"] = data
             return data
+
         with mock.patch.object(self.treatments.backend, "post", fake_post):
             self.treatments.add_treatment(
-                event_type="Meal Bolus", carbs=40, insulin=4.0, notes="lunch",
+                event_type="Meal Bolus",
+                carbs=40,
+                insulin=4.0,
+                notes="lunch",
                 conn={"server_url": "https://x"},
             )
         rec = captured["data"][0]
@@ -400,13 +443,18 @@ class TestTreatments:
 
     def test_list_treatments_propagates_dates(self):
         captured = {}
+
         def fake_get(path, *, base_url, version, api_secret=None, token=None, params=None, **_):
             captured["params"] = params
             return []
+
         with mock.patch.object(self.treatments.backend, "get", fake_get):
             self.treatments.list_treatments(
-                conn={"server_url": "https://x"}, count=10, event_type="Meal Bolus",
-                date_gte="2025-01-01", date_lte="2025-02-01",
+                conn={"server_url": "https://x"},
+                count=10,
+                event_type="Meal Bolus",
+                date_gte="2025-01-01",
+                date_lte="2025-02-01",
             )
         assert captured["params"]["find[eventType]"] == "Meal Bolus"
         assert captured["params"]["find[created_at][$gte]"] == "2025-01-01"
@@ -415,9 +463,11 @@ class TestTreatments:
 
 # ─── core/profile ──────────────────────────────────────────────────────────
 
+
 class TestProfile:
     def setup_method(self):
         from cli_anything.nightscout.core import profile
+
         self.profile = profile
 
     def _profile_record(self, name="Default", store=None, start="2025-01-01"):
@@ -425,7 +475,8 @@ class TestProfile:
             "_id": "rec1",
             "defaultProfile": name,
             "startDate": f"{start}T00:00:00Z",
-            "store": store or {
+            "store": store
+            or {
                 "Default": {
                     "dia": 5,
                     "basal": [{"time": "00:00", "value": 1.0}],
@@ -516,7 +567,9 @@ class TestProfile:
     def test_current_named_missing_returns_none(self):
         rec = self._profile_record()
         with mock.patch.object(self.profile, "list_profiles", return_value=[rec]):
-            assert self.profile.current_named("NonExistent", conn={"server_url": "https://x"}) is None
+            assert (
+                self.profile.current_named("NonExistent", conn={"server_url": "https://x"}) is None
+            )
 
     def test_current_named_empty_raises(self):
         with pytest.raises(ValueError, match="name"):
@@ -525,23 +578,29 @@ class TestProfile:
 
 # ─── core/activity ─────────────────────────────────────────────────────────
 
+
 class TestActivity:
     def setup_method(self):
         from cli_anything.nightscout.core import activity
+
         self.activity = activity
 
     def test_list_activity_uses_v3_with_token(self):
         captured = {}
+
         def fake_get(path, *, base_url, version, token=None, params=None, **_):
             captured["path"] = path
             captured["version"] = version
             captured["token"] = token
             captured["params"] = params
             return {"status": 200, "result": [{"_id": "a", "eventType": "Exercise"}]}
+
         with mock.patch.object(self.activity.backend, "get", fake_get):
             res = self.activity.list_activity(
                 conn={"server_url": "https://x", "api_token": "tok"},
-                limit=25, date_gte="2025-01-01", event_type="Exercise",
+                limit=25,
+                date_gte="2025-01-01",
+                event_type="Exercise",
             )
         assert captured["path"] == "/activity"
         assert captured["version"] == "v3"
@@ -555,22 +614,28 @@ class TestActivity:
 
     def test_list_activity_unwraps_plain_list(self):
         """Some Nightscout versions return a bare list without status/result."""
+
         def fake_get(*a, **kw):
             return [{"_id": "x"}]
+
         with mock.patch.object(self.activity.backend, "get", fake_get):
             res = self.activity.list_activity(conn={"server_url": "https://x"})
         assert res == [{"_id": "x"}]
 
     def test_add_activity_payload_shape(self):
         captured = {}
+
         def fake_post(path, *, data, base_url, version, token=None, **_):
             captured["path"] = path
             captured["data"] = data
             captured["version"] = version
             return {"status": 200, "identifier": "abc"}
+
         with mock.patch.object(self.activity.backend, "post", fake_post):
             self.activity.add_activity(
-                event_type="Exercise", duration=30, notes="run",
+                event_type="Exercise",
+                duration=30,
+                notes="run",
                 conn={"server_url": "https://x"},
             )
         assert captured["path"] == "/activity"
@@ -583,12 +648,15 @@ class TestActivity:
 
     def test_add_activity_extra_merges_in(self):
         captured = {}
+
         def fake_post(path, *, data, base_url, version, token=None, **_):
             captured["data"] = data
             return {}
+
         with mock.patch.object(self.activity.backend, "post", fake_post):
             self.activity.add_activity(
-                event_type="Exercise", extra={"intensity": "high", "heartRate": 145},
+                event_type="Exercise",
+                extra={"intensity": "high", "heartRate": 145},
                 conn={"server_url": "https://x"},
             )
         assert captured["data"]["intensity"] == "high"
@@ -600,10 +668,12 @@ class TestActivity:
 
     def test_delete_activity_calls_v3(self):
         captured = {}
+
         def fake_delete(path, *, base_url, version, token=None, **_):
             captured["path"] = path
             captured["version"] = version
             return {}
+
         with mock.patch.object(self.activity.backend, "delete", fake_delete):
             self.activity.delete_activity("abc-123", conn={"server_url": "https://x"})
         assert captured["path"] == "/activity/abc-123"
@@ -615,11 +685,15 @@ class TestActivity:
 
     def test_latest_sorts_by_created_at(self):
         def fake_get(*a, **kw):
-            return {"status": 200, "result": [
-                {"_id": "a", "created_at": "2025-05-01T00:00:00Z"},
-                {"_id": "b", "created_at": "2025-05-03T00:00:00Z"},
-                {"_id": "c", "created_at": "2025-05-02T00:00:00Z"},
-            ]}
+            return {
+                "status": 200,
+                "result": [
+                    {"_id": "a", "created_at": "2025-05-01T00:00:00Z"},
+                    {"_id": "b", "created_at": "2025-05-03T00:00:00Z"},
+                    {"_id": "c", "created_at": "2025-05-02T00:00:00Z"},
+                ],
+            }
+
         with mock.patch.object(self.activity.backend, "get", fake_get):
             res = self.activity.latest(count=2, conn={"server_url": "https://x"})
         assert [r["_id"] for r in res] == ["b", "c"]
@@ -627,14 +701,21 @@ class TestActivity:
 
 # ─── core/report ───────────────────────────────────────────────────────────
 
+
 class TestReport:
     def setup_method(self):
         from cli_anything.nightscout.core import report
+
         self.report = report
 
     def _entries(self, values, day_iso="2025-05-01"):
         return [
-            {"type": "sgv", "sgv": v, "dateString": f"{day_iso}T00:0{i}:00.000Z", "date": (i + 1) * 1000}
+            {
+                "type": "sgv",
+                "sgv": v,
+                "dateString": f"{day_iso}T00:0{i}:00.000Z",
+                "date": (i + 1) * 1000,
+            }
             for i, v in enumerate(values)
         ]
 
@@ -709,7 +790,12 @@ class TestReport:
         entries = [
             {"type": "sgv", "sgv": 100, "dateString": "2025-05-01T00:00:00.000Z"},
             {"type": "mbg", "mbg": 90, "dateString": "2025-05-01T00:01:00.000Z"},  # ignored
-            {"type": "cal", "intercept": 1.0, "slope": 2.0, "dateString": "2025-05-01T00:02:00.000Z"},  # ignored
+            {
+                "type": "cal",
+                "intercept": 1.0,
+                "slope": 2.0,
+                "dateString": "2025-05-01T00:02:00.000Z",
+            },  # ignored
         ]
         s = self.report.summary(entries)
         assert s["count"] == 1
@@ -723,8 +809,7 @@ class TestReport:
 
     def test_severe_hypo_in_mgdl_stays_hypo(self):
         """28 mg/dL is a real reading and MUST classify as below-range."""
-        entries = [{"type": "sgv", "sgv": 28,
-                    "dateString": "2025-05-01T00:00:00.000Z"}]
+        entries = [{"type": "sgv", "sgv": 28, "dateString": "2025-05-01T00:00:00.000Z"}]
         r = self.report.time_in_range(entries, units="mg/dl")
         assert r["below_count"] == 1, (
             "28 mg/dL must be classified as hypo, not silently multiplied "
@@ -735,8 +820,7 @@ class TestReport:
 
     def test_severe_hypo_summary_reports_truthfully(self):
         """summary() must report mean ~28, not ~504, for a 28 mg/dL reading."""
-        entries = [{"type": "sgv", "sgv": 28,
-                    "dateString": "2025-05-01T00:00:00.000Z"}]
+        entries = [{"type": "sgv", "sgv": 28, "dateString": "2025-05-01T00:00:00.000Z"}]
         s = self.report.summary(entries, units="mg/dl")
         assert s["mean_mgdl"] == 28.0
         # GMI = 3.31 + 0.02392 * 28 = 3.98 — a very low, plausibly-hypo GMI
@@ -744,8 +828,7 @@ class TestReport:
 
     def test_mmol_units_still_convert_when_explicitly_requested(self):
         """mmol/L override must still apply — only the silent guess is gone."""
-        entries = [{"type": "sgv", "sgv": 5.5,
-                    "dateString": "2025-05-01T00:00:00.000Z"}]
+        entries = [{"type": "sgv", "sgv": 5.5, "dateString": "2025-05-01T00:00:00.000Z"}]
         r = self.report.time_in_range(entries, units="mmol")
         # 5.5 mmol/L → ~99 mg/dL → in range
         assert r["in_range_count"] == 1
@@ -755,8 +838,7 @@ class TestReport:
     def test_tir_default_thresholds_in_mmol(self):
         """In mmol mode, default thresholds are 3.9-10.0 (not 70-180)."""
         entries = [
-            {"type": "sgv", "sgv": v,
-             "dateString": "2025-05-01T00:00:00.000Z"}
+            {"type": "sgv", "sgv": v, "dateString": "2025-05-01T00:00:00.000Z"}
             for v in [3.0, 5.5, 8.0, 10.0, 12.0]
         ]
         r = self.report.time_in_range(entries, units="mmol")
@@ -774,8 +856,7 @@ class TestReport:
     def test_tir_custom_mmol_thresholds(self):
         """When units=mmol, low/high are interpreted as mmol."""
         entries = [
-            {"type": "sgv", "sgv": v,
-             "dateString": "2025-05-01T00:00:00.000Z"}
+            {"type": "sgv", "sgv": v, "dateString": "2025-05-01T00:00:00.000Z"}
             for v in [3.5, 4.0, 7.0, 9.0]
         ]
         # Tight in-range 4-8 mmol/L
@@ -787,8 +868,7 @@ class TestReport:
 
     def test_summary_returns_mmol_fields_in_mmol_mode(self):
         entries = [
-            {"type": "sgv", "sgv": v,
-             "dateString": "2025-05-01T00:00:00.000Z"}
+            {"type": "sgv", "sgv": v, "dateString": "2025-05-01T00:00:00.000Z"}
             for v in [5.0, 6.0, 7.0]
         ]
         s = self.report.summary(entries, units="mmol")
@@ -802,10 +882,7 @@ class TestReport:
 
     def test_summary_mgdl_mode_omits_mmol_fields(self):
         """Backward compat: mg/dL mode keeps the original shape."""
-        entries = [
-            {"type": "sgv", "sgv": 100,
-             "dateString": "2025-05-01T00:00:00.000Z"}
-        ]
+        entries = [{"type": "sgv", "sgv": 100, "dateString": "2025-05-01T00:00:00.000Z"}]
         s = self.report.summary(entries)  # default mg/dl
         assert "mean_mgdl" in s
         assert "mean_mmol" not in s
@@ -813,8 +890,12 @@ class TestReport:
 
     def test_daily_includes_mmol_in_mmol_mode(self):
         entries = [
-            {"type": "sgv", "sgv": v,
-             "dateString": "2025-05-01T00:00:00.000Z", "date": (i + 1) * 1000}
+            {
+                "type": "sgv",
+                "sgv": v,
+                "dateString": "2025-05-01T00:00:00.000Z",
+                "date": (i + 1) * 1000,
+            }
             for i, v in enumerate([5.0, 7.0, 9.0])
         ]
         rows = self.report.daily(entries, units="mmol")
@@ -827,8 +908,7 @@ class TestReport:
     def test_input_units_mgdl_with_mmol_output(self):
         """The Nightscout reality: data is mg/dL but UK user wants mmol output."""
         # 99 mg/dL (= 5.5 mmol/L) is in range
-        entries = [{"type": "sgv", "sgv": 99,
-                    "dateString": "2025-05-01T00:00:00.000Z"}]
+        entries = [{"type": "sgv", "sgv": 99, "dateString": "2025-05-01T00:00:00.000Z"}]
         # Want mmol output but data is mg/dL — decoupled now
         s = self.report.summary(entries, units="mmol", input_units="mg/dl")
         assert s["mean_mgdl"] == 99.0
@@ -838,8 +918,7 @@ class TestReport:
     def test_tir_input_units_mgdl_thresholds_mmol(self):
         """TIR with Nightscout data (mg/dL) but mmol thresholds (3.9/10.0)."""
         entries = [
-            {"type": "sgv", "sgv": v,
-             "dateString": "2025-05-01T00:00:00.000Z"}
+            {"type": "sgv", "sgv": v, "dateString": "2025-05-01T00:00:00.000Z"}
             for v in [55, 80, 150, 200]  # mg/dL values
         ]
         r = self.report.time_in_range(entries, units="mmol", input_units="mg/dl")
@@ -855,8 +934,7 @@ class TestReport:
 
     def test_hourly_pattern_24_rows(self):
         """Always returns 24 rows (one per hour), even for empty hours."""
-        entries = [{"type": "sgv", "sgv": 100,
-                     "dateString": "2025-05-01T03:30:00.000Z"}]
+        entries = [{"type": "sgv", "sgv": 100, "dateString": "2025-05-01T03:30:00.000Z"}]
         rows = self.report.hourly_pattern(entries)
         assert len(rows) == 24
         assert all(r["hour"] == i for i, r in enumerate(rows))
@@ -911,8 +989,7 @@ class TestReport:
         """A 20-minute run below threshold = one event."""
         # 5 readings, 5 minutes apart, all below 70 mg/dL
         entries = [
-            {"type": "sgv", "sgv": v,
-             "dateString": f"2025-05-01T03:{i*5:02d}:00.000Z"}
+            {"type": "sgv", "sgv": v, "dateString": f"2025-05-01T03:{i * 5:02d}:00.000Z"}
             for i, v in enumerate([65, 60, 55, 58, 62])
         ]
         evts = self.report.hypo_events(entries, min_duration_min=15)
@@ -925,7 +1002,7 @@ class TestReport:
         """A single 5-min dip is filtered out as likely noise."""
         entries = [
             {"type": "sgv", "sgv": 100, "dateString": "2025-05-01T03:00:00.000Z"},
-            {"type": "sgv", "sgv": 65,  "dateString": "2025-05-01T03:05:00.000Z"},  # below, alone
+            {"type": "sgv", "sgv": 65, "dateString": "2025-05-01T03:05:00.000Z"},  # below, alone
             {"type": "sgv", "sgv": 100, "dateString": "2025-05-01T03:10:00.000Z"},
         ]
         evts = self.report.hypo_events(entries, min_duration_min=15)
@@ -936,23 +1013,23 @@ class TestReport:
         entries = []
         # Event 1: 03:00-03:20 (5 readings below)
         for i in range(5):
-            entries.append({"type": "sgv", "sgv": 60,
-                             "dateString": f"2025-05-01T03:{i*5:02d}:00.000Z"})
+            entries.append(
+                {"type": "sgv", "sgv": 60, "dateString": f"2025-05-01T03:{i * 5:02d}:00.000Z"}
+            )
         # Recovery
-        entries.append({"type": "sgv", "sgv": 100,
-                         "dateString": "2025-05-01T04:00:00.000Z"})
+        entries.append({"type": "sgv", "sgv": 100, "dateString": "2025-05-01T04:00:00.000Z"})
         # Event 2: 05:00-05:20 (5 readings below)
         for i in range(5):
-            entries.append({"type": "sgv", "sgv": 60,
-                             "dateString": f"2025-05-01T05:{i*5:02d}:00.000Z"})
+            entries.append(
+                {"type": "sgv", "sgv": 60, "dateString": f"2025-05-01T05:{i * 5:02d}:00.000Z"}
+            )
         evts = self.report.hypo_events(entries, min_duration_min=15)
         assert len(evts) == 2
 
     def test_hypo_events_level_classification(self):
         """level_2 fires below 54 mg/dL (3.0 mmol/L) per Battelino."""
         entries = [
-            {"type": "sgv", "sgv": v,
-             "dateString": f"2025-05-01T03:{i*5:02d}:00.000Z"}
+            {"type": "sgv", "sgv": v, "dateString": f"2025-05-01T03:{i * 5:02d}:00.000Z"}
             for i, v in enumerate([50, 48, 52, 55])
         ]
         evts = self.report.hypo_events(entries, min_duration_min=10)
@@ -961,8 +1038,7 @@ class TestReport:
 
     def test_hypo_events_level_1_when_min_above_54(self):
         entries = [
-            {"type": "sgv", "sgv": v,
-             "dateString": f"2025-05-01T03:{i*5:02d}:00.000Z"}
+            {"type": "sgv", "sgv": v, "dateString": f"2025-05-01T03:{i * 5:02d}:00.000Z"}
             for i, v in enumerate([65, 60, 58, 62])
         ]
         evts = self.report.hypo_events(entries, min_duration_min=10)
@@ -973,15 +1049,16 @@ class TestReport:
         entries = []
         # Older event (2025-05-01)
         for i in range(5):
-            entries.append({"type": "sgv", "sgv": 60,
-                             "dateString": f"2025-05-01T03:{i*5:02d}:00.000Z"})
+            entries.append(
+                {"type": "sgv", "sgv": 60, "dateString": f"2025-05-01T03:{i * 5:02d}:00.000Z"}
+            )
         # Recovery reading between events (otherwise they merge into one).
-        entries.append({"type": "sgv", "sgv": 100,
-                         "dateString": "2025-05-01T04:00:00.000Z"})
+        entries.append({"type": "sgv", "sgv": 100, "dateString": "2025-05-01T04:00:00.000Z"})
         # Newer event (2025-05-02)
         for i in range(5):
-            entries.append({"type": "sgv", "sgv": 60,
-                             "dateString": f"2025-05-02T03:{i*5:02d}:00.000Z"})
+            entries.append(
+                {"type": "sgv", "sgv": 60, "dateString": f"2025-05-02T03:{i * 5:02d}:00.000Z"}
+            )
         evts = self.report.hypo_events(entries, min_duration_min=15)
         assert len(evts) == 2
         assert evts[0]["start"].startswith("2025-05-02")
@@ -990,16 +1067,15 @@ class TestReport:
     def test_hypo_events_mmol_threshold(self):
         """mmol threshold is converted to mg/dL internally."""
         entries = [
-            {"type": "sgv", "sgv": v,
-             "dateString": f"2025-05-01T03:{i*5:02d}:00.000Z"}
+            {"type": "sgv", "sgv": v, "dateString": f"2025-05-01T03:{i * 5:02d}:00.000Z"}
             for i, v in enumerate([3.5, 3.2, 3.8, 4.2])  # mmol/L values
         ]
-        evts = self.report.hypo_events(entries, threshold=3.9, units="mmol",
-                                          min_duration_min=10)
+        evts = self.report.hypo_events(entries, threshold=3.9, units="mmol", min_duration_min=10)
         assert len(evts) == 1
         # min was 3.2 mmol/L = 57.66 mg/dL
         assert evts[0]["min_mmol"] == 3.2
         assert evts[0]["level"] == "level_1"  # 3.2 > 3.0
+
 
 # ─── core/loop_report.py — closed-loop automation report ──────────────────
 
@@ -1222,6 +1298,7 @@ class TestParseFind:
 
     def setup_method(self):
         from cli_anything.nightscout.core import query
+
         self.q = query
 
     def test_plain_field_value(self):
@@ -1243,9 +1320,7 @@ class TestParseFind:
         assert self.q.parse_find(["  sgv = 120"]) == {"sgv": " 120"}
 
     def test_nested_field_with_dot(self):
-        assert self.q.parse_find(["uploader.battery[$lt]=20"]) == {
-            "uploader.battery[$lt]": "20"
-        }
+        assert self.q.parse_find(["uploader.battery[$lt]=20"]) == {"uploader.battery[$lt]": "20"}
 
     def test_all_whitelisted_ops_accepted(self):
         for op in sorted(self.q.ALLOWED_OPS):
@@ -1318,9 +1393,7 @@ class TestListHelpersFindParam:
         from cli_anything.nightscout.core import entries
 
         with mock.patch.object(entries.backend, "get", return_value=[]) as pm:
-            entries.list_entries(
-                conn={"server_url": "http://x"}, type_="mbg", find={"type": "sgv"}
-            )
+            entries.list_entries(conn={"server_url": "http://x"}, type_="mbg", find={"type": "sgv"})
         params = pm.call_args.kwargs["params"]
         assert params["find[type]"] == "sgv"
 
@@ -1328,9 +1401,7 @@ class TestListHelpersFindParam:
         from cli_anything.nightscout.core import treatments
 
         with mock.patch.object(treatments.backend, "get", return_value=[]) as pm:
-            treatments.list_treatments(
-                conn={"server_url": "http://x"}, find={"carbs[$gte]": "30"}
-            )
+            treatments.list_treatments(conn={"server_url": "http://x"}, find={"carbs[$gte]": "30"})
         params = pm.call_args.kwargs["params"]
         assert params["find[carbs][$gte]"] == "30"
 
@@ -1357,8 +1428,12 @@ def _iso_at(hours_after: float) -> str:
 
 
 def _sgv_entry(hours_after: float, mgdl: float) -> dict:
-    return {"type": "sgv", "sgv": int(mgdl), "dateString": _iso_at(hours_after),
-            "date": 1740830400000 + int(hours_after * 3600_000)}
+    return {
+        "type": "sgv",
+        "sgv": int(mgdl),
+        "dateString": _iso_at(hours_after),
+        "date": 1740830400000 + int(hours_after * 3600_000),
+    }
 
 
 class TestSessionSegments:
@@ -1370,9 +1445,7 @@ class TestSessionSegments:
         self.sensors = sensors_mod
 
     def _markers(self, *hour_offsets: float) -> list[dict]:
-        return [
-            {"eventType": "Sensor Change", "created_at": _iso_at(h)} for h in hour_offsets
-        ]
+        return [{"eventType": "Sensor Change", "created_at": _iso_at(h)} for h in hour_offsets]
 
     def test_no_sessions_no_entries_is_empty(self):
         assert self.sensors.session_segments([], []) == []
@@ -1418,15 +1491,20 @@ class TestSessionSegments:
     def test_distribution_bands(self):
         sessions = self.sensors.sensor_sessions(self._markers(0))
         entries = [
-            _sgv_entry(1, 40),   # severe low (<54)
-            _sgv_entry(2, 60),   # low (54-69)
+            _sgv_entry(1, 40),  # severe low (<54)
+            _sgv_entry(2, 60),  # low (54-69)
             _sgv_entry(3, 120),  # in range (70-180)
             _sgv_entry(4, 200),  # high (181-250)
             _sgv_entry(5, 300),  # very high (>250)
         ]
         seg = self.sensors.session_segments(entries, sessions)[0]
-        assert (seg["severe_low"], seg["low"], seg["in_range"], seg["high"],
-                seg["very_high"]) == (1, 1, 1, 1, 1)
+        assert (seg["severe_low"], seg["low"], seg["in_range"], seg["high"], seg["very_high"]) == (
+            1,
+            1,
+            1,
+            1,
+            1,
+        )
         assert seg["in_range_percent"] == 20.0
 
     def test_ongoing_session_keeps_end_null(self):
@@ -1496,40 +1574,75 @@ class TestSensorsDataCommand:
             mock.patch.object(mod.treatments_mod, "list_treatments", return_value=[]) as tx_mock,
             mock.patch.object(mod.entries_mod, "list_entries", return_value=[]) as sg_mock,
             mock.patch.object(
-                sensors_mod, "sensor_sessions",
-                return_value=[{"session_index": 1, "start": "2025-03-01T12:00:00.000Z",
-                               "end": "2025-03-02T12:00:00.000Z", "duration_days": 1.0,
-                               "marker_event_type": "Sensor Change",
-                               "entries_count": None, "entries_first": None, "entries_last": None}],
+                sensors_mod,
+                "sensor_sessions",
+                return_value=[
+                    {
+                        "session_index": 1,
+                        "start": "2025-03-01T12:00:00.000Z",
+                        "end": "2025-03-02T12:00:00.000Z",
+                        "duration_days": 1.0,
+                        "marker_event_type": "Sensor Change",
+                        "entries_count": None,
+                        "entries_first": None,
+                        "entries_last": None,
+                    }
+                ],
             ),
             mock.patch.object(
-                sensors_mod, "session_segments",
+                sensors_mod,
+                "session_segments",
                 return_value=[
-                    {"session_index": 1, "session_start": "2025-03-01T12:00:00.000Z",
-                     "session_end": "2025-03-02T12:00:00.000Z", "ongoing": False,
-                     "marker_event_type": "Sensor Change", "readings": 3,
-                     "first_reading": "2025-03-01T13:00:00.000Z",
-                     "last_reading": "2025-03-01T15:00:00.000Z", "span_minutes": 120.0,
-                     "min_mgdl": 90.0, "max_mgdl": 180.0, "mean_mgdl": 130.0,
-                     "severe_low": 0, "low": 1, "in_range": 1, "high": 1, "very_high": 0,
-                     "in_range_percent": 33.3},
-                    {"session_index": 2, "session_start": "2025-03-02T12:00:00.000Z",
-                     "session_end": None, "ongoing": True,
-                     "marker_event_type": "Sensor Start", "readings": 0,
-                     "first_reading": None, "last_reading": None, "span_minutes": None,
-                     "min_mgdl": None, "max_mgdl": None, "mean_mgdl": None,
-                     "severe_low": 0, "low": 0, "in_range": 0, "high": 0, "very_high": 0,
-                     "in_range_percent": None},
+                    {
+                        "session_index": 1,
+                        "session_start": "2025-03-01T12:00:00.000Z",
+                        "session_end": "2025-03-02T12:00:00.000Z",
+                        "ongoing": False,
+                        "marker_event_type": "Sensor Change",
+                        "readings": 3,
+                        "first_reading": "2025-03-01T13:00:00.000Z",
+                        "last_reading": "2025-03-01T15:00:00.000Z",
+                        "span_minutes": 120.0,
+                        "min_mgdl": 90.0,
+                        "max_mgdl": 180.0,
+                        "mean_mgdl": 130.0,
+                        "severe_low": 0,
+                        "low": 1,
+                        "in_range": 1,
+                        "high": 1,
+                        "very_high": 0,
+                        "in_range_percent": 33.3,
+                    },
+                    {
+                        "session_index": 2,
+                        "session_start": "2025-03-02T12:00:00.000Z",
+                        "session_end": None,
+                        "ongoing": True,
+                        "marker_event_type": "Sensor Start",
+                        "readings": 0,
+                        "first_reading": None,
+                        "last_reading": None,
+                        "span_minutes": None,
+                        "min_mgdl": None,
+                        "max_mgdl": None,
+                        "mean_mgdl": None,
+                        "severe_low": 0,
+                        "low": 0,
+                        "in_range": 0,
+                        "high": 0,
+                        "very_high": 0,
+                        "in_range_percent": None,
+                    },
                 ],
             ) as seg_mock,
         ):
-            result = runner.invoke(mod.cli, full_args, standalone_mode=False,
-                                   catch_exceptions=True)
+            result = runner.invoke(mod.cli, full_args, standalone_mode=False, catch_exceptions=True)
         return result, tx_mock, sg_mock, seg_mock
 
     def test_json_output(self):
         result, tx, sg, seg = self._invoke(
-            ["sensors", "data", "--days", "7", "--min-readings", "0"])
+            ["sensors", "data", "--days", "7", "--min-readings", "0"]
+        )
         assert result.exit_code == 0, result.exception
         data = json.loads(result.output)
         assert isinstance(data, list) and len(data) == 2
@@ -1552,13 +1665,15 @@ class TestSensorsDataCommand:
 
     def test_from_to_overrides_days(self):
         result, tx, sg, seg = self._invoke(
-            ["sensors", "data", "--from", "2025-01-01", "--to", "2025-01-31"])
+            ["sensors", "data", "--from", "2025-01-01", "--to", "2025-01-31"]
+        )
         assert result.exit_code == 0, result.exception
         assert tx.call_args.kwargs["date_gte"] == "2025-01-01"
         assert sg.call_args.kwargs["date_lte"] == "2025-01-31"
 
 
 # ─── report day: one-day clinical snapshot (v2.11.0) ───────────────────────
+
 
 class TestDayWindow:
     """`day_report.day_window` — calendar-day → UTC window resolution."""
@@ -1616,16 +1731,26 @@ class TestDayReport:
 
     def _txs(self):
         return [
-            {"eventType": "Meal Bolus", "insulin": 4.2, "carbs": 42,
-             "created_at": "2026-09-22T11:50:00.000Z"},
-            {"eventType": "Meal Bolus", "insulin": 3.0, "carbs": 30,
-             "created_at": "2026-09-22T18:00:00.000Z"},
-            {"eventType": "Sensor Change",
-             "created_at": "2026-09-22T09:12:00.000Z"},
-            {"eventType": "Temp Basal", "duration": 30, "absolute": 0.9,
-             "created_at": "2026-09-22T10:00:00.000Z"},
-            {"eventType": "Note", "notes": "x",
-             "created_at": "2026-09-21T10:00:00.000Z"},
+            {
+                "eventType": "Meal Bolus",
+                "insulin": 4.2,
+                "carbs": 42,
+                "created_at": "2026-09-22T11:50:00.000Z",
+            },
+            {
+                "eventType": "Meal Bolus",
+                "insulin": 3.0,
+                "carbs": 30,
+                "created_at": "2026-09-22T18:00:00.000Z",
+            },
+            {"eventType": "Sensor Change", "created_at": "2026-09-22T09:12:00.000Z"},
+            {
+                "eventType": "Temp Basal",
+                "duration": 30,
+                "absolute": 0.9,
+                "created_at": "2026-09-22T10:00:00.000Z",
+            },
+            {"eventType": "Note", "notes": "x", "created_at": "2026-09-21T10:00:00.000Z"},
         ]
 
     def test_glucose_block(self):
@@ -1681,7 +1806,9 @@ class TestDayReport:
 
         res = dr.day_report(self._entries(), self._txs(), date="2026-09-22", tz="UTC")
         assert res["events_by_type"] == {
-            "Meal Bolus": 2, "Sensor Change": 1, "Temp Basal": 1,
+            "Meal Bolus": 2,
+            "Sensor Change": 1,
+            "Temp Basal": 1,
         }
         assert res["treatment_count"] == 4
         assert res["care_events"] == [
@@ -1700,7 +1827,10 @@ class TestDayReport:
         from cli_anything.nightscout.core import day_report as dr
 
         res = dr.day_report(
-            self._entries(), self._txs(), date="2026-09-25", tz="UTC",
+            self._entries(),
+            self._txs(),
+            date="2026-09-25",
+            tz="UTC",
             now=datetime(2026, 9, 26, tzinfo=timezone.utc),
         )
         assert res["found"] is False
@@ -1714,7 +1844,10 @@ class TestDayReport:
         from cli_anything.nightscout.core import day_report as dr
 
         res = dr.day_report(
-            self._entries(), self._txs(), date="2026-09-22", tz="UTC",
+            self._entries(),
+            self._txs(),
+            date="2026-09-22",
+            tz="UTC",
             now=datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc),
         )
         assert res["day_in_progress"] is True
@@ -1723,24 +1856,25 @@ class TestDayReport:
     def test_warnings_when_one_half_is_missing(self):
         from cli_anything.nightscout.core import day_report as dr
 
-        txs = [{"eventType": "Meal Bolus", "insulin": 1.0,
-                "created_at": "2026-09-22T11:50:00.000Z"}]
-        res = dr.day_report([], txs, date="2026-09-22", tz="UTC",
-                            now=datetime(2026, 9, 23, tzinfo=timezone.utc))
+        txs = [
+            {"eventType": "Meal Bolus", "insulin": 1.0, "created_at": "2026-09-22T11:50:00.000Z"}
+        ]
+        res = dr.day_report(
+            [], txs, date="2026-09-22", tz="UTC", now=datetime(2026, 9, 23, tzinfo=timezone.utc)
+        )
         assert res["found"] is True
         assert any("no CGM readings" in w for w in res["warnings"])
 
-        entries = [{"type": "sgv", "sgv": 100,
-                    "dateString": "2026-09-22T11:50:00.000Z"}]
-        res = dr.day_report(entries, [], date="2026-09-22", tz="UTC",
-                            now=datetime(2026, 9, 23, tzinfo=timezone.utc))
+        entries = [{"type": "sgv", "sgv": 100, "dateString": "2026-09-22T11:50:00.000Z"}]
+        res = dr.day_report(
+            entries, [], date="2026-09-22", tz="UTC", now=datetime(2026, 9, 23, tzinfo=timezone.utc)
+        )
         assert any("no treatment records" in w for w in res["warnings"])
 
     def test_mmol_display_units(self):
         from cli_anything.nightscout.core import day_report as dr
 
-        res = dr.day_report(self._entries(), self._txs(), date="2026-09-22",
-                            tz="UTC", units="mmol")
+        res = dr.day_report(self._entries(), self._txs(), date="2026-09-22", tz="UTC", units="mmol")
         assert res["glucose"]["units"] == "mmol/l"
         assert "mean_mmol" in res["glucose"]
         assert res["bands"]["units"] == "mmol/l"
@@ -1760,40 +1894,60 @@ class TestReportDayCommand:
 
         from cli_anything.nightscout import nightscout_cli as mod
 
-        entries = entries if entries is not None else [
-            {"type": "sgv", "sgv": 140, "dateString": "2026-09-22T01:00:00.000Z"},
-            {"type": "sgv", "sgv": 150, "dateString": "2026-09-22T01:05:00.000Z"},
-        ]
-        txs = txs if txs is not None else [
-            {"eventType": "Meal Bolus", "insulin": 4.2, "carbs": 42,
-             "created_at": "2026-09-22T11:50:00.000Z"},
-        ]
-        basal = basal if basal is not None else {
-            "found": True, "profile_name": "Default", "warnings": [],
-            "days": [{"date": "2026-09-22", "scheduled_units": 21.6,
-                      "delivered_units": 21.0, "temp_basal_minutes": 0.0,
-                      "suspended_minutes": 0.0, "unknown_minutes": 0.0,
-                      "partial": False}],
-        }
+        entries = (
+            entries
+            if entries is not None
+            else [
+                {"type": "sgv", "sgv": 140, "dateString": "2026-09-22T01:00:00.000Z"},
+                {"type": "sgv", "sgv": 150, "dateString": "2026-09-22T01:05:00.000Z"},
+            ]
+        )
+        txs = (
+            txs
+            if txs is not None
+            else [
+                {
+                    "eventType": "Meal Bolus",
+                    "insulin": 4.2,
+                    "carbs": 42,
+                    "created_at": "2026-09-22T11:50:00.000Z",
+                },
+            ]
+        )
+        basal = (
+            basal
+            if basal is not None
+            else {
+                "found": True,
+                "profile_name": "Default",
+                "warnings": [],
+                "days": [
+                    {
+                        "date": "2026-09-22",
+                        "scheduled_units": 21.6,
+                        "delivered_units": 21.0,
+                        "temp_basal_minutes": 0.0,
+                        "suspended_minutes": 0.0,
+                        "unknown_minutes": 0.0,
+                        "partial": False,
+                    }
+                ],
+            }
+        )
         runner = CliRunner()
-        full_args = ["--url", "https://ns.example.com",
-                     "--api-secret", "testsecret12chars"]
+        full_args = ["--url", "https://ns.example.com", "--api-secret", "testsecret12chars"]
         full_args += ["--json"] if as_json else []
         full_args += args
         with (
-            mock.patch.object(mod.entries_mod, "list_entries",
-                              return_value=entries) as sg_mock,
-            mock.patch.object(mod.treatments_mod, "list_treatments",
-                              return_value=txs) as tx_mock,
+            mock.patch.object(mod.entries_mod, "list_entries", return_value=entries) as sg_mock,
+            mock.patch.object(mod.treatments_mod, "list_treatments", return_value=txs) as tx_mock,
             mock.patch.object(mod, "_basal_report", return_value=basal) as ba_mock,
         ):
-            result = runner.invoke(mod.cli, full_args, standalone_mode=False,
-                                   catch_exceptions=True)
+            result = runner.invoke(mod.cli, full_args, standalone_mode=False, catch_exceptions=True)
         return result, sg_mock, tx_mock, ba_mock
 
     def test_json_shape(self):
-        result, sg, tx, _ = self._invoke(
-            ["report", "day", "--date", "2026-09-22", "--tz", "UTC"])
+        result, sg, tx, _ = self._invoke(["report", "day", "--date", "2026-09-22", "--tz", "UTC"])
         assert result.exit_code == 0, result.exception
         data = json.loads(result.output)
         assert data["date"] == "2026-09-22"
@@ -1808,8 +1962,8 @@ class TestReportDayCommand:
 
     def test_include_basal_adds_basal_block(self):
         result, *_ = self._invoke(
-            ["report", "day", "--date", "2026-09-22", "--tz", "UTC",
-             "--include-basal"])
+            ["report", "day", "--date", "2026-09-22", "--tz", "UTC", "--include-basal"]
+        )
         assert result.exit_code == 0, result.exception
         data = json.loads(result.output)
         assert data["basal"]["found"] is True
@@ -1830,8 +1984,8 @@ class TestReportDayCommand:
 
     def test_human_output(self):
         result, *_ = self._invoke(
-            ["report", "day", "--date", "2026-09-22", "--tz", "UTC"],
-            as_json=False)
+            ["report", "day", "--date", "2026-09-22", "--tz", "UTC"], as_json=False
+        )
         assert result.exit_code == 0, result.exception
         assert "report day 2026-09-22" in result.output
         assert "readings: 2" in result.output
@@ -1841,19 +1995,24 @@ class TestReportDayCommand:
     def test_human_empty_day(self):
         result, *_ = self._invoke(
             ["report", "day", "--date", "2026-09-22", "--tz", "UTC"],
-            as_json=False, entries=[], txs=[])
+            as_json=False,
+            entries=[],
+            txs=[],
+        )
         assert result.exit_code == 0, result.exception
         assert "no CGM readings and no treatments" in result.output
 
     def test_human_with_basal_line(self):
         result, *_ = self._invoke(
-            ["report", "day", "--date", "2026-09-22", "--tz", "UTC",
-             "--include-basal"], as_json=False)
+            ["report", "day", "--date", "2026-09-22", "--tz", "UTC", "--include-basal"],
+            as_json=False,
+        )
         assert result.exit_code == 0, result.exception
         assert "basal" in result.output
 
 
 # ─── report logbook: the multi-day treatment log (v2.12.0) ─────────────────
+
 
 class TestEventRow:
     """`logbook.event_row` — compact treatment log row."""
@@ -1861,18 +2020,20 @@ class TestEventRow:
     def test_copies_present_fields_under_logbook_names(self):
         from cli_anything.nightscout.core import logbook as lb
 
-        row = lb.event_row({
-            " eventType": None,
-            "created_at": "2026-09-22T11:50:00.000Z",
-            "eventType": "Meal Bolus",
-            "insulin": 4.2,
-            "carbs": 42,
-            "glucose": 115,
-            "duration": 30,
-            "rate": 0.9,
-            "percent": 50,
-            "notes": "post-lunch",
-        })
+        row = lb.event_row(
+            {
+                " eventType": None,
+                "created_at": "2026-09-22T11:50:00.000Z",
+                "eventType": "Meal Bolus",
+                "insulin": 4.2,
+                "carbs": 42,
+                "glucose": 115,
+                "duration": 30,
+                "rate": 0.9,
+                "percent": 50,
+                "notes": "post-lunch",
+            }
+        )
         assert row["time"] == "11:50"
         assert row["event_type"] == "Meal Bolus"
         assert row["insulin"] == 4.2
@@ -1887,11 +2048,13 @@ class TestEventRow:
         """A bolus without carbs has no carbs_g key — a missing field is not a zero."""
         from cli_anything.nightscout.core import logbook as lb
 
-        row = lb.event_row({
-            "created_at": "2026-09-22T11:50:00.000Z",
-            "eventType": "Correction Bolus",
-            "insulin": 1.1,
-        })
+        row = lb.event_row(
+            {
+                "created_at": "2026-09-22T11:50:00.000Z",
+                "eventType": "Correction Bolus",
+                "insulin": 1.1,
+            }
+        )
         assert "carbs_g" not in row
         assert "bg_mgdl" not in row
         assert "duration_minutes" not in row
@@ -1931,18 +2094,31 @@ class TestBuildLogbook:
 
     def _txs(self):
         return [
-            {"eventType": "Meal Bolus", "insulin": 4.2, "carbs": 42,
-             "created_at": "2026-09-22T11:50:00.000Z"},
-            {"eventType": "Meal Bolus", "insulin": 3.0, "carbs": 30,
-             "created_at": "2026-09-22T18:00:00.000Z"},
-            {"eventType": "Temp Basal", "duration": 30, "absolute": 0.9,
-             "created_at": "2026-09-22T10:00:00.000Z"},
-            {"eventType": "Sensor Change",
-             "created_at": "2026-09-22T09:12:00.000Z"},
-            {"eventType": "Note", "notes": "holiday",
-             "created_at": "2026-09-23T09:00:00.000Z"},
-            {"eventType": "Correction Bolus", "insulin": 1.1,
-             "created_at": "2026-09-24T08:00:00.000Z"},
+            {
+                "eventType": "Meal Bolus",
+                "insulin": 4.2,
+                "carbs": 42,
+                "created_at": "2026-09-22T11:50:00.000Z",
+            },
+            {
+                "eventType": "Meal Bolus",
+                "insulin": 3.0,
+                "carbs": 30,
+                "created_at": "2026-09-22T18:00:00.000Z",
+            },
+            {
+                "eventType": "Temp Basal",
+                "duration": 30,
+                "absolute": 0.9,
+                "created_at": "2026-09-22T10:00:00.000Z",
+            },
+            {"eventType": "Sensor Change", "created_at": "2026-09-22T09:12:00.000Z"},
+            {"eventType": "Note", "notes": "holiday", "created_at": "2026-09-23T09:00:00.000Z"},
+            {
+                "eventType": "Correction Bolus",
+                "insulin": 1.1,
+                "created_at": "2026-09-24T08:00:00.000Z",
+            },
         ]
 
     def _build(self, from_date="2026-09-22", to_date="2026-09-24", **kw):
@@ -1950,15 +2126,19 @@ class TestBuildLogbook:
 
         now = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
         return lb.build_logbook(
-            self._entries(), self._txs(),
-            from_date=from_date, to_date=to_date,
-            now=now, tz="UTC", **kw)
+            self._entries(),
+            self._txs(),
+            from_date=from_date,
+            to_date=to_date,
+            now=now,
+            tz="UTC",
+            **kw,
+        )
 
     def test_day_list_is_inclusive_and_sliced(self):
         res = self._build()
         assert res["day_count"] == 3
-        assert [d["date"] for d in res["days"]] == [
-            "2026-09-22", "2026-09-23", "2026-09-24"]
+        assert [d["date"] for d in res["days"]] == ["2026-09-22", "2026-09-23", "2026-09-24"]
         # the 09-21 23:59 reading belongs to the previous day
         assert res["days"][0]["glucose"]["count"] == 7
         assert res["days"][1]["glucose"]["count"] == 1
@@ -1974,8 +2154,7 @@ class TestBuildLogbook:
 
     def test_events_omit_missing_not_zero(self):
         fix = self._build()
-        corr = [e for e in fix["days"][2]["events"]
-                if e["event_type"] == "Correction Bolus"][0]
+        corr = [e for e in fix["days"][2]["events"] if e["event_type"] == "Correction Bolus"][0]
         assert corr["insulin"] == 1.1
         assert "carbs_g" not in corr
 
@@ -2006,9 +2185,8 @@ class TestBuildLogbook:
 
         now = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
         res = lb.build_logbook(
-            self._entries(), [],
-            from_date="2026-09-22", to_date="2026-09-22",
-            tz="UTC", now=now)
+            self._entries(), [], from_date="2026-09-22", to_date="2026-09-22", tz="UTC", now=now
+        )
         assert any("no treatment records" in w for w in res["warnings"])
 
     def test_to_before_from_raises(self):
@@ -2024,9 +2202,8 @@ class TestBuildLogbook:
 
         now = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
         res = lb.build_logbook(
-            [], self._txs(),
-            from_date="2026-09-22", to_date="2026-09-22",
-            tz="UTC", now=now)
+            [], self._txs(), from_date="2026-09-22", to_date="2026-09-22", tz="UTC", now=now
+        )
         assert any("no CGM readings" in w for w in res["warnings"])
 
     def test_day_in_progress_flag(self):
@@ -2034,9 +2211,13 @@ class TestBuildLogbook:
 
         now = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
         res = lb.build_logbook(
-            self._entries(), self._txs(),
-            from_date="2026-09-22", to_date="2026-09-22",
-            tz="UTC", now=now)
+            self._entries(),
+            self._txs(),
+            from_date="2026-09-22",
+            to_date="2026-09-22",
+            tz="UTC",
+            now=now,
+        )
         assert res["days"][0]["day_in_progress"] is True
 
     def test_custom_thresholds_feed_bands_and_hypos(self):
@@ -2059,9 +2240,13 @@ class TestBuildLogbook:
         # 2026-09-21T23:59Z is 2026-09-22 00:59 in Europe/London (BST, UTC+1)
         now = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
         res = lb.build_logbook(
-            self._entries(), self._txs(),
-            from_date="2026-09-22", to_date="2026-09-22",
-            tz="Europe/London", now=now)
+            self._entries(),
+            self._txs(),
+            from_date="2026-09-22",
+            to_date="2026-09-22",
+            tz="Europe/London",
+            now=now,
+        )
         # the 09-21T23:59Z reading is inside London-day 22
         assert res["days"][0]["glucose"]["count"] == 8
 
@@ -2074,33 +2259,41 @@ class TestReportLogbookCommand:
 
         from cli_anything.nightscout import nightscout_cli as mod
 
-        entries = entries if entries is not None else [
-            {"type": "sgv", "sgv": 140, "dateString": "2026-09-22T01:00:00.000Z"},
-            {"type": "sgv", "sgv": 150, "dateString": "2026-09-22T01:05:00.000Z"},
-        ]
-        txs = txs if txs is not None else [
-            {"eventType": "Meal Bolus", "insulin": 4.2, "carbs": 42,
-             "created_at": "2026-09-22T11:50:00.000Z"},
-        ]
+        entries = (
+            entries
+            if entries is not None
+            else [
+                {"type": "sgv", "sgv": 140, "dateString": "2026-09-22T01:00:00.000Z"},
+                {"type": "sgv", "sgv": 150, "dateString": "2026-09-22T01:05:00.000Z"},
+            ]
+        )
+        txs = (
+            txs
+            if txs is not None
+            else [
+                {
+                    "eventType": "Meal Bolus",
+                    "insulin": 4.2,
+                    "carbs": 42,
+                    "created_at": "2026-09-22T11:50:00.000Z",
+                },
+            ]
+        )
         runner = CliRunner()
-        full_args = ["--url", "https://ns.example.com",
-                     "--api-secret", "testsecret12chars"]
+        full_args = ["--url", "https://ns.example.com", "--api-secret", "testsecret12chars"]
         full_args += ["--json"] if as_json else []
         full_args += args
         with (
-            mock.patch.object(mod.entries_mod, "list_entries",
-                              return_value=entries) as sg_mock,
-            mock.patch.object(mod.treatments_mod, "list_treatments",
-                              return_value=txs) as tx_mock,
+            mock.patch.object(mod.entries_mod, "list_entries", return_value=entries) as sg_mock,
+            mock.patch.object(mod.treatments_mod, "list_treatments", return_value=txs) as tx_mock,
         ):
-            result = runner.invoke(mod.cli, full_args, standalone_mode=False,
-                                   catch_exceptions=True)
+            result = runner.invoke(mod.cli, full_args, standalone_mode=False, catch_exceptions=True)
         return result, sg_mock, tx_mock
 
     def test_json_shape_with_explicit_range(self):
-        result, sg, tx = self._invoke([
-            "report", "logbook", "--from", "2026-09-22",
-            "--to", "2026-09-24", "--tz", "UTC"])
+        result, sg, tx = self._invoke(
+            ["report", "logbook", "--from", "2026-09-22", "--to", "2026-09-24", "--tz", "UTC"]
+        )
         assert result.exit_code == 0, result.exception
         data = json.loads(result.output)
         assert data["from_date"] == "2026-09-22"
@@ -2118,8 +2311,7 @@ class TestReportLogbookCommand:
         assert tx.call_args.kwargs["date_gte"] == "2026-09-22T00:00:00.000Z"
 
     def test_default_window_is_days_ending_today(self):
-        result, sg, *_ = self._invoke(["report", "logbook", "--days", "3",
-                                       "--tz", "UTC"])
+        result, sg, *_ = self._invoke(["report", "logbook", "--days", "3", "--tz", "UTC"])
         assert result.exit_code == 0, result.exception
         data = json.loads(result.output)
         expected = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -2127,8 +2319,9 @@ class TestReportLogbookCommand:
         assert data["day_count"] == 3
 
     def test_days_ending_at_explicit_to(self):
-        result, tg, *_ = self._invoke(["report", "logbook", "--days", "5",
-                                       "--to", "2026-09-24", "--tz", "UTC"])
+        result, tg, *_ = self._invoke(
+            ["report", "logbook", "--days", "5", "--to", "2026-09-24", "--tz", "UTC"]
+        )
         assert result.exit_code == 0, result.exception
         data = json.loads(result.output)
         assert data["from_date"] == "2026-09-20"
@@ -2141,8 +2334,9 @@ class TestReportLogbookCommand:
         assert "invalid date" in (result.output + str(result.exception))
 
     def test_to_before_from_fails_cleanly(self):
-        result, *_ = self._invoke(["report", "logbook", "--from", "2026-09-24",
-                                   "--to", "2026-09-22"])
+        result, *_ = self._invoke(
+            ["report", "logbook", "--from", "2026-09-24", "--to", "2026-09-22"]
+        )
         assert result.exit_code != 0
         assert "before from_date" in (result.output + str(result.exception))
 
@@ -2152,9 +2346,9 @@ class TestReportLogbookCommand:
 
     def test_human_output_with_events_and_threshold_note(self):
         result, *_ = self._invoke(
-            ["report", "logbook", "--from", "2026-09-22", "--to", "2026-09-22",
-             "--tz", "UTC"],
-            as_json=False)
+            ["report", "logbook", "--from", "2026-09-22", "--to", "2026-09-22", "--tz", "UTC"],
+            as_json=False,
+        )
         assert result.exit_code == 0, result.exception
         assert "report logbook 2026-09-22" in result.output
         assert "Meal Bolus" in result.output
@@ -2164,22 +2358,39 @@ class TestReportLogbookCommand:
 
     def test_human_empty_window(self):
         result, *_ = self._invoke(
-            ["report", "logbook", "--from", "2026-09-22", "--to", "2026-09-22",
-             "--tz", "UTC"],
-            as_json=False, entries=[], txs=[])
+            ["report", "logbook", "--from", "2026-09-22", "--to", "2026-09-22", "--tz", "UTC"],
+            as_json=False,
+            entries=[],
+            txs=[],
+        )
         assert result.exit_code == 0, result.exception
         assert "no CGM readings and no treatments" in result.output
 
     def test_human_truncates_long_event_lists(self):
         txs = [
-            {"eventType": "Note", "notes": f"note-{i}",
-             "created_at": f"2026-09-22T{i:02d}:00:00.000Z"}
+            {
+                "eventType": "Note",
+                "notes": f"note-{i}",
+                "created_at": f"2026-09-22T{i:02d}:00:00.000Z",
+            }
             for i in range(5)
         ]
         result, *_ = self._invoke(
-            ["report", "logbook", "--from", "2026-09-22", "--to", "2026-09-22",
-             "--tz", "UTC", "--limit", "2"],
-            as_json=False, txs=txs)
+            [
+                "report",
+                "logbook",
+                "--from",
+                "2026-09-22",
+                "--to",
+                "2026-09-22",
+                "--tz",
+                "UTC",
+                "--limit",
+                "2",
+            ],
+            as_json=False,
+            txs=txs,
+        )
         assert result.exit_code == 0, result.exception
         assert "and 3 more events today" in result.output
 
@@ -2195,8 +2406,9 @@ class TestDistributionCore:
         out = []
         for i, v in enumerate(values):
             ts = base + timedelta(hours=step_h * i)
-            out.append({"type": "sgv", "sgv": v,
-                        "dateString": ts.strftime("%Y-%m-%dT%H:%M:%S.000Z")})
+            out.append(
+                {"type": "sgv", "sgv": v, "dateString": ts.strftime("%Y-%m-%dT%H:%M:%S.000Z")}
+            )
         return out
 
     def test_percentile_helper_exact_and_interpolated(self):
@@ -2279,7 +2491,9 @@ class TestDistributionCore:
         from cli_anything.nightscout.core import report as rep
 
         res = rep.distribution(
-            self._entries([50, 150, 350]), units="mg/dl", input_units="mg/dl",
+            self._entries([50, 150, 350]),
+            units="mg/dl",
+            input_units="mg/dl",
             bin_width_mgdl=100.0,
         )
         # 0-100 / 100-200 / 200-300 / 300-400 / (no >=400 bins beyond the edge set)
@@ -2311,8 +2525,7 @@ class TestDistributionCore:
     def test_custom_low_high_recompute_ranges(self):
         from cli_anything.nightscout.core import report as rep
 
-        res = rep.distribution(self._entries([50, 100, 140, 200]),
-                               units="mg/dl", low=110, high=130)
+        res = rep.distribution(self._entries([50, 100, 140, 200]), units="mg/dl", low=110, high=130)
         r = res["ranges"]
         assert r["low_threshold"] == 110 and r["high_threshold"] == 130
         assert r["tir_pct"] == 0.0
@@ -2322,8 +2535,9 @@ class TestDistributionCore:
     def test_negative_reading_is_counts_as_outlier_below(self):
         from cli_anything.nightscout.core import report as rep
 
-        entries = self._entries([100]) + [{"type": "sgv", "sgv": -5,
-                                          "dateString": "2026-09-22T09:00:00.000Z"}]
+        entries = self._entries([100]) + [
+            {"type": "sgv", "sgv": -5, "dateString": "2026-09-22T09:00:00.000Z"}
+        ]
         res = rep.distribution(entries, units="mg/dl", input_units="mg/dl")
         assert res["outliers"]["below"] == 1
         assert "found" in res and res["found"] is True
@@ -2354,22 +2568,22 @@ class TestReportDistributionCommand:
 
         from cli_anything.nightscout import nightscout_cli as mod
 
-        entries = entries if entries is not None else [
-            {"type": "sgv", "sgv": v,
-             "dateString": f"2026-09-22T{i:02d}:00:00.000Z"}
-            for i, v in enumerate([50, 60, 70, 80, 90, 100, 110, 120, 130, 140])
-        ]
+        entries = (
+            entries
+            if entries is not None
+            else [
+                {"type": "sgv", "sgv": v, "dateString": f"2026-09-22T{i:02d}:00:00.000Z"}
+                for i, v in enumerate([50, 60, 70, 80, 90, 100, 110, 120, 130, 140])
+            ]
+        )
         runner = CliRunner()
-        full_args = ["--url", "https://ns.example.com",
-                     "--api-secret", "testsecret12chars"]
+        full_args = ["--url", "https://ns.example.com", "--api-secret", "testsecret12chars"]
         full_args += ["--json"] if as_json else []
         full_args += args
         with (
-            mock.patch.object(mod.entries_mod, "list_entries",
-                              return_value=entries) as sg_mock,
+            mock.patch.object(mod.entries_mod, "list_entries", return_value=entries) as sg_mock,
         ):
-            result = runner.invoke(mod.cli, full_args, standalone_mode=False,
-                                   catch_exceptions=True)
+            result = runner.invoke(mod.cli, full_args, standalone_mode=False, catch_exceptions=True)
         return result, sg_mock
 
     def test_json_shape_default_window(self):
@@ -2383,16 +2597,16 @@ class TestReportDistributionCommand:
         assert sum(b["count"] for b in data["bins"]) == 10
 
     def test_from_to_window_plumbs_into_fetch(self):
-        result, sg = self._invoke(["report", "distribution", "--from", "2026-09-22",
-                                   "--to", "2026-09-23"])
+        result, sg = self._invoke(
+            ["report", "distribution", "--from", "2026-09-22", "--to", "2026-09-23"]
+        )
         assert result.exit_code == 0, result.exception
         assert sg.call_args.kwargs["date_gte"] == "2026-09-22T00:00:00.000Z"
         assert sg.call_args.kwargs["date_lte"] == "2026-09-23T00:00:00.000Z"
         assert sg.call_args.kwargs["type_"] == "sgv"
 
     def test_low_high_plumb_into_ranges(self):
-        result, _ = self._invoke(["report", "distribution", "--low", "100",
-                                  "--high", "120"])
+        result, _ = self._invoke(["report", "distribution", "--low", "100", "--high", "120"])
         assert result.exit_code == 0, result.exception
         data = json.loads(result.output)
         assert data["low_threshold"] == 100
@@ -2421,8 +2635,7 @@ class TestReportDistributionCommand:
         assert data["count"] == 0
 
     def test_human_output_shows_percentiles_and_bins(self):
-        result, _ = self._invoke(
-            ["report", "distribution", "--days", "1"], as_json=False)
+        result, _ = self._invoke(["report", "distribution", "--days", "1"], as_json=False)
         assert result.exit_code == 0, result.exception
         assert "readings: 10" in result.output
         assert "p50 95" in result.output
@@ -2432,7 +2645,8 @@ class TestReportDistributionCommand:
 
     def test_human_empty_window_says_so(self):
         result, _ = self._invoke(
-            ["report", "distribution", "--days", "1"], as_json=False, entries=[])
+            ["report", "distribution", "--days", "1"], as_json=False, entries=[]
+        )
         assert result.exit_code == 0, result.exception
         assert "no sgv readings" in result.output
 
@@ -2497,7 +2711,9 @@ class TestIntradayGridCore:
 
         res = rep.intraday_grid(
             [self._e("2026-10-14T05:00:00.000Z", 100)],
-            units="mg/dl", input_units="mg/dl", tz="Asia/Tokyo",
+            units="mg/dl",
+            input_units="mg/dl",
+            tz="Asia/Tokyo",
         )
         d = res["days"][0]
         assert d["date"] == "2026-10-14"
@@ -2509,7 +2725,9 @@ class TestIntradayGridCore:
 
         res = rep.intraday_grid(
             [self._e("2026-09-30T15:30:00.000Z", 100)],
-            units="mg/dl", input_units="mg/dl", tz="Asia/Tokyo",
+            units="mg/dl",
+            input_units="mg/dl",
+            tz="Asia/Tokyo",
         )
         assert [d["date"] for d in res["days"]] == ["2026-10-01"]
         assert res["days"][0]["cells"][0]["hour"] == 0
@@ -2538,9 +2756,7 @@ class TestIntradayGridCore:
             self._e("2026-10-14T05:30:00.000Z", 120),
             self._e("2026-10-14T05:40:00.000Z", 200),
         ]
-        res = rep.intraday_grid(
-            entries, units="mg/dl", input_units="mg/dl", low=100, high=180
-        )
+        res = rep.intraday_grid(entries, units="mg/dl", input_units="mg/dl", low=100, high=180)
         assert res["low_threshold"] == 100.0
         assert res["high_threshold"] == 180.0
         cell = res["days"][0]["cells"][0]
@@ -2565,8 +2781,554 @@ class TestIntradayGridCore:
     def test_only_untimed_entries_is_found_false(self):
         from cli_anything.nightscout.core import report as rep
 
-        res = rep.intraday_grid(
-            [{"type": "sgv", "sgv": 100}], units="mg/dl", input_units="mg/dl"
-        )
+        res = rep.intraday_grid([{"type": "sgv", "sgv": 100}], units="mg/dl", input_units="mg/dl")
         assert res["found"] is False
         assert res["days"] == []
+
+
+# ─── core/sensors — revoke-last-change (v2.15.0) ─────────────────────────────
+
+
+class TestFindLastHabridgePair:
+    """`find_last_habridge_pair` — pure decision logic, no network."""
+
+    def _tx(self, event, at, entered_by="ha-bridge", _id="a" * 24):
+        return {"eventType": event, "enteredBy": entered_by, "created_at": at, "_id": _id}
+
+    def test_found_eligible_pair(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+        txs = [
+            self._tx("Sensor Stop", "2026-10-20T11:00:00.000Z"),
+            self._tx("Sensor Start", "2026-10-20T11:05:00.000Z", _id="b" * 24),
+        ]
+        d = sensors_mod.find_last_habridge_pair(txs, now=now)
+        assert d["found"] is True
+        assert d["status"] == "pair"
+        assert d["stop"]["_id"] == "a" * 24
+        assert d["start"]["_id"] == "b" * 24
+        assert d["pair_gap_minutes"] == 5.0
+        assert d["pair_age_hours"] == 0.92
+
+    def test_most_recent_pair_wins(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+        txs = [
+            self._tx("Sensor Stop", "2026-10-18T11:00:00.000Z", _id="old" + "1" * 20),
+            self._tx("Sensor Start", "2026-10-18T11:05:00.000Z"),
+            self._tx("Sensor Stop", "2026-10-20T11:00:00.000Z", _id="new" + "1" * 20),
+            self._tx("Sensor Start", "2026-10-20T11:05:00.000Z"),
+        ]
+        d = sensors_mod.find_last_habridge_pair(txs, now=now)
+        assert d["found"] is True
+        assert d["stop"]["_id"] == "new" + "1" * 20
+
+    def test_manual_events_ignored(self):
+        """Manually-entered sensor events (no ha-bridge prefix) are never candidates."""
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+        txs = [
+            self._tx("Sensor Stop", "2026-10-20T11:00:00.000Z", entered_by="manual"),
+            self._tx("Sensor Start", "2026-10-20T11:05:00.000Z", entered_by="Jon"),
+        ]
+        d = sensors_mod.find_last_habridge_pair(txs, now=now)
+        assert d["found"] is False
+        assert d["status"] == "none"
+        assert d["reason"]
+
+    def test_empty_input_is_none_not_crash(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        d = sensors_mod.find_last_habridge_pair([])
+        assert d["found"] is False
+        assert d["status"] == "none"
+        assert d["stop"] is None and d["start"] is None
+
+    def test_far_apart_records_are_not_a_pair(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+        txs = [
+            self._tx("Sensor Stop", "2026-10-20T09:00:00.000Z"),
+            self._tx("Sensor Start", "2026-10-20T11:55:00.000Z"),
+        ]
+        d = sensors_mod.find_last_habridge_pair(txs, now=now, max_pair_gap_minutes=30)
+        assert d["found"] is False
+        assert d["status"] == "unpaired"
+        assert d["pair_gap_minutes"] == 175.0
+
+    def test_stale_pair_refused(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        now = datetime(2026, 10, 30, 12, 0, tzinfo=timezone.utc)
+        txs = [
+            self._tx("Sensor Stop", "2026-10-20T11:00:00.000Z"),
+            self._tx("Sensor Start", "2026-10-20T11:05:00.000Z"),
+        ]
+        d = sensors_mod.find_last_habridge_pair(txs, now=now)
+        assert d["found"] is False
+        assert d["status"] == "too_stale"
+        # even at generous gap, age kills it
+        d2 = sensors_mod.find_last_habridge_pair(txs, now=now, max_age_hours=48.0)
+        assert d2["status"] == "too_stale"
+
+    def test_custom_prefix_and_gap(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+        txs = [
+            {
+                "eventType": "Sensor Stop",
+                "enteredBy": "my-bridge",
+                "created_at": "2026-10-20T11:00:00.000Z",
+                "_id": "c" * 24,
+            },
+            {
+                "eventType": "Sensor Start",
+                "enteredBy": "my-bridge",
+                "created_at": "2026-10-20T11:25:00.000Z",
+                "_id": "d" * 24,
+            },
+        ]
+        ok = sensors_mod.find_last_habridge_pair(
+            txs, now=now, entered_by_prefix="my-bridge", max_pair_gap_minutes=30
+        )
+        assert ok["found"] is True
+        refused = sensors_mod.find_last_habridge_pair(
+            txs, now=now, entered_by_prefix="my-bridge", max_pair_gap_minutes=10
+        )
+        assert refused["status"] == "unpaired"
+
+    def test_naive_timestamps_are_tolerated(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+        txs = [
+            {
+                "eventType": "Sensor Stop",
+                "enteredBy": "ha-bridge",
+                "created_at": "2026-10-20T11:00:00",
+                "_id": "e" * 24,
+            },
+            {
+                "eventType": "Sensor Start",
+                "enteredBy": "ha-bridge",
+                "created_at": "2026-10-20T11:05:00",
+                "_id": "f" * 24,
+            },
+        ]
+        d = sensors_mod.find_last_habridge_pair(txs, now=now)
+        assert d["found"] is True
+
+
+class TestPlanAndExecuteRevoke:
+    """`plan_revoke_last_change` + `execute_revoke` — HTTP layer mocked."""
+
+    def _iso(self, hours_ago: float) -> str:
+        now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+        return (now - timedelta(hours=hours_ago)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    def test_plan_fetches_window_and_finds_pair(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        captured = {}
+        fixed_now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+
+        def fake_list(**kwargs):
+            captured.update(kwargs)
+            return [
+                {
+                    "eventType": "Sensor Stop",
+                    "enteredBy": "ha-bridge",
+                    "created_at": "2026-10-20T11:00:00.000Z",
+                    "_id": "a" * 24,
+                },
+                {
+                    "eventType": "Sensor Start",
+                    "enteredBy": "ha-bridge",
+                    "created_at": "2026-10-20T11:05:00.000Z",
+                    "_id": "b" * 24,
+                },
+            ]
+
+        with mock.patch.object(sensors_mod.treatments_mod, "list_treatments", fake_list):
+            plan = sensors_mod.plan_revoke_last_change(
+                conn={"server_url": "https://x"},
+                max_age_hours=24.0,
+                now=fixed_now,
+            )
+        assert captured["count"] == sensors_mod._PAIR_SCAN_COUNT
+        assert captured["date_gte"] and captured["date_lte"]
+        assert plan["found"] is True
+        assert plan["window_from"] and plan["window_to"]
+        assert plan["scanned"] == 2
+
+    def test_plan_no_events_found_false(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        with mock.patch.object(sensors_mod.treatments_mod, "list_treatments", return_value=[]):
+            plan = sensors_mod.plan_revoke_last_change(conn={"server_url": "https://x"})
+        assert plan["found"] is False
+        assert plan["status"] == "none"
+        assert plan["reason"]
+
+    def test_execute_deletes_both_records(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        deleted = []
+
+        def fake_delete(spec, *, conn):
+            deleted.append(spec)
+            return {"deleted": 1}
+
+        plan = {
+            "found": True,
+            "status": "pair",
+            "stop": {"_id": "stop1", "created_at": "t1"},
+            "start": {"_id": "start1", "created_at": "t2"},
+        }
+        with mock.patch.object(sensors_mod.treatments_mod, "delete_treatment", fake_delete):
+            res = sensors_mod.execute_revoke(plan, conn={"server_url": "https://x"})
+        assert deleted == ["stop1", "start1"]
+        assert res["found"] is True
+        assert [r["_id"] for r in res["revoked"]] == ["stop1", "start1"]
+        assert res["failed"] == []
+
+    def test_execute_skips_when_plan_not_found(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        def boom(*_a, **_k):
+            raise AssertionError("delete called on a refused plan")
+
+        with mock.patch.object(sensors_mod.treatments_mod, "delete_treatment", boom):
+            res = sensors_mod.execute_revoke(
+                {"found": False, "status": "unpaired"}, conn={"server_url": "https://x"}
+            )
+        assert res["revoked"] == []
+        assert res["reason"] == "unpaired" or res["status"] == "unpaired"
+
+    def test_execute_reports_partial_failure(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        def fake_delete(spec, *, conn):
+            if spec == "stop1":
+                raise RuntimeError("503")
+            return {}
+
+        plan = {
+            "found": True,
+            "status": "pair",
+            "stop": {"_id": "stop1"},
+            "start": {"_id": "start1"},
+        }
+        with mock.patch.object(sensors_mod.treatments_mod, "delete_treatment", fake_delete):
+            res = sensors_mod.execute_revoke(plan, conn={"server_url": "https://x"})
+        assert res["revoked"] == [{"label": "Sensor Start", "_id": "start1", "created_at": None}]
+        assert res["failed"][0]["_id"] == "stop1"
+        assert "503" in res["failed"][0]["error"]
+
+    def test_revoke_last_sensor_change_dry_run_touches_nothing(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        def fake_list(**kwargs):
+            return [
+                {
+                    "eventType": "Sensor Stop",
+                    "enteredBy": "ha-bridge",
+                    "created_at": "2026-10-20T11:00:00.000Z",
+                    "_id": "a" * 24,
+                },
+                {
+                    "eventType": "Sensor Start",
+                    "enteredBy": "ha-bridge",
+                    "created_at": "2026-10-20T11:05:00.000Z",
+                    "_id": "b" * 24,
+                },
+            ]
+
+        def boom(*_a, **_k):
+            raise AssertionError("delete called during dry-run")
+
+        with (
+            mock.patch.object(sensors_mod.treatments_mod, "list_treatments", fake_list),
+            mock.patch.object(sensors_mod.treatments_mod, "delete_treatment", boom),
+        ):
+            res = sensors_mod.revoke_last_sensor_change(
+                conn={"server_url": "https://x"},
+                dry_run=True,
+                now=datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc),
+            )
+        assert res["dry_run"] is True
+        assert sorted(res["would_delete"]) == sorted(["a" * 24, "b" * 24])
+        assert res["found"] is True
+
+    def test_revoke_last_sensor_change_refused_leaves_records(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        def boom(*_a, **_k):
+            raise AssertionError("delete called on a refused plan")
+
+        with (
+            mock.patch.object(sensors_mod.treatments_mod, "list_treatments", return_value=[]),
+            mock.patch.object(sensors_mod.treatments_mod, "delete_treatment", boom),
+        ):
+            res = sensors_mod.revoke_last_sensor_change(conn={"server_url": "https://x"})
+        assert res["found"] is False
+        assert res["status"] == "none"
+
+
+class TestSensorsRevokeLastChangeCommand:
+    """`sensors revoke-last-change` — CLI wiring over mocked core (CliRunner)."""
+
+    def _invoke(self, args, as_json=True):
+        from click.testing import CliRunner
+
+        from cli_anything.nightscout import nightscout_cli as mod
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        runner = CliRunner()
+        full_args = ["--url", "https://ns.example.com", "--api-secret", "testsecret12chars"]
+        full_args += ["--json"] if as_json else []
+        full_args += args
+        plan = {
+            "found": True,
+            "status": "pair",
+            "reason": None,
+            "stop": {
+                "_id": "a" * 24,
+                "eventType": "Sensor Stop",
+                "enteredBy": "ha-bridge",
+                "created_at": "2026-10-20T11:00:00.000Z",
+            },
+            "start": {
+                "_id": "b" * 24,
+                "eventType": "Sensor Start",
+                "enteredBy": "ha-bridge",
+                "created_at": "2026-10-20T11:05:00.000Z",
+            },
+            "pair_gap_minutes": 5.0,
+            "pair_age_hours": 1.0,
+            "window_from": "2026-10-20T00:00:00.000Z",
+            "window_to": "2026-10-20T12:00:00.000Z",
+            "scanned": 3,
+        }
+        with (
+            mock.patch.object(
+                sensors_mod, "plan_revoke_last_change", return_value=dict(plan)
+            ) as plan_mock,
+            mock.patch.object(
+                sensors_mod,
+                "execute_revoke",
+                return_value={
+                    "found": True,
+                    "status": "pair",
+                    "revoked": [
+                        {"label": "Sensor Stop", "_id": "a" * 24, "created_at": "t1"},
+                        {"label": "Sensor Start", "_id": "b" * 24, "created_at": "t2"},
+                    ],
+                    "failed": [],
+                },
+            ) as exec_mock,
+        ):
+            result = runner.invoke(mod.cli, full_args, standalone_mode=False, catch_exceptions=True)
+        return result, plan_mock, exec_mock
+
+    def test_json_flow_with_yes(self):
+        result, plan_mock, exec_mock = self._invoke(["sensors", "revoke-last-change", "--yes"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["found"] is True
+        assert [r["_id"] for r in data["revoked"]] == ["a" * 24, "b" * 24]
+        assert plan_mock.call_args.kwargs["max_age_hours"] == 24.0
+        assert exec_mock.call_args is not None
+
+    def test_options_propagate(self):
+        result, plan_mock, _ = self._invoke(
+            [
+                "sensors",
+                "revoke-last-change",
+                "--yes",
+                "--max-age-hours",
+                "6",
+                "--max-pair-gap",
+                "10",
+                "--entered-by-prefix",
+                "my-bridge",
+            ]
+        )
+        assert result.exit_code == 0, result.exception
+        assert plan_mock.call_args.kwargs["max_age_hours"] == 6.0
+        assert plan_mock.call_args.kwargs["max_pair_gap_minutes"] == 10
+        assert plan_mock.call_args.kwargs["entered_by_prefix"] == "my-bridge"
+
+    def test_without_yes_aborts_on_noninteractive_stdin(self):
+        result, _, exec_mock = self._invoke(["sensors", "revoke-last-change"])
+        assert result.exit_code != 0
+        assert exec_mock.call_args is None
+
+    def test_nothing_to_revoke_emits_plan(self):
+        from click.testing import CliRunner
+
+        from cli_anything.nightscout import nightscout_cli as mod
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        runner = CliRunner()
+        with mock.patch.object(
+            sensors_mod,
+            "plan_revoke_last_change",
+            return_value={
+                "found": False,
+                "status": "none",
+                "reason": "no ha-bridge Stop/Start events",
+                "stop": None,
+                "start": None,
+            },
+        ) as plan_mock:
+            result = runner.invoke(
+                mod.cli,
+                [
+                    "--url",
+                    "https://ns.example.com",
+                    "--json",
+                    "sensors",
+                    "revoke-last-change",
+                    "--yes",
+                ],
+                standalone_mode=False,
+                catch_exceptions=True,
+            )
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["found"] is False
+        assert "no ha-bridge" in data["reason"]
+
+    def test_dry_run_sends_nothing(self):
+        from click.testing import CliRunner
+
+        from cli_anything.nightscout import nightscout_cli as mod
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        runner = CliRunner()
+
+        def boom(*_a, **_k):
+            raise AssertionError("network call made during --dry-run")
+
+        with (
+            mock.patch.object(sensors_mod, "plan_revoke_last_change", boom),
+            mock.patch.object(sensors_mod, "execute_revoke", boom),
+        ):
+            result = runner.invoke(
+                mod.cli,
+                [
+                    "--url",
+                    "https://ns.example.com",
+                    "--json",
+                    "--dry-run",
+                    "sensors",
+                    "revoke-last-change",
+                ],
+                standalone_mode=False,
+                catch_exceptions=True,
+            )
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output) if result.output.strip() else {}
+        assert data.get("dry_run") is True
+        assert "DELETE" in data.get("would", "")
+
+    def test_human_flow(self):
+        result, *_ = self._invoke(["sensors", "revoke-last-change", "--yes"], as_json=False)
+        assert result.exit_code == 0, result.exception
+        assert "revoked 2 record(s)" in result.output
+        assert "a" * 24 in result.output
+
+
+class TestSensorsRevokeEdgeCases:
+    """Remaining branches: unparseable timestamps, missing ids, full wrapper."""
+
+    def test_unparseable_timestamps_refused(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+        txs = [
+            {
+                "eventType": "Sensor Stop",
+                "enteredBy": "ha-bridge",
+                "created_at": "not-a-timestamp",
+                "_id": "a" * 24,
+            },
+            {
+                "eventType": "Sensor Start",
+                "enteredBy": "ha-bridge",
+                "created_at": "also-not-a-timestamp",
+                "_id": "b" * 24,
+            },
+        ]
+        d = sensors_mod.find_last_habridge_pair(txs, now=now)
+        assert d["found"] is False
+        assert d["status"] == "unparseable"
+        assert " refusing" in d["reason"] or "refus" in d["reason"]
+
+    def test_execute_reports_missing_id(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        deleted = []
+
+        def fake_delete(spec, *, conn):
+            deleted.append(spec)
+            return {"deleted": 1}
+
+        plan = {
+            "found": True,
+            "status": "pair",
+            "stop": {"_id": "stop1"},
+            "start": {"eventType": "Sensor Start"},  # no _id
+        }
+        with mock.patch.object(sensors_mod.treatments_mod, "delete_treatment", fake_delete):
+            res = sensors_mod.execute_revoke(plan, conn={"server_url": "https://x"})
+        # Only the record WITH an id is deleted; the other is reported.
+        assert deleted == ["stop1"]
+        assert [r["_id"] for r in res["revoked"]] == ["stop1"]
+        assert res["failed"][0]["_id"] is None
+        assert res["failed"][0]["error"] == "missing _id"
+
+    def test_revoke_last_sensor_change_executes_when_found(self):
+        from cli_anything.nightscout.core import sensors as sensors_mod
+
+        fixed_now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+
+        def fake_list(**_kwargs):
+            return [
+                {
+                    "eventType": "Sensor Stop",
+                    "enteredBy": "ha-bridge",
+                    "created_at": "2026-10-20T11:00:00.000Z",
+                    "_id": "a" * 24,
+                },
+                {
+                    "eventType": "Sensor Start",
+                    "enteredBy": "ha-bridge",
+                    "created_at": "2026-10-20T11:05:00.000Z",
+                    "_id": "b" * 24,
+                },
+            ]
+
+        deleted = []
+
+        def fake_delete(spec, *, conn):
+            deleted.append(spec)
+            return {"deleted": 1}
+
+        with (
+            mock.patch.object(sensors_mod.treatments_mod, "list_treatments", fake_list),
+            mock.patch.object(sensors_mod.treatments_mod, "delete_treatment", fake_delete),
+        ):
+            res = sensors_mod.revoke_last_sensor_change(
+                conn={"server_url": "https://x"}, now=fixed_now
+            )
+        assert deleted == ["a" * 24, "b" * 24]
+        assert res["dry_run"] is False
+        assert len(res["revoked"]) == 2
+        assert res["plan"]["found"] is True

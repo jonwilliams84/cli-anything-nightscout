@@ -890,3 +890,32 @@ nightscout_cli.py: 89 % · core/report.py: intraday_grid fully covered
 
 Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
 exits 0.
+### Test results — 2026-10-22 (v2.15.0 — `sensors revoke-last-change`)
+
+New coverage for the sensor-change undo verb: the port of
+`scripts/revoke_last_sensor_change.py` into the harness. `core/sensors.py`
+gains pure decision logic (`find_last_habridge_pair`), a read-only plan
+step (`plan_revoke_last_change`), the executor (`execute_revoke`), and a
+dry-run-aware wrapper (`revoke_last_sensor_change`); the `sensors
+revoke-last-change` command wires them with the standard rails
+(`--json`, global `--dry-run` before any network call, `--yes` /
+fails-closed confirm without a TTY).
+
+| File | New tests | Scope |
+|------|-----------|-------|
+| `test_core.py` | **21** | `TestFindLastHabridgePair` (8): eligible pair found with exact gap/age; most-recent pair wins; non-prefixed (manual) events ignored; empty input is `none` + a reason, never a crash; records > `--max-pair-gap` apart are `unpaired`; stale pair is `too_stale` (age kills it regardless of gap); custom prefix + gap; timezone-naive `created_at` tolerated. `TestPlanAndExecuteRevoke` (6): plan fetches the 2×age window with count + gte/lte and reports `window_from/window_to/scanned`; plan over an empty server is `found: false`; execute deletes both records in order; execute on a refused plan deletes nothing; partial failure surfaces per-record `failed[]` without losing `revoked[]`; `revoke_last_sensor_change(dry_run=True)` never calls delete and returns `would_delete` ids. `TestSensorsRevokeLastChangeCommand` (7): JSON flow with `--yes` (revoked ids + option plumbing), `--max-age-hours`/`--max-pair-gap`/`--entered-by-prefix` propagate, no `--yes` aborts on non-interactive stdin before executing, nothing-to-revoke emits the plan (`found: false` + reason), `--dry-run` makes no HTTP call at all (core mocks that raise on use), human output prints the revoked record list. |
+| `test_full_e2e.py` | **7** | `TestSensorsRevokeLastChangeE2E` (real HTTP): seeded ha-bridge-shaped pair (unique per-test `enteredBy` prefix so the shared stand-in server cannot leak pairs across tests) is revoked — `revoked[]` ids match the seeded pair and both records are gone from the server; a ghost prefix yields `found: false` with a reason; enteredBy prefix scope filters records from other senders; `--dry-run` emits the request description and both records survive; without `--yes` it aborts and deletes nothing (fails closed); human output prints "revoked 2 record(s)"; lifecycle workflow — seed → revoke (`found: true`) → revoke again (`found: false`, `status: none`). |
+
+No stand-in server changes — the verb reuses the existing
+`/api/v1/treatments.json` GET/POST and `/api/v1/treatments/<id>` DELETE
+surface, so the E2E tests pass against both the stand-in and a live server.
+
+```text
+$ /work/venv/bin/python -m pytest tests --cov=cli_anything --cov-fail-under=78 -q
+1631 passed; Total coverage: 93.93 % (78 % gate)
+
+nightscout_cli.py: 91 % · core/sensors.py: revoke functions fully covered
+```
+
+Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
+exits 0.

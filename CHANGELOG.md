@@ -4,6 +4,44 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.15.0] — 2026-10-22
+
+- **New command: `sensors revoke-last-change`** — the undo move for a
+  double-fired bridge automation: deletes the most recent
+  `Sensor Stop` + `Sensor Start` treatment pair from `enteredBy` values
+  starting with `--entered-by-prefix` (default `ha-bridge`). Nightscout
+  keeps no deletion history, so a bogus pair can only be removed while
+  its provenance is still identifiable — until now the only tool was the
+  standalone `scripts/revoke_last_sensor_change.py`, which agents cannot
+  reach through the harness. The safety rails are identical:
+  - only `enteredBy`-prefixed events are candidates — **manually-entered
+    sensor events are never eligible**;
+  - Stop and Start must be within `--max-pair-gap` minutes (default 30),
+    else they are not a pair (`found: false`, `status: "unpaired"`);
+  - the pair must be younger than `--max-age-hours` (default 24), else
+    `status: "too_stale"` and the command points at manual deletion;
+  - the JSON plan carries the scan window (`window_from`/`window_to`,
+    `scanned`) so the caller sees exactly what was searched;
+  - global `--dry-run` is network-safe (emits the request description,
+    sends nothing) and scripted use requires `--yes` — without a TTY and
+    without `--yes` it aborts, like every destructive verb in the harness.
+- Core additions in `core/sensors.py`: `find_last_habridge_pair` (pure
+  pair decision logic over already-fetched treatments),
+  `plan_revoke_last_change` (read-only fetch + decision),
+  `execute_revoke` (the deletes, with per-record `revoked[]`/`failed[]`
+  reporting — a partially-deleted pair is visible, never silent), and
+  `revoke_last_sensor_change` (dry-run-aware wrapper).
+- Tests: 21 unit tests (`TestFindLastHabridgePair`,
+  `TestPlanAndExecuteRevoke`, `TestSensorsRevokeLastChangeCommand`) and
+  7 E2E tests (`TestSensorsRevokeLastChangeE2E`, including a dry-run
+  no-delete check, a refusal on no-matching-events, an abort without
+  `--yes`, and a seed → revoke → revoke-again lifecycle).
+- Docs: SOP (`NIGHTSCOUT.md`) gains a "Sensor-change undo (v2.15.0+)"
+  section and the `sensors` table rows are updated; package README gains
+  usage examples.
+- Fixed the stale module version literal (`nightscout_cli.VERSION` said
+  2.14.0 while the package ships 2.15.0).
+
 ## [2.14.0] — 2026-10-15
 
 - **New command: `report intraday`** — the web UI's **Intradays / day-to-day**

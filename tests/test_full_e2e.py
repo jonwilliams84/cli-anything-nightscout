@@ -39,6 +39,7 @@ import pytest
 
 # ─── _resolve_cli helper (HARNESS.md spec) ─────────────────────────────────
 
+
 def _resolve_cli(name: str) -> list[str]:
     """Resolve installed CLI command; falls back to python -m for dev.
 
@@ -58,6 +59,7 @@ def _resolve_cli(name: str) -> list[str]:
 
 # ─── Stand-in Nightscout server ────────────────────────────────────────────
 
+
 class _NightscoutStandIn:
     """In-process Nightscout-shaped HTTP server for E2E tests."""
 
@@ -73,23 +75,32 @@ class _NightscoutStandIn:
         self.last_request_headers: dict[str, str] = {}
         self.last_request_path: str = ""
         # Pre-seed a profile and a couple of food items.
-        self.profile.append({
-            "_id": _oid(),
-            "defaultProfile": "Default",
-            "startDate": "2025-04-01T00:00:00.000Z",
-            "store": {"Default": {
-                "basal": [{"time": "00:00", "value": 0.8},
-                            {"time": "12:00", "value": 1.0}],
-                "carbratio": [{"time": "00:00", "value": 10}],
-                "sens": [{"time": "00:00", "value": 50}],
-                "timezone": "UTC",
-            }},
-            "created_at": "2025-04-01T00:00:00.000Z",
-        })
-        self.food.append({
-            "_id": _oid(), "food": "apple", "carbs": 25,
-            "portion": 1, "unit": "piece", "category": "Fruit",
-        })
+        self.profile.append(
+            {
+                "_id": _oid(),
+                "defaultProfile": "Default",
+                "startDate": "2025-04-01T00:00:00.000Z",
+                "store": {
+                    "Default": {
+                        "basal": [{"time": "00:00", "value": 0.8}, {"time": "12:00", "value": 1.0}],
+                        "carbratio": [{"time": "00:00", "value": 10}],
+                        "sens": [{"time": "00:00", "value": 50}],
+                        "timezone": "UTC",
+                    }
+                },
+                "created_at": "2025-04-01T00:00:00.000Z",
+            }
+        )
+        self.food.append(
+            {
+                "_id": _oid(),
+                "food": "apple",
+                "carbs": 25,
+                "portion": 1,
+                "unit": "piece",
+                "category": "Fruit",
+            }
+        )
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self.port: int = 0
@@ -135,16 +146,27 @@ class _NightscoutStandIn:
 
                 # v3 endpoints.
                 if p == "/api/v3/version":
-                    return self._json(200, {"version": "15.0.7", "apiVersion": "3.0.4",
-                                            "storage": {"storage": "mongo"}})
-                if p == "/api/v3/lastModified":
-                    return self._json(200, {
-                        "srvDate": int(time.time() * 1000),
-                        "collections": {
-                            "entries": (outer.entries[-1]["date"] if outer.entries else 0),
-                            "treatments": 0, "devicestatus": 0, "profile": 0,
+                    return self._json(
+                        200,
+                        {
+                            "version": "15.0.7",
+                            "apiVersion": "3.0.4",
+                            "storage": {"storage": "mongo"},
                         },
-                    })
+                    )
+                if p == "/api/v3/lastModified":
+                    return self._json(
+                        200,
+                        {
+                            "srvDate": int(time.time() * 1000),
+                            "collections": {
+                                "entries": (outer.entries[-1]["date"] if outer.entries else 0),
+                                "treatments": 0,
+                                "devicestatus": 0,
+                                "profile": 0,
+                            },
+                        },
+                    )
                 if p == "/api/v3/food":
                     return self._json(200, {"result": outer.food})
 
@@ -152,8 +174,7 @@ class _NightscoutStandIn:
                 m3 = re.match(r"^/api/v3/([a-z]+)$", p)
                 if m3 and m3.group(1) not in ("version", "lastModified"):
                     coll = m3.group(1)
-                    return self._json(200, {"status": 200,
-                                              "result": getattr(outer, coll, [])})
+                    return self._json(200, {"status": 200, "result": getattr(outer, coll, [])})
                 m3h = re.match(r"^/api/v3/([a-z]+)/history(?:/(\d+))?$", p)
                 if m3h:
                     return self._json(200, {"status": 200, "result": []})
@@ -183,16 +204,27 @@ class _NightscoutStandIn:
                     if not self._is_authed_v1():
                         return self._json(401, {"message": "Unauthorized"})
                     if p == "/api/v1/status.json":
-                        return self._json(200, {
-                            "status": "ok", "name": "nightscout", "version": "15.0.7",
-                            "apiEnabled": True, "careportalEnabled": True,
-                            "settings": {"units": "mg/dl"},
-                        })
+                        return self._json(
+                            200,
+                            {
+                                "status": "ok",
+                                "name": "nightscout",
+                                "version": "15.0.7",
+                                "apiEnabled": True,
+                                "careportalEnabled": True,
+                                "settings": {"units": "mg/dl"},
+                            },
+                        )
                     if p == "/api/v1/verifyauth.json":
-                        return self._json(200, {
-                            "canRead": True, "canWrite": True, "isAdmin": True,
-                            "message": "OK",
-                        })
+                        return self._json(
+                            200,
+                            {
+                                "canRead": True,
+                                "canWrite": True,
+                                "isAdmin": True,
+                                "message": "OK",
+                            },
+                        )
                     if p == "/api/v1/entries.json":
                         items = list(outer.entries)
                         cnt = int(qs.get("count", "10"))
@@ -226,23 +258,27 @@ class _NightscoutStandIn:
                     if p == "/api/v1/versions":
                         return self._json(200, {"plugins": ["bgnow", "iob", "cob"]})
                     if p == "/api/v1/entries/current.json":
-                        items = sorted(outer.entries,
-                                         key=lambda e: e.get("date", 0),
-                                         reverse=True)
+                        items = sorted(outer.entries, key=lambda e: e.get("date", 0), reverse=True)
                         return self._json(200, items[:1])
                     if p == "/api/v1/food/quickpicks":
-                        return self._json(200, [f for f in outer.food
-                                                  if f.get("type") == "quickpick"])
+                        return self._json(
+                            200, [f for f in outer.food if f.get("type") == "quickpick"]
+                        )
                     if p == "/api/v1/food/regular":
-                        return self._json(200, [f for f in outer.food
-                                                  if f.get("type") != "quickpick"])
+                        return self._json(
+                            200, [f for f in outer.food if f.get("type") != "quickpick"]
+                        )
                     if p == "/api/v1/notifications/ack":
-                        return self._json(200, {"acked": True,
-                                                  "level": int(qs.get("level", "0")),
-                                                  "group": qs.get("group", "default")})
+                        return self._json(
+                            200,
+                            {
+                                "acked": True,
+                                "level": int(qs.get("level", "0")),
+                                "group": qs.get("group", "default"),
+                            },
+                        )
                     if p == "/api/v1/adminnotifies":
-                        return self._json(200, {"notifies": [],
-                                                  "notifyCount": 0})
+                        return self._json(200, {"notifies": [], "notifyCount": 0})
                     m_cnt = re.match(r"^/api/v1/count/(\w+)/where$", p)
                     if m_cnt:
                         coll = m_cnt.group(1)
@@ -253,18 +289,21 @@ class _NightscoutStandIn:
                             if k.startswith("where[") and "$eq" in k:
                                 want_type = v
                         if want_type is not None:
-                            items = [i for i in items
-                                       if i.get("type") == want_type]
+                            items = [i for i in items if i.get("type") == want_type]
                         return self._json(200, {"count": len(items)})
                     m_t = re.match(r"^/api/v1/times/([^/]+)(?:/([^.]+))?\.json$", p)
                     if m_t:
                         prefix = m_t.group(1)
-                        items = [e for e in outer.entries
-                                   if (e.get("dateString") or "").startswith(prefix)]
+                        items = [
+                            e
+                            for e in outer.entries
+                            if (e.get("dateString") or "").startswith(prefix)
+                        ]
                         return self._json(200, items)
                     # Single-record get for treatments / entries.
                     m_one = re.match(
-                        r"^/api/v1/(treatments|entries)/([0-9a-f]{24})\.json$", p,
+                        r"^/api/v1/(treatments|entries)/([0-9a-f]{24})\.json$",
+                        p,
                     )
                     if m_one:
                         coll = m_one.group(1)
@@ -380,7 +419,10 @@ class _NightscoutStandIn:
                 p = u.path
                 if not self._is_authed_v1():
                     return self._json(401, {"message": "Unauthorized"})
-                m = re.match(r"^/api/v1/(entries|treatments|devicestatus|food|profile)/([0-9a-f]{24})(?:\.json)?$", p)
+                m = re.match(
+                    r"^/api/v1/(entries|treatments|devicestatus|food|profile)/([0-9a-f]{24})(?:\.json)?$",
+                    p,
+                )
                 if m:
                     coll = m.group(1)
                     target = m.group(2)
@@ -467,9 +509,12 @@ class _NightscoutStandIn:
                         if a is not None and b is not None:
                             eq = a == b
                             ok = {
-                                "$eq": eq, "$ne": not eq,
-                                "$gt": a > b, "$gte": a >= b,
-                                "$lt": a < b, "$lte": a <= b,
+                                "$eq": eq,
+                                "$ne": not eq,
+                                "$gt": a > b,
+                                "$gte": a >= b,
+                                "$lt": a < b,
+                                "$lte": a <= b,
                             }.get(op)
                             if ok is None:
                                 ok = (str(val) == str(want)) if op == "$eq" else True
@@ -480,9 +525,12 @@ class _NightscoutStandIn:
                             else:
                                 eq = sval == swant
                                 ok = {
-                                    "$eq": eq, "$ne": not eq,
-                                    "$gt": sval > swant, "$gte": sval >= swant,
-                                    "$lt": sval < swant, "$lte": sval <= swant,
+                                    "$eq": eq,
+                                    "$ne": not eq,
+                                    "$gt": sval > swant,
+                                    "$gte": sval >= swant,
+                                    "$lt": sval < swant,
+                                    "$lte": sval <= swant,
                                 }.get(op, True)
                         keep = keep and ok
                     if keep:
@@ -541,9 +589,11 @@ def conn(server_url_and_secret):
 
 # ─── Direct backend / core E2E ─────────────────────────────────────────────
 
+
 class TestStatusE2E:
     def test_status_info(self, conn):
         from cli_anything.nightscout.core import status
+
         res = status.status(conn=conn)
         assert "version" in res
         assert "name" in res or "status" in res
@@ -551,12 +601,14 @@ class TestStatusE2E:
 
     def test_status_version_v3(self, conn):
         from cli_anything.nightscout.core import status
+
         res = status.version(conn=conn)
         assert "version" in res
         print(f"\n  v3 version: {res.get('version')!r}")
 
     def test_verifyauth(self, conn):
         from cli_anything.nightscout.core import status
+
         res = status.verifyauth(conn=conn)
         assert "canRead" in res
 
@@ -564,6 +616,7 @@ class TestStatusE2E:
 class TestEntriesE2E:
     def test_post_then_latest(self, conn):
         from cli_anything.nightscout.core import entries
+
         target = 142.0
         ts_ms = int(time.time() * 1000)
         entries.add_sgv(sgv=target, date_ms=ts_ms, direction="Flat", conn=conn)
@@ -577,6 +630,7 @@ class TestEntriesE2E:
 
     def test_list_filters_propagate(self, conn):
         from cli_anything.nightscout.core import entries
+
         # Just verify the call shape works against the server (returns a list).
         res = entries.list_entries(conn=conn, count=10, type_="sgv")
         assert isinstance(res, list)
@@ -585,9 +639,14 @@ class TestEntriesE2E:
 class TestTreatmentsE2E:
     def test_post_then_latest(self, conn):
         from cli_anything.nightscout.core import treatments
+
         treatments.add_treatment(
-            event_type="Meal Bolus", carbs=42, insulin=4.2,
-            notes="e2e-test", entered_by="cli-e2e", conn=conn,
+            event_type="Meal Bolus",
+            carbs=42,
+            insulin=4.2,
+            notes="e2e-test",
+            entered_by="cli-e2e",
+            conn=conn,
         )
         time.sleep(0.05)
         latest = treatments.latest(count=10, conn=conn)
@@ -602,17 +661,20 @@ class TestTreatmentsE2E:
 class TestProfileFoodDeviceStatusE2E:
     def test_profile_current(self, conn):
         from cli_anything.nightscout.core import profile
+
         res = profile.list_profiles(conn=conn)
         # An array, possibly empty in live mode.
         assert isinstance(res, list)
 
     def test_food_v3(self, conn):
         from cli_anything.nightscout.core import food
+
         res = food.list_food(conn=conn, limit=10)
         assert isinstance(res, list)
 
     def test_devicestatus_latest(self, conn):
         from cli_anything.nightscout.core import devicestatus
+
         res = devicestatus.latest(count=5, conn=conn)
         assert isinstance(res, list)
 
@@ -621,6 +683,7 @@ class TestReportPipelineE2E:
     def test_report_tir_via_real_data(self, conn):
         """Post a known mix of SGVs and verify TIR percentages match."""
         from cli_anything.nightscout.core import entries, report
+
         # Stand-in starts empty; in live mode we just verify shape.
         if _is_live_mode():
             data = entries.latest(count=288, conn=conn)
@@ -633,10 +696,13 @@ class TestReportPipelineE2E:
         assert "tir_pct" in r
         assert "tbr_pct" in r
         assert "tar_pct" in r
-        print(f"\n  TIR={r['tir_pct']}% TBR={r['tbr_pct']}% TAR={r['tar_pct']}% n={r['total_readings']}")
+        print(
+            f"\n  TIR={r['tir_pct']}% TBR={r['tbr_pct']}% TAR={r['tar_pct']}% n={r['total_readings']}"
+        )
 
 
 # ─── CLI subprocess tests ──────────────────────────────────────────────────
+
 
 class TestCLISubprocess:
     CLI_BASE = _resolve_cli("cli-anything-nightscout")
@@ -647,7 +713,11 @@ class TestCLISubprocess:
             env_full.update(env)
         return subprocess.run(
             self.CLI_BASE + list(args),
-            capture_output=True, text=True, check=check, env=env_full, timeout=30,
+            capture_output=True,
+            text=True,
+            check=check,
+            env=env_full,
+            timeout=30,
         )
 
     def _conn_env(self, server_url_and_secret):
@@ -675,6 +745,7 @@ class TestCLISubprocess:
         assert "version" in r.stdout.lower()
         # Some version-looking string (digits.dots.digits)
         import re
+
         assert re.search(r"\d+\.\d+\.\d+", r.stdout), r.stdout
 
     def test_config_show_masks_secrets(self, server_url_and_secret, tmp_path):
@@ -759,7 +830,11 @@ class TestRefineCLISubprocess:
             env_full.update(env)
         return subprocess.run(
             self.CLI_BASE + list(args),
-            capture_output=True, text=True, check=check, env=env_full, timeout=30,
+            capture_output=True,
+            text=True,
+            check=check,
+            env=env_full,
+            timeout=30,
         )
 
     def _conn_env(self, server_url_and_secret, tmp_path):
@@ -813,8 +888,7 @@ class TestRefineCLISubprocess:
     def test_entries_current(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
         # Seed an entry first.
-        self._run(["--json", "entries", "add", "--sgv", "125",
-                    "--direction", "Flat"], env=env)
+        self._run(["--json", "entries", "add", "--sgv", "125", "--direction", "Flat"], env=env)
         r = self._run(["--json", "entries", "current"], env=env)
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
@@ -826,8 +900,10 @@ class TestRefineCLISubprocess:
         env = self._conn_env(server_url_and_secret, tmp_path)
         # Seed an entry so count > 0 (stand-in only).
         self._run(["--json", "entries", "add", "--sgv", "140"], env=env)
-        r = self._run(["--json", "entries", "count",
-                        "--field", "type", "--op", "eq", "--value", "sgv"], env=env)
+        r = self._run(
+            ["--json", "entries", "count", "--field", "type", "--op", "eq", "--value", "sgv"],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         assert "count" in data
@@ -836,9 +912,21 @@ class TestRefineCLISubprocess:
 
     def test_food_add_then_quickpicks(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "food", "add",
-                        "--food", "test-banana", "--carbs", "27",
-                        "--portion", "120", "--quickpick"], env=env)
+        r = self._run(
+            [
+                "--json",
+                "food",
+                "add",
+                "--food",
+                "test-banana",
+                "--carbs",
+                "27",
+                "--portion",
+                "120",
+                "--quickpick",
+            ],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         r = self._run(["--json", "food", "quickpicks"], env=env)
         assert r.returncode == 0, r.stderr
@@ -851,8 +939,9 @@ class TestRefineCLISubprocess:
 
     def test_notifications_ack(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "notifications", "ack",
-                        "--level", "1", "--time-minutes", "30"], env=env)
+        r = self._run(
+            ["--json", "notifications", "ack", "--level", "1", "--time-minutes", "30"], env=env
+        )
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         # Stand-in echoes acked=True; live server returns 200 with no body or {}
@@ -870,8 +959,7 @@ class TestRefineCLISubprocess:
 
     def test_devicestatus_add_then_list(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "devicestatus", "add",
-                        "--device", "cli-anything-test"], env=env)
+        r = self._run(["--json", "devicestatus", "add", "--device", "cli-anything-test"], env=env)
         assert r.returncode == 0, r.stderr
         r = self._run(["--json", "devicestatus", "list"], env=env)
         assert r.returncode == 0, r.stderr
@@ -882,16 +970,18 @@ class TestRefineCLISubprocess:
         """Post a real-shaped pump record, then read it back parsed."""
         env = self._conn_env(server_url_and_secret, tmp_path)
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        body = json.dumps({
-            "device": "cli-anything-pump-test",
-            "created_at": now,
-            "pump": {
-                "clock": now,
-                "battery": {"percent": 15, "voltage": 1.28},
-                "reservoir": 3.2,
-                "status": {"status": "normal", "bolusing": False, "suspended": False},
-            },
-        })
+        body = json.dumps(
+            {
+                "device": "cli-anything-pump-test",
+                "created_at": now,
+                "pump": {
+                    "clock": now,
+                    "battery": {"percent": 15, "voltage": 1.28},
+                    "reservoir": 3.2,
+                    "status": {"status": "normal", "bolusing": False, "suspended": False},
+                },
+            }
+        )
         r = self._run(["--json", "devicestatus", "add", "--body-json", body], env=env)
         assert r.returncode == 0, r.stderr
         r = self._run(["--json", "devicestatus", "pump", "--count", "20"], env=env)
@@ -908,16 +998,21 @@ class TestRefineCLISubprocess:
     def test_devicestatus_uploader_and_loop(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        body = json.dumps({
-            "device": "cli-anything-loop-test",
-            "created_at": now,
-            "uploader": {"battery": 88, "type": "PHONE"},
-            "loop": {
-                "name": "Loop", "version": "3.2", "timestamp": now,
-                "iob": {"iob": 0.9}, "cob": {"cob": 7},
-                "enacted": {"rate": 0.45, "duration": 30, "received": True},
-            },
-        })
+        body = json.dumps(
+            {
+                "device": "cli-anything-loop-test",
+                "created_at": now,
+                "uploader": {"battery": 88, "type": "PHONE"},
+                "loop": {
+                    "name": "Loop",
+                    "version": "3.2",
+                    "timestamp": now,
+                    "iob": {"iob": 0.9},
+                    "cob": {"cob": 7},
+                    "enacted": {"rate": 0.45, "duration": 30, "received": True},
+                },
+            }
+        )
         r = self._run(["--json", "devicestatus", "add", "--body-json", body], env=env)
         assert r.returncode == 0, r.stderr
 
@@ -1033,17 +1128,21 @@ class TestRefineCLISubprocess:
         assert "cycles over" in r.stdout
         assert "enacted" in r.stdout
 
-
     def test_report_device_health_composes_sections(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        body = json.dumps({
-            "device": "cli-anything-health-test",
-            "created_at": now,
-            "pump": {"battery": {"percent": 90}, "reservoir": 150,
-                       "status": {"status": "normal", "suspended": False}},
-            "uploader": {"battery": 95},
-        })
+        body = json.dumps(
+            {
+                "device": "cli-anything-health-test",
+                "created_at": now,
+                "pump": {
+                    "battery": {"percent": 90},
+                    "reservoir": 150,
+                    "status": {"status": "normal", "suspended": False},
+                },
+                "uploader": {"battery": 95},
+            }
+        )
         r = self._run(["--json", "devicestatus", "add", "--body-json", body], env=env)
         assert r.returncode == 0, r.stderr
         r = self._run(["--json", "report", "device-health", "--count", "50"], env=env)
@@ -1083,11 +1182,11 @@ class TestRefineCLISubprocess:
     def test_report_sensor_life(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
         # Seed a sensor-change treatment so the report has something to chew on.
-        self._run(["--json", "treatments", "add",
-                    "--event-type", "Sensor Change",
-                    "--notes", "test"], env=env)
-        r = self._run(["--json", "report", "sensor-life",
-                        "--threshold-hours", "168"], env=env)
+        self._run(
+            ["--json", "treatments", "add", "--event-type", "Sensor Change", "--notes", "test"],
+            env=env,
+        )
+        r = self._run(["--json", "report", "sensor-life", "--threshold-hours", "168"], env=env)
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         assert "threshold_hours" in data
@@ -1098,9 +1197,10 @@ class TestRefineCLISubprocess:
     def test_sensors_data_json(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
         # Seed a sensor marker so at least one session exists, plus entries.
-        self._run(["--json", "treatments", "add",
-                    "--event-type", "Sensor Change",
-                    "--notes", "test"], env=env)
+        self._run(
+            ["--json", "treatments", "add", "--event-type", "Sensor Change", "--notes", "test"],
+            env=env,
+        )
         self._run(["--json", "entries", "add", "--sgv", "100"], env=env)
         self._run(["--json", "entries", "add", "--sgv", "150"], env=env)
         r = self._run(["--json", "sensors", "data", "--days", "7"], env=env)
@@ -1109,28 +1209,39 @@ class TestRefineCLISubprocess:
         assert isinstance(data, list)
         assert len(data) >= 1, "expected at least one segment (pre-first or session)"
         for seg in data:
-            for key in ("session_index", "session_start", "session_end", "ongoing",
-                        "readings", "min_mgdl", "max_mgdl", "mean_mgdl",
-                        "in_range", "in_range_percent"):
+            for key in (
+                "session_index",
+                "session_start",
+                "session_end",
+                "ongoing",
+                "readings",
+                "min_mgdl",
+                "max_mgdl",
+                "mean_mgdl",
+                "in_range",
+                "in_range_percent",
+            ):
                 assert key in seg, f"missing key {key}: {seg}"
         # The seeded readings must land somewhere in the segmentation.
         assert sum(s["readings"] for s in data) >= 2
 
     def test_sensors_data_human_output(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
-        self._run(["--json", "treatments", "add",
-                    "--event-type", "Sensor Change",
-                    "--notes", "test"], env=env)
+        self._run(
+            ["--json", "treatments", "add", "--event-type", "Sensor Change", "--notes", "test"],
+            env=env,
+        )
         self._run(["--json", "entries", "add", "--sgv", "120"], env=env)
         r = self._run(["sensors", "data", "--days", "7"], env=env)
         assert r.returncode == 0, r.stderr
         assert "sensor segment" in r.stdout
         assert "readings" in r.stdout
 
-    def test_sensors_data_min_readings_filters_empty_segments(self, server_url_and_secret, tmp_path):
+    def test_sensors_data_min_readings_filters_empty_segments(
+        self, server_url_and_secret, tmp_path
+    ):
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "sensors", "data", "--days", "7",
-                        "--min-readings", "1"], env=env)
+        r = self._run(["--json", "sensors", "data", "--days", "7", "--min-readings", "1"], env=env)
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         assert isinstance(data, list)
@@ -1142,17 +1253,27 @@ class TestRefineCLISubprocess:
     def test_treatments_update_changes_carbs(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
         # Add a meal bolus and capture its _id.
-        r = self._run(["--json", "treatments", "add",
-                        "--event-type", "Meal Bolus",
-                        "--carbs", "30", "--insulin", "3"], env=env)
+        r = self._run(
+            [
+                "--json",
+                "treatments",
+                "add",
+                "--event-type",
+                "Meal Bolus",
+                "--carbs",
+                "30",
+                "--insulin",
+                "3",
+            ],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         posted = json.loads(r.stdout)
         recs = posted if isinstance(posted, list) else [posted]
         rid = recs[0].get("_id") if recs else None
         if rid is None:
             pytest.skip("no _id returned by add (live server quirk)")
-        r = self._run(["--json", "treatments", "update", rid,
-                        "--carbs", "45"], env=env)
+        r = self._run(["--json", "treatments", "update", rid, "--carbs", "45"], env=env)
         assert r.returncode == 0, r.stderr
         # Verify by reading back.
         r = self._run(["--json", "treatments", "get", rid], env=env)
@@ -1167,9 +1288,20 @@ class TestRefineCLISubprocess:
     def test_temp_basal_then_active(self, server_url_and_secret, tmp_path):
         """Post a running Temp Basal, then see it in `treatments active`."""
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "treatments", "temp-basal",
-                        "--duration", "45", "--percent", "-50",
-                        "--reason", "e2e"], env=env)
+        r = self._run(
+            [
+                "--json",
+                "treatments",
+                "temp-basal",
+                "--duration",
+                "45",
+                "--percent",
+                "-50",
+                "--reason",
+                "e2e",
+            ],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         posted = json.loads(r.stdout)
         recs = posted if isinstance(posted, list) else [posted]
@@ -1189,10 +1321,24 @@ class TestRefineCLISubprocess:
 
     def test_temp_target_roundtrip_and_cancel(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "treatments", "temp-target",
-                        "--target-top", "120", "--target-bottom", "100",
-                        "--duration", "60", "--reason", "Activity",
-                        "--units", "mg/dl"], env=env)
+        r = self._run(
+            [
+                "--json",
+                "treatments",
+                "temp-target",
+                "--target-top",
+                "120",
+                "--target-bottom",
+                "100",
+                "--duration",
+                "60",
+                "--reason",
+                "Activity",
+                "--units",
+                "mg/dl",
+            ],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         rec = json.loads(r.stdout)
         rec = rec[0] if isinstance(rec, list) else rec
@@ -1212,8 +1358,9 @@ class TestRefineCLISubprocess:
         r = self._run(["--json", "treatments", "event-types"], env=env)
         assert r.returncode == 0, r.stderr
         assert "Site Change" in json.loads(r.stdout)["care_events"]
-        r = self._run(["--json", "treatments", "care-event", "Site Change",
-                        "--notes", "e2e"], env=env)
+        r = self._run(
+            ["--json", "treatments", "care-event", "Site Change", "--notes", "e2e"], env=env
+        )
         assert r.returncode == 0, r.stderr
         rec = json.loads(r.stdout)
         rec = rec[0] if isinstance(rec, list) else rec
@@ -1222,21 +1369,34 @@ class TestRefineCLISubprocess:
     def test_temp_basal_validation_fails_without_rate(self, server_url_and_secret, tmp_path):
         """A Temp Basal with no percent/absolute must be refused client-side."""
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "treatments", "temp-basal", "--duration", "30"],
-                       env=env, check=False)
+        r = self._run(
+            ["--json", "treatments", "temp-basal", "--duration", "30"], env=env, check=False
+        )
         assert r.returncode != 0
         assert "percent or absolute" in (r.stderr + r.stdout)
 
     def test_report_tdd_after_bolus(self, server_url_and_secret, tmp_path):
         """Post a meal bolus, then confirm `report tdd` counts it."""
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "treatments", "add",
-                        "--event-type", "Meal Bolus",
-                        "--carbs", "42", "--insulin", "4.2"], env=env)
+        r = self._run(
+            [
+                "--json",
+                "treatments",
+                "add",
+                "--event-type",
+                "Meal Bolus",
+                "--carbs",
+                "42",
+                "--insulin",
+                "4.2",
+            ],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         # A Temp Basal must NOT be summed into the bolus total.
-        self._run(["--json", "treatments", "temp-basal",
-                    "--duration", "30", "--absolute", "0.9"], env=env)
+        self._run(
+            ["--json", "treatments", "temp-basal", "--duration", "30", "--absolute", "0.9"], env=env
+        )
         r = self._run(["--json", "report", "tdd", "--days", "2", "--tz", "UTC"], env=env)
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
@@ -1274,9 +1434,20 @@ class TestRefineCLISubprocess:
         started = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime(
             "%Y-%m-%dT%H:%M:%S.000Z"
         )
-        r = self._run(["--json", "treatments", "temp-basal",
-                        "--duration", "60", "--absolute", "0",
-                        "--created-at", started], env=env)
+        r = self._run(
+            [
+                "--json",
+                "treatments",
+                "temp-basal",
+                "--duration",
+                "60",
+                "--absolute",
+                "0",
+                "--created-at",
+                started,
+            ],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         r = self._run(["--json", "report", "basal", "--days", "1", "--tz", "UTC"], env=env)
         assert r.returncode == 0, r.stderr
@@ -1287,21 +1458,35 @@ class TestRefineCLISubprocess:
             assert data["totals"]["temp_basal_minutes"] > 0
             assert data["totals"]["delivered_units"] < data["totals"]["scheduled_units"]
             assert data["schedule_tz"] == "UTC"
-            print(f"\n  basal delivered {data['totals']['delivered_units']} U "
-                    f"vs scheduled {data['totals']['scheduled_units']} U")
+            print(
+                f"\n  basal delivered {data['totals']['delivered_units']} U "
+                f"vs scheduled {data['totals']['scheduled_units']} U"
+            )
 
     def test_report_tdd_include_basal_beats_bolus_only(self, server_url_and_secret, tmp_path):
         """--include-basal must add basal on top of the bolus-only total."""
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "treatments", "add",
-                        "--event-type", "Meal Bolus",
-                        "--carbs", "30", "--insulin", "3"], env=env)
+        r = self._run(
+            [
+                "--json",
+                "treatments",
+                "add",
+                "--event-type",
+                "Meal Bolus",
+                "--carbs",
+                "30",
+                "--insulin",
+                "3",
+            ],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         r = self._run(["--json", "report", "tdd", "--days", "1", "--tz", "UTC"], env=env)
         assert r.returncode == 0, r.stderr
         bolus_only = json.loads(r.stdout)
-        r = self._run(["--json", "report", "tdd", "--include-basal",
-                        "--days", "1", "--tz", "UTC"], env=env)
+        r = self._run(
+            ["--json", "report", "tdd", "--include-basal", "--days", "1", "--tz", "UTC"], env=env
+        )
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         assert "totals" in data
@@ -1312,8 +1497,7 @@ class TestRefineCLISubprocess:
             assert 0 < data["basal_percent"] < 100
             # The bolus-only view is preserved verbatim alongside the split.
             assert data["bolus_only"]["includes_basal"] is False
-            print(f"\n  TDD {data['totals']['total_units']} U "
-                    f"({data['basal_percent']}% basal)")
+            print(f"\n  TDD {data['totals']['total_units']} U ({data['basal_percent']}% basal)")
 
     def test_report_basal_human_output(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
@@ -1324,11 +1508,24 @@ class TestRefineCLISubprocess:
     def test_add_field_passthrough(self, server_url_and_secret, tmp_path):
         """`--field k=v` reaches the server as a real record field."""
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "treatments", "add",
-                        "--event-type", "Meal Bolus", "--insulin", "1",
-                        "--pre-bolus", "15",
-                        "--field", "isSMB=true",
-                        "--field", "programmed=1.5"], env=env)
+        r = self._run(
+            [
+                "--json",
+                "treatments",
+                "add",
+                "--event-type",
+                "Meal Bolus",
+                "--insulin",
+                "1",
+                "--pre-bolus",
+                "15",
+                "--field",
+                "isSMB=true",
+                "--field",
+                "programmed=1.5",
+            ],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         rec = json.loads(r.stdout)
         rec = rec[0] if isinstance(rec, list) else rec
@@ -1340,22 +1537,30 @@ class TestRefineCLISubprocess:
 
     def test_v3_search_via_filter(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "v3", "search", "treatments",
-                        "--filter", "eventType$eq=Meal Bolus",
-                        "--limit", "5"], env=env)
+        r = self._run(
+            [
+                "--json",
+                "v3",
+                "search",
+                "treatments",
+                "--filter",
+                "eventType$eq=Meal Bolus",
+                "--limit",
+                "5",
+            ],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         # Just confirm it returns a list (empty allowed).
         data = json.loads(r.stdout)
         assert isinstance(data, list)
-
 
     # ---- v2.11.0: report day — one-day clinical snapshot ----
 
     def test_report_day_empty_date_found_false(self, server_url_and_secret, tmp_path):
         """A date with no data must read found:false, never a zero day."""
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "report", "day",
-                        "--date", "2001-01-01", "--tz", "UTC"], env=env)
+        r = self._run(["--json", "report", "day", "--date", "2001-01-01", "--tz", "UTC"], env=env)
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         assert data["date"] == "2001-01-01"
@@ -1366,9 +1571,20 @@ class TestRefineCLISubprocess:
     def test_report_day_composes_a_posted_bolus(self, server_url_and_secret, tmp_path):
         """`report day` picks up treatments and events for today."""
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "treatments", "add",
-                        "--event-type", "Meal Bolus",
-                        "--carbs", "42", "--insulin", "4.2"], env=env)
+        r = self._run(
+            [
+                "--json",
+                "treatments",
+                "add",
+                "--event-type",
+                "Meal Bolus",
+                "--carbs",
+                "42",
+                "--insulin",
+                "4.2",
+            ],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         r = self._run(["--json", "report", "day", "--tz", "UTC"], env=env)
         assert r.returncode == 0, r.stderr
@@ -1379,8 +1595,10 @@ class TestRefineCLISubprocess:
         assert data["insulin"]["carbs_g"] >= 42
         assert data["events_by_type"].get("Meal Bolus", 0) >= 1
         assert isinstance(data["bands"], dict)
-        print(f"\n  day snapshot: {data['glucose'] and data['glucose'].get('count', 0)} readings, "
-              f"{data['insulin']['bolus_units']}U bolus")
+        print(
+            f"\n  day snapshot: {data['glucose'] and data['glucose'].get('count', 0)} readings, "
+            f"{data['insulin']['bolus_units']}U bolus"
+        )
 
     def test_report_day_human_output(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
@@ -1391,33 +1609,44 @@ class TestRefineCLISubprocess:
 
     def test_report_day_invalid_date_fails(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["report", "day", "--date", "09/22/2026"],
-                       env=env, check=False)
+        r = self._run(["report", "day", "--date", "09/22/2026"], env=env, check=False)
         assert r.returncode != 0
         assert "invalid date" in (r.stdout + r.stderr)
 
     def test_report_day_include_basal(self, server_url_and_secret, tmp_path):
         """--include-basal adds the reconstructed basal block for the day."""
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "report", "day", "--tz", "UTC",
-                        "--include-basal"], env=env)
+        r = self._run(["--json", "report", "day", "--tz", "UTC", "--include-basal"], env=env)
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         assert "basal" in data
         if not _is_live_mode():
             assert data["basal"]["found"] is True
             assert data["basal"]["scheduled_units"] > 0
-            print(f"\n  basal: scheduled {data['basal']['scheduled_units']}U, "
-                  f"delivered {data['basal']['delivered_units']}U")
+            print(
+                f"\n  basal: scheduled {data['basal']['scheduled_units']}U, "
+                f"delivered {data['basal']['delivered_units']}U"
+            )
 
     # ---- v2.12.0: report logbook — the multi-day treatment log ----
 
     def test_report_logbook_empty_past_window_found_false(self, server_url_and_secret, tmp_path):
         """Dates with no data must read found:false, never a zero day."""
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "report", "logbook",
-                        "--from", "2001-01-01", "--to", "2001-01-03",
-                        "--tz", "UTC"], env=env)
+        r = self._run(
+            [
+                "--json",
+                "report",
+                "logbook",
+                "--from",
+                "2001-01-01",
+                "--to",
+                "2001-01-03",
+                "--tz",
+                "UTC",
+            ],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         assert data["from_date"] == "2001-01-01"
@@ -1433,12 +1662,22 @@ class TestRefineCLISubprocess:
     def test_report_logbook_picks_up_a_posted_bolus(self, server_url_and_secret, tmp_path):
         """Posting a bolus puts it in today's logbook event list."""
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "treatments", "add",
-                        "--event-type", "Meal Bolus",
-                        "--carbs", "55", "--insulin", "5.0"], env=env)
+        r = self._run(
+            [
+                "--json",
+                "treatments",
+                "add",
+                "--event-type",
+                "Meal Bolus",
+                "--carbs",
+                "55",
+                "--insulin",
+                "5.0",
+            ],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
-        r = self._run(["--json", "report", "logbook", "--days", "1",
-                        "--tz", "UTC"], env=env)
+        r = self._run(["--json", "report", "logbook", "--days", "1", "--tz", "UTC"], env=env)
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         assert data["day_count"] == 1
@@ -1453,25 +1692,31 @@ class TestRefineCLISubprocess:
         assert sum(e.get("carbs_g", 0) for e in bolus) >= 55.0
         assert today["insulin"]["includes_basal"] is False
         assert data["window"]["totals"]["insulin_units"] >= 5.0
-        print(f"\n  logbook today: {len(today['events'])} events, "
-              f"{data['window']['totals']['insulin_units']}U bolus")
+        print(
+            f"\n  logbook today: {len(today['events'])} events, "
+            f"{data['window']['totals']['insulin_units']}U bolus"
+        )
 
     def test_report_logbook_human_output(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["report", "logbook", "--days", "2", "--tz", "UTC"],
-                      env=env)
+        r = self._run(["report", "logbook", "--days", "2", "--tz", "UTC"], env=env)
         assert r.returncode == 0, r.stderr
         assert "report logbook" in r.stdout
         assert "insulin" in r.stdout.lower()
 
     def test_report_logbook_invalid_range_fails(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["report", "logbook", "--from", "2026-09-24",
-                        "--to", "2026-09-22"], env=env, check=False)
+        r = self._run(
+            ["report", "logbook", "--from", "2026-09-24", "--to", "2026-09-22"],
+            env=env,
+            check=False,
+        )
         assert r.returncode != 0
         assert "before from_date" in (r.stdout + r.stderr)
 
+
 # ─── v2.5.0: data-trustworthiness surface (calibration / accuracy / capture) ──
+
 
 @pytest.fixture(scope="module")
 def seeded(server_url_and_secret):
@@ -1509,7 +1754,6 @@ def seeded(server_url_and_secret):
     }
 
 
-
 class TestDataQualityE2E:
     """E2E for `entries calibrations|raw|gaps` and `report accuracy|data-quality`.
 
@@ -1531,7 +1775,11 @@ class TestDataQualityE2E:
             env_full.update(env)
         return subprocess.run(
             self.CLI_BASE + list(args),
-            capture_output=True, text=True, check=check, env=env_full, timeout=30,
+            capture_output=True,
+            text=True,
+            check=check,
+            env=env_full,
+            timeout=30,
         )
 
     def _conn_env(self, server_url_and_secret, tmp_path):
@@ -1554,6 +1802,7 @@ class TestDataQualityE2E:
     @staticmethod
     def _post_entries(conn, records):
         from cli_anything.nightscout.utils import nightscout_backend as backend
+
         return backend.post(
             "/entries.json",
             data=records,
@@ -1604,8 +1853,9 @@ class TestDataQualityE2E:
 
     # -- entries raw -------------------------------------------------------
 
-    def test_entries_raw_reports_null_without_unfiltered(self, seeded,
-                                                           server_url_and_secret, tmp_path):
+    def test_entries_raw_reports_null_without_unfiltered(
+        self, seeded, server_url_and_secret, tmp_path
+    ):
         """The seeded stream has no `unfiltered`, so raw must be null, not 0."""
         env = self._conn_env(server_url_and_secret, tmp_path)
         r = self._run(["--json", "entries", "raw", "--count", "10"], env=env)
@@ -1614,8 +1864,9 @@ class TestDataQualityE2E:
         assert all(row["raw_mgdl"] is None for row in data["rows"])
         assert data["found"] is False
 
-    def test_entries_raw_computes_when_unfiltered_present(self, seeded,
-                                                            server_url_and_secret, tmp_path):
+    def test_entries_raw_computes_when_unfiltered_present(
+        self, seeded, server_url_and_secret, tmp_path
+    ):
         env = self._conn_env(server_url_and_secret, tmp_path)
         base = self._base(seeded["conn"])
         # unfiltered 130000 with slope 1000 / intercept 30000 → raw 100 mg/dL
@@ -1649,16 +1900,15 @@ class TestDataQualityE2E:
 
     def test_entries_gaps_human(self, seeded, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(
-            ["entries", "gaps", "--from", seeded["from"], "--to", seeded["to"]], env=env
-        )
+        r = self._run(["entries", "gaps", "--from", seeded["from"], "--to", seeded["to"]], env=env)
         assert r.returncode == 0, r.stderr
         assert "gap(s)" in r.stdout and "duration" in r.stdout
 
     # -- report accuracy ---------------------------------------------------
 
-    def test_report_accuracy_scores_the_seeded_sensor(self, seeded,
-                                                       server_url_and_secret, tmp_path):
+    def test_report_accuracy_scores_the_seeded_sensor(
+        self, seeded, server_url_and_secret, tmp_path
+    ):
         env = self._conn_env(server_url_and_secret, tmp_path)
         r = self._run(
             ["--json", "report", "accuracy", "--from", seeded["from"], "--to", seeded["to"]],
@@ -1672,8 +1922,10 @@ class TestDataQualityE2E:
         assert data["bias_mgdl"] > 0
         assert data["mard_pct"] is not None
         assert sum(data["clarke"][z] for z in "ABCDE") == data["pairs"]
-        print(f"\n  MARD={data['mard_pct']}% bias={data['bias_mgdl']} "
-                f"pairs={data['pairs']} A+B={data['clarke']['a_b_pct']}%")
+        print(
+            f"\n  MARD={data['mard_pct']}% bias={data['bias_mgdl']} "
+            f"pairs={data['pairs']} A+B={data['clarke']['a_b_pct']}%"
+        )
 
     def test_report_accuracy_human(self, seeded, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
@@ -1683,8 +1935,9 @@ class TestDataQualityE2E:
         assert r.returncode == 0, r.stderr
         assert "MARD" in r.stdout and "Clarke" in r.stdout
 
-    def test_report_accuracy_window_tightening_drops_pairs(self, seeded,
-                                                             server_url_and_secret, tmp_path):
+    def test_report_accuracy_window_tightening_drops_pairs(
+        self, seeded, server_url_and_secret, tmp_path
+    ):
         env = self._conn_env(server_url_and_secret, tmp_path)
         args = ["--json", "report", "accuracy", "--from", seeded["from"], "--to", seeded["to"]]
         loose = json.loads(self._run([*args, "--window-minutes", "15"], env=env).stdout)
@@ -1693,12 +1946,20 @@ class TestDataQualityE2E:
 
     # -- report data-quality ----------------------------------------------
 
-    def test_report_data_quality_measures_the_hole(self, seeded,
-                                                     server_url_and_secret, tmp_path):
+    def test_report_data_quality_measures_the_hole(self, seeded, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
         r = self._run(
-            ["--json", "report", "data-quality", "--from", seeded["from"],
-             "--to", seeded["to"], "--tz", "UTC"],
+            [
+                "--json",
+                "report",
+                "data-quality",
+                "--from",
+                seeded["from"],
+                "--to",
+                seeded["to"],
+                "--tz",
+                "UTC",
+            ],
             env=env,
         )
         assert r.returncode == 0, r.stderr
@@ -1709,21 +1970,29 @@ class TestDataQualityE2E:
         assert data["level"] in ("warn", "urgent")
         assert data["gap_count"] >= 1
         assert data["days"]
-        print(f"\n  capture={data['capture_pct']}% level={data['level']} "
-                f"gaps={data['gap_count']}")
+        print(f"\n  capture={data['capture_pct']}% level={data['level']} gaps={data['gap_count']}")
 
     def test_report_data_quality_human(self, seeded, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
         r = self._run(
-            ["report", "data-quality", "--from", seeded["from"], "--to", seeded["to"],
-             "--tz", "UTC"],
+            [
+                "report",
+                "data-quality",
+                "--from",
+                seeded["from"],
+                "--to",
+                seeded["to"],
+                "--tz",
+                "UTC",
+            ],
             env=env,
         )
         assert r.returncode == 0, r.stderr
         assert "capture" in r.stdout and "hygiene" in r.stdout
 
-    def test_data_quality_qualifies_a_tir_from_the_same_window(self, seeded,
-                                                                 server_url_and_secret, tmp_path):
+    def test_data_quality_qualifies_a_tir_from_the_same_window(
+        self, seeded, server_url_and_secret, tmp_path
+    ):
         """Workflow: run data-quality first, then TIR, over the same window.
 
         This is the composition the command exists for — the TIR is a real
@@ -1739,8 +2008,7 @@ class TestDataQualityE2E:
         assert tir["total_readings"] > 0
         assert dq["readings"] >= tir["total_readings"] * 0.5
         assert dq["capture_pct"] < 100.0
-        print(f"\n  TIR {tir['tir_pct']}% computed from only "
-                f"{dq['capture_pct']}% of the window")
+        print(f"\n  TIR {tir['tir_pct']}% computed from only {dq['capture_pct']}% of the window")
 
     def test_exclude_warmup_lifts_capture(self, seeded, server_url_and_secret, tmp_path):
         """`--exclude-warmup` must compose with the Care Portal sensor events."""
@@ -1748,15 +2016,21 @@ class TestDataQualityE2E:
         base = self._base(seeded["conn"])
         # A sensor change covering the seeded hole.
         self._run(
-            ["--json", "treatments", "add", "--event-type", "Sensor Change",
-             "--created-at", (base + timedelta(minutes=115)).strftime("%Y-%m-%dT%H:%M:%S.000Z")],
-            env=env, check=False,
+            [
+                "--json",
+                "treatments",
+                "add",
+                "--event-type",
+                "Sensor Change",
+                "--created-at",
+                (base + timedelta(minutes=115)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            ],
+            env=env,
+            check=False,
         )
         time.sleep(0.1)
         window = ["--from", seeded["from"], "--to", seeded["to"], "--tz", "UTC"]
-        plain = json.loads(
-            self._run(["--json", "report", "data-quality", *window], env=env).stdout
-        )
+        plain = json.loads(self._run(["--json", "report", "data-quality", *window], env=env).stdout)
         excluded = json.loads(
             self._run(
                 ["--json", "report", "data-quality", *window, "--exclude-warmup"], env=env
@@ -1796,7 +2070,11 @@ class TestFindQueryE2E:
             env_full.update(env)
         return subprocess.run(
             self.CLI_BASE + list(args),
-            capture_output=True, text=True, check=check, env=env_full, timeout=30,
+            capture_output=True,
+            text=True,
+            check=check,
+            env=env_full,
+            timeout=30,
         )
 
     def _conn_env(self, server_url_and_secret, tmp_path):
@@ -1813,8 +2091,9 @@ class TestFindQueryE2E:
         env = self._conn_env(server_url_and_secret, tmp_path)
         self._run(["--json", "entries", "add", "--sgv", "140"], env=env)
         self._run(["--json", "entries", "add", "--sgv", "260"], env=env)
-        r = self._run(["--json", "entries", "list", "--count", "20",
-                       "--find", "sgv[$gte]=200"], env=env)
+        r = self._run(
+            ["--json", "entries", "list", "--count", "20", "--find", "sgv[$gte]=200"], env=env
+        )
         assert r.returncode == 0, r.stderr
         rows = json.loads(r.stdout)
         if not _is_live_mode():
@@ -1825,8 +2104,7 @@ class TestFindQueryE2E:
     def test_entries_find_plain_equality(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
         self._run(["--json", "entries", "add", "--sgv", "101", "--direction", "Flat"], env=env)
-        r = self._run(["--json", "entries", "list", "--count", "20",
-                       "--find", "sgv=101"], env=env)
+        r = self._run(["--json", "entries", "list", "--count", "20", "--find", "sgv=101"], env=env)
         assert r.returncode == 0, r.stderr
         rows = json.loads(r.stdout)
         if not _is_live_mode():
@@ -1836,8 +2114,20 @@ class TestFindQueryE2E:
     def test_entries_find_composes_with_type_filter(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
         self._run(["--json", "entries", "add", "--sgv", "150"], env=env)
-        r = self._run(["--json", "entries", "list", "--count", "20",
-                       "--type", "sgv", "--find", "sgv[$gt]=100"], env=env)
+        r = self._run(
+            [
+                "--json",
+                "entries",
+                "list",
+                "--count",
+                "20",
+                "--type",
+                "sgv",
+                "--find",
+                "sgv[$gt]=100",
+            ],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         rows = json.loads(r.stdout)
         if not _is_live_mode():
@@ -1847,27 +2137,43 @@ class TestFindQueryE2E:
     def test_entries_find_rejects_where_operator(self, server_url_and_secret, tmp_path):
         """$where executes server-side JS — the CLI must refuse it loudly."""
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "entries", "list", "--find", "sgv[$where]=1"],
-                      env=env, check=False)
+        r = self._run(
+            ["--json", "entries", "list", "--find", "sgv[$where]=1"], env=env, check=False
+        )
         assert r.returncode != 0
         assert "--find" in (r.stderr + r.stdout)
         assert "where" in (r.stderr + r.stdout).lower()
 
     def test_entries_find_rejects_missing_value(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "entries", "list", "--find", "not-a-filter"],
-                      env=env, check=False)
+        r = self._run(["--json", "entries", "list", "--find", "not-a-filter"], env=env, check=False)
         assert r.returncode != 0
         assert "KEY=VALUE" in (r.stderr + r.stdout)
 
     def test_treatments_find_by_event_type_and_carbs(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
-        self._run(["--json", "treatments", "add", "--event-type", "Meal Bolus",
-                   "--carbs", "45", "--insulin", "4.0"], env=env)
-        self._run(["--json", "treatments", "add", "--event-type", "Correction Bolus",
-                   "--insulin", "0.8"], env=env)
-        r = self._run(["--json", "treatments", "list", "--count", "20",
-                       "--find", "carbs[$exists]=true"], env=env)
+        self._run(
+            [
+                "--json",
+                "treatments",
+                "add",
+                "--event-type",
+                "Meal Bolus",
+                "--carbs",
+                "45",
+                "--insulin",
+                "4.0",
+            ],
+            env=env,
+        )
+        self._run(
+            ["--json", "treatments", "add", "--event-type", "Correction Bolus", "--insulin", "0.8"],
+            env=env,
+        )
+        r = self._run(
+            ["--json", "treatments", "list", "--count", "20", "--find", "carbs[$exists]=true"],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         rows = json.loads(r.stdout)
         if not _is_live_mode():
@@ -1880,8 +2186,18 @@ class TestFindQueryE2E:
         payload = json.dumps({"uploader": {"battery": 15}})
         r = self._run(["--json", "devicestatus", "add", "--body-json", payload], env=env)
         assert r.returncode == 0, r.stderr
-        r = self._run(["--json", "devicestatus", "list", "--count", "20",
-                       "--find", "uploader.battery[$lt]=20"], env=env)
+        r = self._run(
+            [
+                "--json",
+                "devicestatus",
+                "list",
+                "--count",
+                "20",
+                "--find",
+                "uploader.battery[$lt]=20",
+            ],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         rows = json.loads(r.stdout)
         if not _is_live_mode():
@@ -1894,8 +2210,7 @@ class TestFindQueryE2E:
     def test_find_human_output_still_renders(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
         self._run(["--json", "entries", "add", "--sgv", "133"], env=env)
-        r = self._run(["entries", "list", "--count", "5", "--find", "sgv[$gte]=100"],
-                      env=env)
+        r = self._run(["entries", "list", "--count", "5", "--find", "sgv[$gte]=100"], env=env)
         assert r.returncode == 0, r.stderr
         assert "entries" in r.stdout.lower()
 
@@ -1904,8 +2219,9 @@ class TestFindQueryE2E:
         env = self._conn_env(server_url_and_secret, tmp_path)
         for v in (95, 150, 240):
             self._run(["--json", "entries", "add", "--sgv", str(v)], env=env)
-        r = self._run(["--json", "entries", "list", "--count", "10",
-                       "--find", "sgv[$gte]=180"], env=env)
+        r = self._run(
+            ["--json", "entries", "list", "--count", "10", "--find", "sgv[$gte]=180"], env=env
+        )
         assert r.returncode == 0, r.stderr
         highs = json.loads(r.stdout)
         if not _is_live_mode():
@@ -1927,7 +2243,11 @@ class TestDistributionE2E:
             env_full.update(env)
         return subprocess.run(
             self.CLI_BASE + list(args),
-            capture_output=True, text=True, check=check, env=env_full, timeout=30,
+            capture_output=True,
+            text=True,
+            check=check,
+            env=env_full,
+            timeout=30,
         )
 
     def _conn_env(self, server_url_and_secret, tmp_path):
@@ -1962,30 +2282,47 @@ class TestDistributionE2E:
         # tests, so the expected values are read back from the server
         # with the SAME window the report asked for.
         from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
         iso_e = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         iso_s = (_dt.now(_tz.utc) - _td(days=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        r = self._run(["--json", "entries", "list", "--count", "500",
-                        "--type", "sgv",
-                        "--from", iso_s, "--to", iso_e], env=env)
+        r = self._run(
+            [
+                "--json",
+                "entries",
+                "list",
+                "--count",
+                "500",
+                "--type",
+                "sgv",
+                "--from",
+                iso_s,
+                "--to",
+                iso_e,
+            ],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         vals = sorted(float(e["sgv"]) for e in json.loads(r.stdout))
         assert len(vals) == data["count"]
         # statistics.median agrees with linear interpolation at p50.
-        assert pct["p50"] == pytest.approx(
-            __import__("statistics").median(vals), abs=0.01)
+        assert pct["p50"] == pytest.approx(__import__("statistics").median(vals), abs=0.01)
         assert pct["p5"] <= pct["p25"] <= pct["p75"] <= pct["p95"]
         assert data["ranges"]["tbr_pct"] > 0  # the posted 50/60 are below 70
         assert sum(b["count"] for b in data["bins"]) == data["count"]
         assert data["bins"][-1]["to_mgdl"] is None  # open-ended top bin
         assert data["outliers"]["below"] == 0
-        print(f"\n  distribution: median {pct['p50']} mg/dL, "
-              f"TIR {data['ranges']['tir_pct']}% over {data['count']} readings")
+        print(
+            f"\n  distribution: median {pct['p50']} mg/dL, "
+            f"TIR {data['ranges']['tir_pct']}% over {data['count']} readings"
+        )
 
     def test_report_distribution_empty_window_found_false(self, server_url_and_secret, tmp_path):
         """A long-past window has no data → found:false, never a zero dist."""
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "report", "distribution",
-                        "--from", "2001-01-01", "--to", "2001-01-02"], env=env)
+        r = self._run(
+            ["--json", "report", "distribution", "--from", "2001-01-01", "--to", "2001-01-02"],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         if _is_live_mode():
@@ -1999,8 +2336,9 @@ class TestDistributionE2E:
         """--units mmol adds *_mmol fields; server sgv stays mg/dL-sourced."""
         env = self._conn_env(server_url_and_secret, tmp_path)
         self._post_readings(env, [80, 100, 200])
-        r = self._run(["--json", "report", "distribution", "--days", "2",
-                        "--units", "mmol"], env=env)
+        r = self._run(
+            ["--json", "report", "distribution", "--days", "2", "--units", "mmol"], env=env
+        )
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         if _is_live_mode():
@@ -2009,8 +2347,7 @@ class TestDistributionE2E:
         assert "percentile_mmol" in data and "iqr_mmol" in data
         # The mg/dL percentiles stay authoritative; mmol is derived.
         for k, v in data["percentile_mmol"].items():
-            assert v == pytest.approx(
-                data["percentile_mgdl"][k] / 18.018, abs=0.01)
+            assert v == pytest.approx(data["percentile_mgdl"][k] / 18.018, abs=0.01)
 
     def test_report_distribution_human_output(self, server_url_and_secret, tmp_path):
         env = self._conn_env(server_url_and_secret, tmp_path)
@@ -2027,14 +2364,13 @@ class TestDistributionE2E:
         env = self._conn_env(server_url_and_secret, tmp_path)
         self._post_readings(env, [60, 100, 190])
         from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
         iso_e = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         iso_s = (_dt.now(_tz.utc) - _td(days=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        r = self._run(["--json", "report", "tir", "--from", iso_s, "--to", iso_e],
-                      env=env)
+        r = self._run(["--json", "report", "tir", "--from", iso_s, "--to", iso_e], env=env)
         assert r.returncode == 0, r.stderr
         tir = json.loads(r.stdout)
-        r = self._run(["--json", "report", "distribution",
-                        "--from", iso_s, "--to", iso_e], env=env)
+        r = self._run(["--json", "report", "distribution", "--from", iso_s, "--to", iso_e], env=env)
         assert r.returncode == 0, r.stderr
         dist = json.loads(r.stdout)
         if _is_live_mode():
@@ -2058,7 +2394,11 @@ class TestIntradayE2E:
             env_full.update(env)
         return subprocess.run(
             self.CLI_BASE + list(args),
-            capture_output=True, text=True, check=check, env=env_full, timeout=30,
+            capture_output=True,
+            text=True,
+            check=check,
+            env=env_full,
+            timeout=30,
         )
 
     def _conn_env(self, server_url_and_secret, tmp_path):
@@ -2077,6 +2417,7 @@ class TestIntradayE2E:
 
     def _window(self, days=2):
         from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
         iso_e = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         iso_s = (_dt.now(_tz.utc) - _td(days=days)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         return iso_s, iso_e
@@ -2094,8 +2435,22 @@ class TestIntradayE2E:
         assert data["found"] is True
         assert data["units"] == "mg/dl"
         iso_s, iso_e = self._window(2)
-        r = self._run(["--json", "entries", "list", "--count", "500",
-                        "--type", "sgv", "--from", iso_s, "--to", iso_e], env=env)
+        r = self._run(
+            [
+                "--json",
+                "entries",
+                "list",
+                "--count",
+                "500",
+                "--type",
+                "sgv",
+                "--from",
+                iso_s,
+                "--to",
+                iso_e,
+            ],
+            env=env,
+        )
         assert r.returncode == 0, r.stderr
         expected = len([e for e in json.loads(r.stdout) if "dateString" in e])
         assert data["total_readings"] == expected
@@ -2115,8 +2470,9 @@ class TestIntradayE2E:
     def test_report_intraday_empty_window_found_false(self, server_url_and_secret, tmp_path):
         """A long-past window has no data → found:false, never zero cells."""
         env = self._conn_env(server_url_and_secret, tmp_path)
-        r = self._run(["--json", "report", "intraday",
-                        "--from", "2001-01-01", "--to", "2001-01-02"], env=env)
+        r = self._run(
+            ["--json", "report", "intraday", "--from", "2001-01-01", "--to", "2001-01-02"], env=env
+        )
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         if _is_live_mode():
@@ -2130,8 +2486,7 @@ class TestIntradayE2E:
         """--units mmol adds *_mmol twins; mg/dL stays authoritative."""
         env = self._conn_env(server_url_and_secret, tmp_path)
         self._post_readings(env, [80, 100, 200])
-        r = self._run(["--json", "report", "intraday", "--days", "2",
-                        "--units", "mmol"], env=env)
+        r = self._run(["--json", "report", "intraday", "--days", "2", "--units", "mmol"], env=env)
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         if _is_live_mode():
@@ -2158,12 +2513,10 @@ class TestIntradayE2E:
         env = self._conn_env(server_url_and_secret, tmp_path)
         self._post_readings(env, [60, 100, 190])
         iso_s, iso_e = self._window(2)
-        r = self._run(["--json", "report", "daily", "--from", iso_s, "--to", iso_e],
-                      env=env)
+        r = self._run(["--json", "report", "daily", "--from", iso_s, "--to", iso_e], env=env)
         assert r.returncode == 0, r.stderr
         daily = json.loads(r.stdout)
-        r = self._run(["--json", "report", "intraday", "--from", iso_s, "--to", iso_e],
-                      env=env)
+        r = self._run(["--json", "report", "intraday", "--from", iso_s, "--to", iso_e], env=env)
         assert r.returncode == 0, r.stderr
         grid = json.loads(r.stdout)
         if _is_live_mode():
@@ -2180,3 +2533,194 @@ class TestIntradayE2E:
             assert g["max_mgdl"] == row["max_mgdl"]
             assert g["tir_pct"] == row["tir_pct"]
             assert sum(c["count"] for c in g["cells"]) == row["count"]
+
+
+class TestSensorsRevokeLastChangeE2E:
+    """`sensors revoke-last-change` end-to-end (stand-in or live server)."""
+
+    CLI_BASE = _resolve_cli("cli-anything-nightscout")
+    RECENT = "-25h"  # not used; timestamps are built per test
+
+    def _run(self, args, env=None, check=True):
+        env_full = os.environ.copy()
+        if env:
+            env_full.update(env)
+        return subprocess.run(
+            self.CLI_BASE + list(args),
+            capture_output=True,
+            text=True,
+            check=check,
+            env=env_full,
+            timeout=30,
+        )
+
+    def _conn_env(self, server_url_and_secret, tmp_path):
+        url, secret = server_url_and_secret
+        return {
+            "NIGHTSCOUT_URL": url,
+            "NIGHTSCOUT_API_SECRET": secret,
+            "NIGHTSCOUT_TOKEN": "",
+            "CLI_ANYTHING_HOME": str(tmp_path),
+        }
+
+    def _seed_pair(self, env, *, entered_by=None):
+        """POST a Sensor Stop + Start pair minutes apart; return (ids, prefix).
+
+        A unique ``entered_by`` (``ha-bridge-<uuid8>``) keeps the pair shaped
+        like a bridge record but isolates it from other tests on the shared
+        stand-in server.
+        """
+        prefix = entered_by or "ha-bridge-" + uuid.uuid4().hex[:8]
+        recent = datetime.now(timezone.utc)
+        stop_at = recent - timedelta(minutes=15)
+        start_at = recent - timedelta(minutes=10)
+        r = self._run(
+            [
+                "--json",
+                "treatments",
+                "add",
+                "--event-type",
+                "Sensor Stop",
+                "--entered-by",
+                prefix,
+                "--created-at",
+                stop_at.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            ],
+            env=env,
+        )
+        assert r.returncode == 0, r.stderr
+        stop_id = (
+            json.loads(r.stdout)[0]["_id"]
+            if isinstance(json.loads(r.stdout), list)
+            else json.loads(r.stdout)["_id"]
+        )
+        r = self._run(
+            [
+                "--json",
+                "treatments",
+                "add",
+                "--event-type",
+                "Sensor Start",
+                "--entered-by",
+                prefix,
+                "--created-at",
+                start_at.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            ],
+            env=env,
+        )
+        assert r.returncode == 0, r.stderr
+        body = json.loads(r.stdout)
+        start_id = body[0]["_id"] if isinstance(body, list) else body["_id"]
+        return stop_id, start_id, prefix
+
+    def _revoke(self, env, prefix, *, dry=False):
+        """Run revoke-last-change scoped to this test's entered-by prefix."""
+        suffix = ["--entered-by-prefix", prefix]
+        if dry:
+            args = ["--json", "--dry-run", "sensors", "revoke-last-change"]
+        else:
+            args = ["--json", "sensors", "revoke-last-change", "--yes"]
+        return self._run(args + suffix, env=env)
+
+    def test_revokes_the_last_habridge_pair(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        stop_id, start_id, prefix = self._seed_pair(env)
+        r = self._revoke(env, prefix)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["found"] is True
+        assert data["status"] == "pair"
+        revoked_ids = {x["_id"] for x in data["revoked"]}
+        assert revoked_ids == {stop_id, start_id}
+        # Both records must be gone from the server.
+        for rid in (stop_id, start_id):
+            r = self._run(["--json", "treatments", "get", rid], env=env)
+            body = json.loads(r.stdout)
+            assert body == [] or body == {} or body.get("_id") != rid, body
+
+    def test_found_false_when_no_habridge_events(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        ghost = "ha-bridge-" + uuid.uuid4().hex[:8]
+        r = self._revoke(env, ghost)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["found"] is False
+        assert data["status"] in ("none", "unpaired", "too_stale", "unparseable")
+        assert data["reason"]
+
+    def test_entered_by_prefix_scopes_detection(self, server_url_and_secret, tmp_path):
+        """Records from other enteredBy senders are invisible to the scan.
+
+        A pair posted under ``manual-<uuid>`` is never matched when the
+        command is scoped to a different ``--entered-by-prefix``. (The
+        deeper unit tests cover the default case: nothing manually entered
+        is ever eligible under the ``ha-bridge`` default prefix.)
+        """
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        self._seed_pair(env, entered_by="manual-" + uuid.uuid4().hex[:8])
+        ghost = "ha-bridge-zz-" + uuid.uuid4().hex[:8]
+        r = self._revoke(env, ghost)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["found"] is False
+        assert data["status"] == "none"
+        assert data["reason"]
+
+    def test_dry_run_emits_request_and_deletes_nothing(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        stop_id, start_id, prefix = self._seed_pair(env)
+        r = self._revoke(env, prefix, dry=True)
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["dry_run"] is True
+        assert "DELETE" in data["would"]
+        # Records survive.
+        for rid in (stop_id, start_id):
+            r = self._run(["--json", "treatments", "get", rid], env=env)
+            body = json.loads(r.stdout)
+            ok = (isinstance(body, list) and body) or (
+                isinstance(body, dict) and body.get("_id") == rid
+            )
+            assert ok, body
+
+    def test_without_yes_aborts_before_deleting(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        stop_id, start_id, prefix = self._seed_pair(env)
+        r = self._run(
+            ["--json", "sensors", "revoke-last-change", "--entered-by-prefix", prefix],
+            env=env,
+            check=False,
+        )
+        assert r.returncode != 0
+        assert "aborted" in (r.stdout + r.stderr).lower()
+        for rid in (stop_id, start_id):
+            r = self._run(["--json", "treatments", "get", rid], env=env)
+            body = json.loads(r.stdout)
+            ok = (isinstance(body, list) and body) or (
+                isinstance(body, dict) and body.get("_id") == rid
+            )
+            assert ok, body
+
+    def test_human_output(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        _, _, prefix = self._seed_pair(env)
+        r = self._run(
+            ["sensors", "revoke-last-change", "--yes", "--entered-by-prefix", prefix], env=env
+        )
+        assert r.returncode == 0, r.stderr
+        assert "revoked 2 record(s)" in r.stdout
+
+    def test_workflow_bridge_pair_lifecycle(self, server_url_and_secret, tmp_path):
+        """Full round trip: seed pair → revoke (found) → revoke again (found:false)."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        _, _, prefix = self._seed_pair(env)
+        r = self._revoke(env, prefix)
+        assert r.returncode == 0, r.stderr
+        first = json.loads(r.stdout)
+        assert first["found"] is True
+        # Second run: the pair is gone, the same prefix has nothing to revoke.
+        r = self._revoke(env, prefix)
+        assert r.returncode == 0, r.stderr
+        second = json.loads(r.stdout)
+        assert second["found"] is False
+        assert second["status"] == "none"

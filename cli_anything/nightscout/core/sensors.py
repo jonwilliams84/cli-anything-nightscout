@@ -14,6 +14,8 @@ from __future__ import annotations
 import datetime as _dt
 from typing import Any
 
+from cli_anything.nightscout.core import treatments as treatments_mod
+
 SENSOR_MARKER_EVENT_TYPES = ("Sensor Start", "Sensor Change")
 
 
@@ -386,3 +388,259 @@ def session_segments(
     segments = [pre_first] if (buckets.get(0) or pre_first["readings"]) else []
     segments.extend(by_index[k] for k in sorted(by_index))
     return segments
+
+
+# ── revoke last ha-bridge Sensor Stop+Start pair (v2.15.0) ─────────────────
+#
+# Nightscout does not keep deleted records, so a mistaken ha-bridge pair
+# (double-fired automation, duplicate bridge restart …) can only be undone
+# by deleting the two treatment records while they are still easy to
+# identify. `scripts/revoke_last_sensor_change.py` implemented that ad-hoc;
+# these functions bring the same safety rails into the harness so the CLI
+# (and AI agents) can use them without shelling out to a script.
+
+
+HABRIDGE_DEFAULT_PREFIX = "ha-bridge"
+DEFAULT_PAIR_GAP_MINUTES = 30
+DEFAULT_MAX_AGE_HOURS = 24.0
+
+_PAIR_SCAN_COUNT = 200
+
+# Treatment keys worth echoing in a plan/execution payload.
+_PAIR_RECORD_KEYS = ("_id", "eventType", "enteredBy", "created_at")
+
+
+def _pair_record_summary(treatment: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not treatment:
+        return None
+    return {k: treatment.get(k) for k in _PAIR_RECORD_KEYS if k in treatment}
+
+
+def find_last_habridge_pair(
+    treatments: list[dict],
+    *,
+    now: _dt.datetime | None = None,
+    max_pair_gap_minutes: float = DEFAULT_PAIR_GAP_MINUTES,
+    max_age_hours: float = DEFAULT_MAX_AGE_HOURS,
+    entered_by_prefix: str = HABRIDGE_DEFAULT_PREFIX,
+) -> dict[str, Any]:
+    """Find the most recent Stop+Start pair eligible for revocation.
+
+    Pure function over already-fetched treatments (no network).
+
+    Safety rails mirror ``scripts/revoke_last_sensor_change.py``:
+
+    * only records from ``enteredBy`` starting with ``entered_by_prefix``
+      are considered (manually-entered sensor events are never touched) —
+    * stop and start must be within ``max_pair_gap_minutes`` of each other,
+      else they are not a pair;
+    * the pair must be younger than ``max_age_hours`` — old records carry
+      context that is easy to misidentify, so revoking them is refused.
+
+    Returns a decision dict with ``found``, ``status``
+    (``pair`` | ``none`` | ``unpaired`` | ``too_stale``), ``reason``, and
+    when a candidate pair exists: ``stop``/``start`` summaries,
+    ``pair_gap_minutes`` and ``pair_age_hours``.
+    """
+    now = now or _dt.datetime.now(_dt.timezone.utc).astimezone()
+
+    def _matches(t: dict[str, Any], event: str) -> bool:
+        return t.get("eventType") == event and str(t.get("enteredBy") or "").startswith(
+            entered_by_prefix
+        )
+
+    stops = sorted(
+        (t for t in treatments if _matches(t, "Sensor Stop")),
+        key=lambda t: str(t.get("created_at") or ""),
+        reverse=True,
+    )
+    starts = sorted(
+        (t for t in treatments if _matches(t, "Sensor Start")),
+        key=lambda t: str(t.get("created_at") or ""),
+        reverse=True,
+    )
+
+    decision: dict[str, Any] = {
+        "found": False,
+        "status": "none",
+        "reason": None,
+        "stop": None,
+        "start": None,
+        "pair_gap_minutes": None,
+        "pair_age_hours": None,
+        "max_pair_gap_minutes": max_pair_gap_minutes,
+        "max_age_hours": max_age_hours,
+        "entered_by_prefix": entered_by_prefix,
+    }
+
+    if not stops or not starts:
+        decision["reason"] = (
+            f"no {entered_by_prefix} Sensor Stop/Start events in the "
+            f"scanned window — nothing to revoke"
+        )
+        return decision
+
+    stop, start = stops[0], starts[0]
+    decision["stop"] = _pair_record_summary(stop)
+    decision["start"] = _pair_record_summary(start)
+
+    stop_dt = _treatment_dt(stop)
+    start_dt = _treatment_dt(start)
+    if stop_dt is None or start_dt is None:
+        decision["status"] = "unparseable"
+        decision["reason"] = (
+            "could not parse created_at on the most recent pair — refusing "
+            "to revoke records whose timestamps are unknown"
+        )
+        return decision
+
+    gap_min = abs((start_dt - stop_dt).total_seconds()) / 60.0
+    decision["pair_gap_minutes"] = round(gap_min, 1)
+    if gap_min > max_pair_gap_minutes:
+        decision["status"] = "unpaired"
+        decision["reason"] = (
+            f"most recent Sensor Stop and Sensor Start are {gap_min:.0f}min "
+            f"apart (> {max_pair_gap_minutes:.0f}min limit) — not a clean "
+            f"pair, refusing to revoke"
+        )
+        return decision
+
+    newest = max(stop_dt, start_dt)
+    age_h = (now - newest).total_seconds() / 3600.0
+    decision["pair_age_hours"] = round(age_h, 2)
+    if age_h > max_age_hours:
+        decision["status"] = "too_stale"
+        decision["reason"] = (
+            f"pair is {age_h:.1f}h old (> {max_age_hours:.1f}h limit) — "
+            f"delete it manually via `treatments delete <id>` if you must"
+        )
+        return decision
+
+    decision["status"] = "pair"
+    decision["found"] = True
+    return decision
+
+
+def plan_revoke_last_change(
+    *,
+    conn: dict[str, Any],
+    max_age_hours: float = DEFAULT_MAX_AGE_HOURS,
+    max_pair_gap_minutes: float = DEFAULT_PAIR_GAP_MINUTES,
+    entered_by_prefix: str = HABRIDGE_DEFAULT_PREFIX,
+    count: int = _PAIR_SCAN_COUNT,
+    now: _dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Read-only plan for revoking the last ha-bridge Stop+Start pair.
+
+    Fetches the recent treatments window (twice ``max_age_hours``) and runs
+    :func:`find_last_habridge_pair` over it. Makes NO changes — the caller
+    decides whether to execute via :func:`execute_revoke`.
+
+    The result carries the fetch window in ``window_from``/``window_to``
+    so the caller can see exactly what was scanned.
+    """
+    now = now or _dt.datetime.now(_dt.timezone.utc).astimezone()
+    window_hours = max(max_age_hours * 2.0, 1.0)
+    window_from = (now - _dt.timedelta(hours=window_hours)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    window_to = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    recent = treatments_mod.list_treatments(
+        conn=conn,
+        count=count,
+        date_gte=window_from,
+        date_lte=window_to,
+    )
+    decision = find_last_habridge_pair(
+        recent,
+        now=now,
+        max_pair_gap_minutes=max_pair_gap_minutes,
+        max_age_hours=max_age_hours,
+        entered_by_prefix=entered_by_prefix,
+    )
+    decision["window_from"] = window_from
+    decision["window_to"] = window_to
+    decision["scanned"] = len(recent)
+    return decision
+
+
+def execute_revoke(
+    plan: dict[str, Any],
+    *,
+    conn: dict[str, Any],
+) -> dict[str, Any]:
+    """Delete the Stop+Start pair named in a :func:`plan_revoke_last_change` plan.
+
+    Only executes when ``plan["found"]`` is true; otherwise returns an
+    untouched-plan no-op with ``deleted: []``. Individual delete failures
+    are reported per record in ``failed`` (with ``_id`` + error) — a
+    partially revoked pair is visible, never silent.
+    """
+    result: dict[str, Any] = {
+        "found": bool(plan.get("found")),
+        "status": plan.get("status"),
+        "revoked": [],
+        "failed": [],
+        "stop": plan.get("stop"),
+        "start": plan.get("start"),
+        "dry_run": False,
+    }
+    if not result["found"]:
+        result["reason"] = plan.get("reason")
+        return result
+    for label, record in (
+        ("Sensor Stop", plan.get("stop")),
+        ("Sensor Start", plan.get("start")),
+    ):
+        if not record or not record.get("_id"):
+            result["failed"].append(
+                {
+                    "label": label,
+                    "_id": record.get("_id") if record else None,
+                    "error": "missing _id",
+                }
+            )
+            continue
+        try:
+            treatments_mod.delete_treatment(record["_id"], conn=conn)
+            result["revoked"].append(
+                {"label": label, "_id": record["_id"], "created_at": record.get("created_at")}
+            )
+        except Exception as exc:  # surface each failure without losing the rest
+            result["failed"].append({"label": label, "_id": record["_id"], "error": str(exc)})
+    return result
+
+
+def revoke_last_sensor_change(
+    *,
+    conn: dict[str, Any],
+    dry_run: bool = False,
+    max_age_hours: float = DEFAULT_MAX_AGE_HOURS,
+    max_pair_gap_minutes: float = DEFAULT_PAIR_GAP_MINUTES,
+    entered_by_prefix: str = HABRIDGE_DEFAULT_PREFIX,
+    now: _dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Detect and (unless ``dry_run``) delete the last ha-bridge Stop+Start pair.
+
+    Convenience wrapper: :func:`plan_revoke_last_change` +
+    :func:`execute_revoke`. With ``dry_run`` it returns the plan plus
+    ``dry_run: true`` and ``would_delete`` ids, and touches nothing.
+    """
+    plan = plan_revoke_last_change(
+        conn=conn,
+        max_age_hours=max_age_hours,
+        max_pair_gap_minutes=max_pair_gap_minutes,
+        entered_by_prefix=entered_by_prefix,
+        now=now,
+    )
+    if dry_run or not plan.get("found"):
+        if dry_run:
+            plan = dict(plan)
+            plan["dry_run"] = True
+            plan["would_delete"] = [
+                r["_id"]
+                for r in (plan.get("stop"), plan.get("start"))
+                if isinstance(r, dict) and r.get("_id")
+            ]
+        return plan
+    result = execute_revoke(plan, conn=conn)
+    result["plan"] = plan
+    return result

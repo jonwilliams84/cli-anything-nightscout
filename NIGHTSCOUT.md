@@ -43,7 +43,7 @@ summary) are computed locally from data the server returns.
 | `treatments` | `latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`, `temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`, `event-types`, `active` | Treatment events (boluses, meals, site/sensor changes) + the structured Care Portal event types |
 | `profile` | `active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `basal-total`, `create`, `update`, `delete` | Profile records, schedule lookups and scheduled basal totals |
 | `devicestatus` | `latest`, `list`, `add`, `delete`, `pump`, `uploader`, `loop` | Device status — raw records plus parsed pump / uploader / closed-loop views |
-| `sensors` | `sessions`, `data` | CGM sensor-session detection (windows between `Sensor Start` / `Sensor Change` events) — canonical source for sensor-change history; `data` slices the CGM entries by session with per-segment statistics |
+| `sensors` | `sessions`, `data`, `revoke-last-change` | CGM sensor-session detection (windows between `Sensor Start` / `Sensor Change` events) — canonical source for sensor-change history; `data` slices the CGM entries by session with per-segment statistics; `revoke-last-change` undoes the most recent ha-bridge Stop+Start pair |
 | `properties` | `get` | Derived state from `/api/v2/properties` — IOB, COB, bgnow, delta, loop, sensor age |
 | `notifications` | `ack`, `admin` | Alarm acknowledgement and admin notices |
 | `activity` | `latest`, `list`, `get`, `add`, `delete` | Activity / exercise records (API v3) |
@@ -423,6 +423,42 @@ units), and `days[]` — each with `date`, `count`,
 - Honesty rails: no valid readings → `found: false` with an empty `days`
   list, never a zero grid; cells only cover observed hours — a missing
   hour is genuinely missing data, never a fabricated 0.
+
+## Sensor-change undo (v2.15.0+)
+
+`sensors revoke-last-change [--yes] [--max-age-hours H] [--max-pair-gap N]
+[--entered-by-prefix P]` undoes the most recent **ha-bridge Sensor Stop +
+Sensor Start treatment pair** — the recovery move when a bridge automation
+double-fires and posts a bogus pair. Nightscout keeps no deletion history,
+so the ability had previously lived only in the standalone
+`scripts/revoke_last_sensor_change.py`; it is now a first-class command
+with the same safety rails:
+
+- only records whose `enteredBy` starts with the `entered_by_prefix`
+  (default `ha-bridge`) are candidates — **manually-entered sensor events
+  are never eligible**;
+- the Stop and the Start must be within `--max-pair-gap` minutes of each
+  other (default 30), else they are not a pair (`found: false`,
+  `status: "unpaired"`);
+- the pair must be younger than `--max-age-hours` (default 24), else
+  `status: "too_stale"` — old records carry context that is easy to
+  misidentify, so revoking them is refused and the command points at
+  `treatments delete <id>` instead;
+- the scan window is twice `max_age_hours`, and the JSON plan carries
+  `window_from`/`window_to`/`scanned` so the caller sees exactly what was
+  searched;
+- global `--dry-run` prints the request description and (as with every
+  mutating command) sends nothing; scripted use needs `--yes` (without a
+  TTY and without `--yes` it aborts, like every destructive verb).
+
+JSON result: a plan (`found`, `status`, `reason`, `stop`/`start`
+summaries, `pair_gap_minutes`, `pair_age_hours`) when nothing was revoked,
+or `found: true` with `revoked[]` and `failed[]` — a partially deleted pair
+is reported per record, never silent.
+
+Core functions in `core/sensors.py`: `find_last_habridge_pair` (pure
+decision logic), `plan_revoke_last_change` (read-only fetch + decision),
+`execute_revoke` (the deletes), `revoke_last_sensor_change` (wrapper).
 
 ## Auth resolution order (highest precedence first)
 

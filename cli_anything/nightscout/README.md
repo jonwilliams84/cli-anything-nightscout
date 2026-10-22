@@ -91,6 +91,32 @@ segment `0` (`session_start: null`); the newest session is `ongoing: true`.
 Use `--min-readings N` to hide thin segments and `--from/--to` to pin an
 exact window instead of `--days`.
 
+### Sensor-change undo (v2.15.0+)
+
+```bash
+# Dry-run is the default reflex: describe, delete nothing
+cli-anything-nightscout --json --dry-run sensors revoke-last-change
+
+# Undo the last ha-bridge Sensor Stop + Sensor Start pair (≤30 min apart, ≤24 h old)
+cli-anything-nightscout sensors revoke-last-change --yes --json
+
+# Looser rails for a stubborn case
+cli-anything-nightscout sensors revoke-last-change --yes \
+    --max-age-hours 48 --max-pair-gap 45
+```
+
+When a bridge automation double-fires and posts a bogus Stop+Start pair,
+Nightscout keeps no deletion history — the pair has to be removed while it
+is still easy to identify. `sensors revoke-last-change` (a port of
+`scripts/revoke_last_sensor_change.py` into the harness) deletes the most
+recent pair with every rail on: only events whose `enteredBy` starts with
+the `entered_by_prefix` (default `ha-bridge`) are candidates, an unclean
+pair (gap > `--max-pair-gap` minutes) or stale pair (older than
+`--max-age-hours`) is refused with `found: false` + `reason`, and without
+`--yes` on a non-TTY it aborts. The JSON result carries the deleted ids in
+`revoked[]` and any per-record failure in `failed[]` — a partially deleted
+pair is visible, never silent.
+
 ### Care Portal event types (v2.2.0+)
 
 `treatments add` posts a generic record. Event types with *structured*
@@ -484,7 +510,7 @@ cli-anything-nightscout session info
 | `treatments` | Treatment events incl. boluses, meals, site/sensor changes (`latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`, `active`, `event-types`) plus validated Care Portal verbs (`temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`) |
 | `profile` | Profile records (`active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `basal-total`, `create`, `update`, `delete`) |
 | `devicestatus` | Pump/CGM status (`latest`, `list`, `add`, `delete`) plus parsed views (`pump`, `uploader`, `loop`) |
-| `sensors` | CGM sensor-session detection from `Sensor Start` / `Sensor Change` treatments (`sessions`, `data`) |
+| `sensors` | CGM sensor-session detection from `Sensor Start` / `Sensor Change` treatments (`sessions`, `data`) plus the safety verb `revoke-last-change` |
 | `properties` | Derived state from `/api/v2/properties` — IOB, COB, bgnow, delta, loop, sensor age (`get`) |
 | `notifications` | Alarm `ack` + `admin` notices |
 | `activity` | Activity / exercise records — API v3 (`latest`, `list`, `get`, `add`, `delete`) |

@@ -40,7 +40,7 @@ from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-VERSION = "2.14.0"
+VERSION = "2.15.0"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -291,7 +291,7 @@ def repl(ctx: click.Context) -> None:
         "devicestatus": "Device status: latest, list, add, delete",
         "food": "Food database: list, quickpicks, regular, add, update, delete",
         "activity": "Activity records: latest, list, get, add, delete",
-        "sensors": "CGM sensor sessions: sessions, data",
+        "sensors": "CGM sensor sessions: sessions, data, revoke-last-change",
         "properties": "Derived state (IOB/COB/bgnow/loop): get",
         "notifications": "Alarms: ack, admin",
         "report": "Computed reports: tir, summary, daily, gmi, agp, hypos, mage, risk, by-weekday, excursions, sensor-life, iob-cob",
@@ -2204,6 +2204,114 @@ def sensors_data(
                     f"  (severe-low {s['severe_low']} / low {s['low']} / in-range {s['in_range']}"
                     f" / high {s['high']} / very-high {s['very_high']})"
                 )
+
+
+@sensors_grp.command("revoke-last-change")
+@click.option(
+    "--max-age-hours",
+    default=24.0,
+    type=float,
+    help="Only revoke a pair younger than this many hours (default 24).",
+)
+@click.option(
+    "--max-pair-gap",
+    "max_pair_gap_minutes",
+    default=30,
+    type=int,
+    help="Stop and Start must be within this many minutes (default 30).",
+)
+@click.option(
+    "--entered-by-prefix",
+    default="ha-bridge",
+    help="Only consider treatments whose enteredBy starts with this "
+    "prefix (default 'ha-bridge'); manual events are never touched.",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Skip the interactive confirmation (required for scripted use).",
+)
+@click.pass_context
+def sensors_revoke_last_change(
+    ctx: click.Context,
+    max_age_hours: float,
+    max_pair_gap_minutes: int,
+    entered_by_prefix: str,
+    yes: bool,
+) -> None:
+    """Undo the last ha-bridge Sensor Stop+Start treatment pair.
+
+    For a double-fired bridge automation: finds the most recent
+    ``Sensor Stop`` + ``Sensor Start`` pair posted by the given
+    ``enteredBy`` prefix and deletes both records. Safety rails:
+
+    * only events whose ``enteredBy`` starts with the prefix are
+      considered — manual sensor events are never candidates;
+    * the pair must be within ``--max-pair-gap`` minutes of each
+      other and younger than ``--max-age-hours``, otherwise the
+      command refuses (``found: false`` + reason in JSON);
+
+    Respects the global ``--dry-run`` (emits the request description
+    and sends nothing) and requires ``--yes`` for scripted use.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    if _dry_run_block(
+        ctx,
+        "DELETE /treatments/<last ha-bridge Sensor Stop> + "
+        "DELETE /treatments/<last ha-bridge Sensor Start>",
+    ):
+        return
+    plan = sensors_mod.plan_revoke_last_change(
+        conn=conn,
+        max_age_hours=max_age_hours,
+        max_pair_gap_minutes=max_pair_gap_minutes,
+        entered_by_prefix=entered_by_prefix,
+    )
+    if not plan.get("found"):
+        _emit(
+            ctx,
+            plan,
+            human=f"  nothing to revoke: {plan.get('reason')}",
+        )
+        return
+    stop_id = (plan.get("stop") or {}).get("_id")
+    start_id = (plan.get("start") or {}).get("_id")
+    if not _confirm(
+        ctx,
+        f"Revoke {entered_by_prefix} Sensor Stop {_id_or(stop_id)} and "
+        f"Sensor Start {_id_or(start_id)}?",
+        yes=yes,
+    ):
+        raise click.ClickException("aborted")
+    result = sensors_mod.execute_revoke(plan, conn=conn)
+    failed = result.get("failed") or []
+    if failed and not result.get("revoked"):
+        # Nothing landed — report as error so callers do not assume success.
+        raise click.ClickException(
+            "revoke failed for all records: "
+            + "; ".join(f"{f['label']}: {f.get('error')}" for f in failed)
+        )
+    for f in failed:
+        click.echo(
+            f"  ⚠ {f['label']} ({f.get('_id')}) delete failed: {f.get('error')}",
+            err=True,
+        )
+    _maybe_save_session(ctx, action="sensors.revoke-last-change", detail=entered_by_prefix)
+    _emit(
+        ctx,
+        result,
+        human=(
+            f"  revoked {len(result['revoked'])} record(s): "
+            + ", ".join(f"{r['label']}={r['_id']}" for r in result["revoked"])
+        ),
+    )
+
+
+def _id_or(value: Any) -> str:
+    """Render a possibly-missing ObjectId for a confirmation prompt."""
+    return value if value else "(id unknown)"
 
 
 # ─── v3 generic CRUD ───────────────────────────────────────────────────────

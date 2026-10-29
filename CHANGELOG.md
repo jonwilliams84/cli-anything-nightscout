@@ -4,6 +4,62 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.16.0] — 2026-10-29
+
+- **New commands: `entries import` + `treatments import`** — bulk backfill
+  through the array upload form the Nightscout v1 API already supports
+  (`POST /entries.json` / `POST /treatments.json` with a JSON **array** —
+  exactly what every uploader and migration tool uses). Until now the
+  harness could only post one record per invocation (`entries add` demands
+  a `--sgv` flag; `treatments add` posts a single event), so backfilling a
+  rig-to-rig migration or a care-event backlog meant one CLI call per
+  record. What the commands do:
+  - **Formats**: `--format auto` (default) detects a JSON array, NDJSON
+    (one object per line) or CSV (header required, numeric strings
+    coerced); `-` reads stdin; `--device` / `--entered-by` stamp rows that
+    do not carry one.
+  - **Preview is the default**: rows are parsed and validated,
+    `dry_run: true` + `rows_preview` + the chunk count are emitted, and
+    nothing is sent. `--apply` commits; global `--dry-run` stays
+    network-safe on top of `--apply`.
+  - **Chunked array posts**: `--chunk-size` (default 100, max 2000) rows
+    per request; per-chunk results are always reported (`ok`, `error`) —
+    a failed chunk is visible and later chunks still run, so a backfill
+    never fails silently halfway through.
+  - **Per-row validation refuses anything that would be stored broken**
+    (errors carry the row index): no date (a backfill row without one
+    would be filed at *import* time), unknown `direction`, non-positive
+    glucose, `cal`/`etr` entry types (a malformed `cal` record shifts
+    every raw-BG reading), treatments without `eventType` (stored but read
+    by no plugin) or without a timestamp, `glucoseType` outside
+    `Finger`/`Sensor`/`Manual`, non-scalar extra fields. Timestamps accept
+    epoch-ms, epoch-s, numeric strings and ISO 8601 (naive taken as UTC).
+    Unrecognized treatment event types are sent but warned, like
+    `treatments add`.
+  - **All-or-nothing by default**: one invalid row refuses the whole file
+    and the JSON payload lists every bad row; `--skip-invalid` uploads the
+    valid rows and reports the skipped ones with their errors.
+  - **Append-only**: the server does not de-duplicate, so re-importing the
+    same file duplicates the records — the command docs say to check with
+    `entries count` / `treatments list --find` afterwards, and the E2E
+    workflow verifies an imported `Site Change` through `report ages`.
+- Core additions in `core/import_data.py`: `parse_records` (JSON/NDJSON/CSV
+  parsing with auto-detection), `coerce_entry_row` / `coerce_treatment_row`
+  (per-row validation + wire-shape normalisation), `import_entries` /
+  `import_treatments` (chunked array posts), `parse_date_to_ms` (the
+  timestamp coercion rule).
+- Tests: 57 unit tests (`TestParseRecords`, `TestParseDateToMs`,
+  `TestCoerceEntryRow`, `TestCoerceTreatmentRow`, `TestImportUploads`,
+  `TestBulkImportCommands`) and 6 E2E tests (`TestBulkImportE2E`,
+  including a preview-posts-nothing check, a refuse-then-`--skip-invalid`
+  lifecycle, a global `--dry-run` network-safety check, and a
+  import → `treatments list` → `report ages` workflow).
+- Docs: SOP (`NIGHTSCOUT.md`) gains a "Bulk backfill import (v2.16.0+)"
+  section and the `entries`/`treatments` table rows; package README gains a
+  usage section; agent skill docs (`SKILL.md`) gain a backfill row.
+- Fixed the stale module version literal (`nightscout_cli.VERSION` said
+  2.15.0 while the package ships 2.16.0).
+
 ## [2.15.0] — 2026-10-22
 
 - **New command: `sensors revoke-last-change`** — the undo move for a

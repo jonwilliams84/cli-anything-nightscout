@@ -8,7 +8,9 @@ or Bearer JWT). Designed for AI agents: every command supports `--json`.
 from __future__ import annotations
 
 import json
+import math
 import shlex
+import sys
 from typing import Any
 
 import click
@@ -22,6 +24,7 @@ from cli_anything.nightscout.core import devicestatus as ds_mod
 from cli_anything.nightscout.core import entries as entries_mod
 from cli_anything.nightscout.core import excursions as excursions_mod
 from cli_anything.nightscout.core import food as food_mod
+from cli_anything.nightscout.core import import_data as import_mod
 from cli_anything.nightscout.core import logbook as logbook_mod
 from cli_anything.nightscout.core import loop_report as loop_report_mod
 from cli_anything.nightscout.core import notifications as notifications_mod
@@ -40,7 +43,7 @@ from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-VERSION = "2.15.0"
+VERSION = "2.16.0"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -5070,6 +5073,344 @@ def report_ages(ctx: click.Context, days: int, date_gte: str | None) -> None:
         )
     for w in res["warnings"]:
         click.echo(f"  ⚠ {w}")
+
+
+# ─── v2.16.0: bulk backfill import (array POST /entries + /treatments) ──────
+
+
+def _read_import_file(file_path: str) -> str:
+    if file_path == "-":
+        return sys.stdin.read()
+    try:
+        with open(file_path, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError as exc:
+        raise click.ClickException(f"cannot read {file_path!r}: {exc}") from None
+
+
+def _bulk_import(
+    ctx: click.Context,
+    *,
+    what: str,
+    path: str,
+    file_path: str,
+    fmt: str,
+    chunk_size: int,
+    skip_invalid: bool,
+    apply_: bool,
+    coerce_fn: Any,
+    coerce_kwargs: dict[str, Any],
+    import_fn: Any,
+    action: str,
+) -> None:
+    """Shared engine for `entries import` / `treatments import`.
+
+    Order of operations: read → parse rows → validate every row → refuse the
+    run if any row is invalid (unless --skip-invalid) → preview or chunked
+    array POST. Validation errors always carry the row index so the caller
+    can fix the exact line in the file.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    text = _read_import_file(file_path)
+    try:
+        rows = import_mod.parse_records(text, fmt=fmt, source=file_path)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    canonical: list[dict[str, Any]] = []
+    invalid: list[dict[str, str]] = []
+    for i, raw in enumerate(rows):
+        try:
+            canonical.append(coerce_fn(raw, row=i, **coerce_kwargs))
+        except ValueError as exc:
+            invalid.append({"row": i, "error": str(exc)})
+    if invalid and not skip_invalid:
+        _emit(
+            ctx,
+            {
+                "dry_run": True,
+                "refused": True,
+                "parsed": len(rows),
+                "valid": len(canonical),
+                "invalid": invalid,
+            },
+            human=f"[refused] {len(invalid)} invalid row(s) of {len(rows)} parsed",
+        )
+        raise click.ClickException(
+            f"{len(invalid)} invalid row(s) (e.g. {invalid[0]['error']}); "
+            "fix them or pass --skip-invalid"
+        )
+    imported = canonical
+    if not imported:
+        raise click.ClickException(f"no valid rows to import from {file_path!r}")
+    n_chunks = max(1, math.ceil(len(imported) / chunk_size))
+    if not apply_:
+        _emit(
+            ctx,
+            {
+                "dry_run": True,
+                "would": f"POST {path}",
+                "parsed": len(rows),
+                "valid": len(imported),
+                "skipped": invalid,
+                "chunk_size": chunk_size,
+                "chunks": n_chunks,
+                "rows_preview": imported[:3],
+                "hint": "pass --apply to upload",
+            },
+            human=(
+                f"[preview] {len(imported)}/{len(rows)} {what} row(s) validated → "
+                f"{n_chunks} chunk(s); pass --apply to upload"
+            ),
+        )
+        return
+    if _dry_run_block(
+        ctx,
+        f"POST {path} (bulk import: {len(imported)} row(s) in {n_chunks} chunk(s))",
+    ):
+        return
+    res = import_fn(imported, conn=conn, chunk_size=chunk_size)
+    res.update({"parsed": len(rows), "skipped": invalid, "chunk_size": chunk_size})
+    _maybe_save_session(ctx, action=action, detail=f"posted={res['posted']}/{res['count']}")
+    _emit(
+        ctx,
+        res,
+        human=(
+            f"posted {res['posted']}/{res['count']} {what} record(s) across "
+            f"{len(res['chunks'])} chunk(s)"
+            + (f"; skipped {len(invalid)} invalid row(s)" if invalid else "")
+        ),
+    )
+
+
+@entries_grp.command("import")
+@click.option(
+    "--file",
+    "file_path",
+    required=True,
+    help="JSON array / NDJSON / CSV file of entry rows, or '-' for stdin.",
+)
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["auto", "json", "ndjson", "csv"]),
+    default="auto",
+    show_default=True,
+    help="Row format (auto detects JSON array, NDJSON or CSV).",
+)
+@click.option(
+    "--device", default="cli-anything-nightscout", help="Device stamped on rows without one."
+)
+@click.option(
+    "--chunk-size",
+    type=click.IntRange(min=1, max=2000),
+    default=100,
+    show_default=True,
+    help="Rows per array POST.",
+)
+@click.option(
+    "--skip-invalid",
+    is_flag=True,
+    default=False,
+    help="Upload the valid rows even when some rows fail validation.",
+)
+@click.option(
+    "--apply",
+    "apply_",
+    is_flag=True,
+    default=False,
+    help="Actually upload. Without this the command validates and previews only.",
+)
+@click.pass_context
+def entries_import(
+    ctx: click.Context,
+    file_path: str,
+    fmt: str,
+    device: str,
+    chunk_size: int,
+    skip_invalid: bool,
+    apply_: bool,
+) -> None:
+    """Backfill many glucose readings from one file (bulk mutation).
+
+    Nightscout's v1 API accepts a JSON array on POST /entries.json — this is
+    how uploaders and migration tools backfill history; until now the harness
+    could only post one reading per invocation (entries add). Accepted types
+    are sgv and mbg (cal/etr are refused: a malformed cal record quietly
+    shifts every raw-BG reading). The server does NOT de-duplicate, so
+    re-importing the same file duplicates the records.
+
+    Default is preview-only (rows are parsed and validated, nothing is sent).
+    Pass --apply to commit. Global --dry-run stays network-safe.
+    """
+    _bulk_import(
+        ctx,
+        what="entries",
+        path="/entries.json",
+        file_path=file_path,
+        fmt=fmt,
+        chunk_size=chunk_size,
+        skip_invalid=skip_invalid,
+        apply_=apply_,
+        coerce_fn=import_mod.coerce_entry_row,
+        coerce_kwargs={"device": device},
+        import_fn=import_mod.import_entries,
+        action="entries.import",
+    )
+
+
+@treatments_grp.command("import")
+@click.option(
+    "--file",
+    "file_path",
+    required=True,
+    help="JSON array / NDJSON / CSV file of treatment rows, or '-' for stdin.",
+)
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["auto", "json", "ndjson", "csv"]),
+    default="auto",
+    show_default=True,
+    help="Row format (auto detects JSON array, NDJSON or CSV).",
+)
+@click.option(
+    "--entered-by",
+    default="cli-anything-nightscout",
+    help="Default enteredBy for rows that do not carry one.",
+)
+@click.option(
+    "--chunk-size",
+    type=click.IntRange(min=1, max=2000),
+    default=100,
+    show_default=True,
+    help="Rows per array POST.",
+)
+@click.option(
+    "--skip-invalid",
+    is_flag=True,
+    default=False,
+    help="Upload the valid rows even when some rows fail validation.",
+)
+@click.option(
+    "--apply",
+    "apply_",
+    is_flag=True,
+    default=False,
+    help="Actually upload. Without this the command validates and previews only.",
+)
+@click.pass_context
+def treatments_import(
+    ctx: click.Context,
+    file_path: str,
+    fmt: str,
+    entered_by: str,
+    chunk_size: int,
+    skip_invalid: bool,
+    apply_: bool,
+) -> None:
+    """Backfill many treatment events from one file (bulk mutation).
+
+    Each row needs an eventType (see `treatments event-types` — a stored
+    record without one is read by no plugin) and a timestamp (created_at /
+    timestamp / dateString); without it the event would be filed at import
+    time instead of the past it belongs to. Rows may override enteredBy.
+    Unrecognized event types are sent but warned about, same as
+    `treatments add`. The server does NOT de-duplicate.
+
+    Default is preview-only. Pass --apply to commit; global --dry-run stays
+    network-safe.
+    """
+    text = _read_import_file(file_path)
+    conn = _conn(ctx)
+    _require_url(conn)
+    try:
+        rows = import_mod.parse_records(text, fmt=fmt, source=file_path)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    # Peek at event types so probable typos warn like `treatments add` does.
+    bogus_types: list[str] = []
+    for raw in rows:
+        et = raw.get("eventType") or raw.get("event_type") if isinstance(raw, dict) else None
+        if isinstance(et, str) and et not in treatments_mod.KNOWN_EVENT_TYPES:
+            if et not in bogus_types:
+                bogus_types.append(et)
+    if bogus_types:
+        click.echo(
+            f"  ⚠ unrecognized event type(s): {', '.join(bogus_types)} — sent as-is, "
+            "but no plugin may read them (`treatments event-types` lists the strings)",
+            err=True,
+        )
+    canonical: list[dict[str, Any]] = []
+    invalid: list[dict[str, str]] = []
+    for i, raw in enumerate(rows):
+        try:
+            rec = import_mod.coerce_treatment_row(raw, row=i)
+        except ValueError as exc:
+            invalid.append({"row": i, "error": str(exc)})
+            continue
+        if "enteredBy" not in rec:
+            rec["enteredBy"] = entered_by
+        canonical.append(rec)
+    if invalid and not skip_invalid:
+        _emit(
+            ctx,
+            {
+                "dry_run": True,
+                "refused": True,
+                "parsed": len(rows),
+                "valid": len(canonical),
+                "invalid": invalid,
+            },
+            human=f"[refused] {len(invalid)} invalid row(s) of {len(rows)} parsed",
+        )
+        raise click.ClickException(
+            f"{len(invalid)} invalid row(s) (e.g. {invalid[0]['error']}); "
+            "fix them or pass --skip-invalid"
+        )
+    if not canonical:
+        raise click.ClickException(f"no valid rows to import from {file_path!r}")
+    n_chunks = max(1, math.ceil(len(canonical) / chunk_size))
+    if not apply_:
+        _emit(
+            ctx,
+            {
+                "dry_run": True,
+                "would": "POST /treatments.json",
+                "parsed": len(rows),
+                "valid": len(canonical),
+                "skipped": invalid,
+                "unrecognized_event_types": bogus_types,
+                "chunk_size": chunk_size,
+                "chunks": n_chunks,
+                "rows_preview": canonical[:3],
+                "hint": "pass --apply to upload",
+            },
+            human=(
+                f"[preview] {len(canonical)}/{len(rows)} treatment row(s) validated → "
+                f"{n_chunks} chunk(s); pass --apply to upload"
+            ),
+        )
+        return
+    if _dry_run_block(
+        ctx,
+        f"POST /treatments.json (bulk import: {len(canonical)} row(s) in {n_chunks} chunk(s))",
+    ):
+        return
+    res = import_mod.import_treatments(canonical, conn=conn, chunk_size=chunk_size)
+    res.update({"parsed": len(rows), "skipped": invalid, "chunk_size": chunk_size})
+    _maybe_save_session(
+        ctx, action="treatments.import", detail=f"posted={res['posted']}/{res['count']}"
+    )
+    _emit(
+        ctx,
+        res,
+        human=(
+            f"posted {res['posted']}/{res['count']} treatment record(s) across "
+            f"{len(res['chunks'])} chunk(s)"
+            + (f"; skipped {len(invalid)} invalid row(s)" if invalid else "")
+        ),
+    )
 
 
 if __name__ == "__main__":

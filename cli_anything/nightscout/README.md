@@ -456,6 +456,45 @@ genuinely missing data, never a fabricated 0. The day rows are the same
 definitions as `report daily` — same window, same day boundary, equal
 numbers, guaranteed by the E2E workflow test.
 
+### Bulk backfill import (v2.16.0+)
+
+Nightscout's v1 API accepts a JSON **array** on `POST /entries.json` and
+`POST /treatments.json` — that is how every uploader and migration tool
+backfills history. Until now the harness could only post one record per
+invocation (`entries add` demands a `--sgv` flag; `treatments add` posts a
+single event), so a week of readings or a care-event backlog meant one CLI
+call per record. Now:
+
+```bash
+# Default is preview-only: rows are parsed and validated, nothing is sent
+cli-anything-nightscout --json entries import --file week.json
+
+# Commit: rows go up in JSON-array chunks (--chunk-size, default 100)
+cli-anything-nightscout --json entries import --file week.json --apply
+
+# Format is auto-detected (JSON array, NDJSON, CSV); stdin works too
+cli-anything-nightscout entries import --file - --format csv --apply < readings.csv
+
+# Treatments: every row needs an eventType + timestamp (rows may override
+# enteredBy); unknown event types warn like `treatments add` does
+cli-anything-nightscout --json treatments import --file backfill.ndjson --apply
+
+# Care-event backlog (site/sensor changes) + the CAGE counter as a check
+cli-anything-nightscout --json treatments import --file site_changes.json --apply
+cli-anything-nightscout --json report ages
+```
+
+Validation is per-row and refuses anything that would silently corrupt the
+record, with the row number in the error: a row with no date would be filed
+at *import* time; an unknown `direction`; a treatment without `eventType`
+(stored but read by no plugin); a glucose value that is not a positive
+number; `cal`/`etr` entry types (a malformed `cal` shifts every raw-BG
+reading). By default one bad row refuses the whole file;
+`--skip-invalid` uploads the valid rows and reports the skipped ones with
+their errors. Rows are **append-only** and the server does not
+de-duplicate — re-importing the same file duplicates the records. Global
+`--dry-run` stays network-safe.
+
 ### Dry-run is network-safe (v2.1.0+)
 
 `--dry-run` now describes the request without sending it — every mutating
@@ -506,8 +545,8 @@ cli-anything-nightscout session info
 |-------|-------------|
 | `config` | Manage server URL + API secret/token (`set`, `show`, `clear`, `test`) |
 | `status` | Server identity (`info`, `version`, `versions`, `last-modified`, `verifyauth`) |
-| `entries` | CGM entries (`latest`, `current`, `list`, `get`, `add`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize`) plus the data-quality surface (`calibrations`, `raw`, `gaps`) |
-| `treatments` | Treatment events incl. boluses, meals, site/sensor changes (`latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`, `active`, `event-types`) plus validated Care Portal verbs (`temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`) |
+| `entries` | CGM entries (`latest`, `current`, `list`, `get`, `add`, `import` (bulk backfill), `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize`) plus the data-quality surface (`calibrations`, `raw`, `gaps`) |
+| `treatments` | Treatment events incl. boluses, meals, site/sensor changes (`latest`, `list`, `get`, `add`, `import` (bulk backfill), `update`, `delete`, `bg-check`, `active`, `event-types`) plus validated Care Portal verbs (`temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`) |
 | `profile` | Profile records (`active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `basal-total`, `create`, `update`, `delete`) |
 | `devicestatus` | Pump/CGM status (`latest`, `list`, `add`, `delete`) plus parsed views (`pump`, `uploader`, `loop`) |
 | `sensors` | CGM sensor-session detection from `Sensor Start` / `Sensor Change` treatments (`sessions`, `data`) plus the safety verb `revoke-last-change` |

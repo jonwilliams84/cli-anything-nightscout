@@ -3332,3 +3332,512 @@ class TestSensorsRevokeEdgeCases:
         assert res["dry_run"] is False
         assert len(res["revoked"]) == 2
         assert res["plan"]["found"] is True
+
+
+# ─── core/import_data (v2.16.0 bulk backfill import) ───────────────────────
+
+
+class TestParseRecords:
+    def setup_method(self):
+        from cli_anything.nightscout.core import import_data
+
+        self.mod = import_data
+
+    def test_json_array(self):
+        rows = self.mod.parse_records('[{"sgv": 100}, {"sgv": 120}]', source="f.json")
+        assert len(rows) == 2 and rows[0]["sgv"] == 100
+
+    def test_json_single_object_becomes_one_row(self):
+        rows = self.mod.parse_records('{"sgv": 100}', source="f.json")
+        assert rows == [{"sgv": 100}]
+
+    def test_ndjson(self):
+        rows = self.mod.parse_records('{"sgv": 100}\n\n{"sgv": 120}\n', fmt="ndjson")
+        assert len(rows) == 2 and rows[1]["sgv"] == 120
+
+    def test_ndjson_bad_line_names_line(self):
+        with pytest.raises(ValueError, match="line 2"):
+            self.mod.parse_records('{"sgv": 100}\nnot json\n', fmt="ndjson")
+
+    def test_csv(self):
+        rows = self.mod.parse_records("sgv,dateString\n100,2024-01-15T08:00:00Z\n", fmt="csv")
+        assert len(rows) == 1 and rows[0]["sgv"] == "100"
+
+    def test_csv_none_keys_dropped(self):
+        rows = self.mod.parse_records('sgv\n100\n', fmt="csv")
+        assert rows == [{"sgv": "100"}]
+
+    def test_auto_detects_csv(self):
+        rows = self.mod.parse_records("sgv\n100\n120\n")
+        assert len(rows) == 2
+
+    def test_auto_detects_json(self):
+        rows = self.mod.parse_records('[{"sgv": 100}]')
+        assert rows == [{"sgv": 100}]
+
+    def test_empty_raises(self):
+        with pytest.raises(ValueError, match="empty"):
+            self.mod.parse_records("   \n", source="f")
+
+    def test_unsupported_fmt_raises(self):
+        with pytest.raises(ValueError, match="unsupported format"):
+            self.mod.parse_records("[1]", fmt="yaml")
+
+    def test_non_object_row_raises(self):
+        with pytest.raises(ValueError, match="expected a JSON object"):
+            self.mod.parse_records('[42]', fmt="json")
+
+
+class TestParseDateToMs:
+    def setup_method(self):
+        from cli_anything.nightscout.core import import_data
+
+        self.mod = import_data
+
+    def test_epoch_ms(self):
+        assert self.mod.parse_date_to_ms(1705305600000, row=0) == 1705305600000
+
+    def test_epoch_seconds_becomes_ms(self):
+        assert self.mod.parse_date_to_ms(1705305600, row=0) == 1705305600000
+
+    def test_numeric_string(self):
+        assert self.mod.parse_date_to_ms(" 1705305600 ", row=0) == 1705305600000
+
+    def test_iso_string_with_z(self):
+        assert self.mod.parse_date_to_ms("2024-01-15T08:00:00Z", row=0) == 1705305600000
+
+    def test_naive_iso_taken_as_utc(self):
+        assert self.mod.parse_date_to_ms("2024-01-15T08:00:00", row=0) == 1705305600000
+
+    def test_invalid_string_raises(self):
+        with pytest.raises(ValueError, match="unparseable date"):
+            self.mod.parse_date_to_ms("not a date", row=3)
+
+    def test_none_raises(self):
+        with pytest.raises(ValueError, match="missing or invalid date"):
+            self.mod.parse_date_to_ms(None, row=0)
+
+    def test_bool_raises(self):
+        with pytest.raises(ValueError, match="missing or invalid"):
+            self.mod.parse_date_to_ms(True, row=0)
+
+    def test_list_raises(self):
+        with pytest.raises(ValueError, match="unsupported date type"):
+            self.mod.parse_date_to_ms([1], row=0)
+
+
+class TestCoerceEntryRow:
+    def setup_method(self):
+        from cli_anything.nightscout.core import import_data
+
+        self.mod = import_data
+
+    def test_valid_sgv_wire_shape(self):
+        rec = self.mod.coerce_entry_row(
+            {"sgv": 112, "dateString": "2024-01-15T08:00:00Z", "direction": "Flat"},
+            row=0,
+            device="dev",
+        )
+        assert rec["type"] == "sgv"
+        assert rec["sgv"] == 112.0
+        assert rec["date"] == 1705305600000
+        assert rec["dateString"] == "2024-01-15T08:00:00.000Z"
+        assert rec["device"] == "dev"
+        assert rec["direction"] == "Flat"
+
+    def test_type_defaults_to_sgv(self):
+        rec = self.mod.coerce_entry_row({"sgv": 90, "date": 1705305600000}, row=0, device="d")
+        assert rec["type"] == "sgv"
+
+    def test_mbg_reads_mbg_key(self):
+        rec = self.mod.coerce_entry_row(
+            {"type": "mbg", "mbg": 105, "date": 1705305600000}, row=0, device="d"
+        )
+        assert rec["mbg"] == 105 and "sgv" not in rec
+
+    def test_cal_is_refused(self):
+        with pytest.raises(ValueError, match="not supported for bulk import"):
+            self.mod.coerce_entry_row({"type": "cal", "sgv": 1, "date": 1705305600000}, row=0, device="d")
+
+    def test_bogus_type_refused(self):
+        with pytest.raises(ValueError, match="type must be one of"):
+            self.mod.coerce_entry_row({"type": "bogus", "sgv": 1, "date": 1705305600000}, row=0, device="d")
+
+    def test_value_fallback_key(self):
+        rec = self.mod.coerce_entry_row({"value": 88, "date": 1705305600000}, row=0, device="d")
+        assert rec["sgv"] == 88.0
+
+    def test_missing_glucose_refused(self):
+        with pytest.raises(ValueError, match="no glucose value"):
+            self.mod.coerce_entry_row({"date": 1705305600000}, row=0, device="d")
+
+    def test_missing_date_refused(self):
+        with pytest.raises(ValueError, match="no date"):
+            self.mod.coerce_entry_row({"sgv": 100}, row=0, device="d")
+
+    def test_invalid_direction_refused(self):
+        with pytest.raises(ValueError, match="invalid direction"):
+            self.mod.coerce_entry_row(
+                {"sgv": 100, "date": 1705305600000, "direction": "Sideways"}, row=0, device="d"
+            )
+
+    def test_direction_may_be_omitted(self):
+        rec = self.mod.coerce_entry_row({"sgv": 100, "date": 1705305600000}, row=0, device="d")
+        assert "direction" not in rec
+
+    def test_non_positive_glucose_refused(self):
+        with pytest.raises(ValueError, match="must be > 0"):
+            self.mod.coerce_entry_row({"sgv": 0, "date": 1705305600000}, row=0, device="d")
+
+    def test_numeric_string_glucose(self):
+        rec = self.mod.coerce_entry_row({"sgv": "112", "date": 1705305600000}, row=0, device="d")
+        assert rec["sgv"] == 112.0
+
+    def test_non_dict_refused(self):
+        with pytest.raises(ValueError, match="expected a JSON object"):
+            self.mod.coerce_entry_row([1, 2], row=7, device="d")  # type: ignore[arg-type]
+
+    def test_row_index_in_error(self):
+        with pytest.raises(ValueError, match="row 4"):
+            self.mod.coerce_entry_row({"date": "nonsense"}, row=4, device="d")
+
+
+class TestCoerceTreatmentRow:
+    def setup_method(self):
+        from cli_anything.nightscout.core import import_data
+
+        self.mod = import_data
+
+    def test_valid_row(self):
+        rec = self.mod.coerce_treatment_row(
+            {"eventType": "Meal Bolus", "carbs": 30, "insulin": 3.0,
+             "timestamp": "2024-01-15T12:00:00Z"},
+            row=0,
+        )
+        assert rec["eventType"] == "Meal Bolus"
+        assert rec["created_at"] == "2024-01-15T12:00:00.000Z"
+        assert rec["carbs"] == 30.0 and rec["insulin"] == 3.0
+
+    def test_missing_event_type_refused(self):
+        with pytest.raises(ValueError, match="no eventType"):
+            self.mod.coerce_treatment_row({"carbs": 30, "date": 1705305600000}, row=0)
+
+    def test_missing_timestamp_refused(self):
+        with pytest.raises(ValueError, match="no timestamp"):
+            self.mod.coerce_treatment_row({"eventType": "Meal Bolus", "carbs": 30}, row=0)
+
+    def test_carbs_string_coerced(self):
+        rec = self.mod.coerce_treatment_row(
+            {"eventType": "Carb Correction", "carbs": "15", "date_ms": 1705305600000}, row=0
+        )
+        assert rec["carbs"] == 15.0
+
+    def test_negative_carbs_refused(self):
+        with pytest.raises(ValueError, match="carbs must be >= 0"):
+            self.mod.coerce_treatment_row(
+                {"eventType": "Meal Bolus", "carbs": -5, "date": 1705305600000}, row=0
+            )
+
+    def test_negative_insulin_refused(self):
+        with pytest.raises(ValueError, match="insulin must be >= 0"):
+            self.mod.coerce_treatment_row(
+                {"eventType": "Correction Bolus", "insulin": -1, "date": 1705305600000}, row=0
+            )
+
+    def test_invalid_glucose_type_refused(self):
+        with pytest.raises(ValueError, match="invalid glucoseType"):
+            self.mod.coerce_treatment_row(
+                {"eventType": "BG Check", "glucose": 90, "glucoseType": "Toe", "date": 1705305600000},
+                row=0,
+            )
+
+    def test_valid_glucose_type(self):
+        rec = self.mod.coerce_treatment_row(
+            {"eventType": "BG Check", "glucose": 90, "glucoseType": "Finger", "date": 1705305600000},
+            row=0,
+        )
+        assert rec["glucoseType"] == "Finger"
+
+    def test_extra_scalar_passthrough(self):
+        rec = self.mod.coerce_treatment_row(
+            {"eventType": "Temp Basal", "date": 1705305600000, "percent": 50, "duration": 60},
+            row=0,
+        )
+        assert rec["percent"] == 50 and rec["duration"] == 60
+
+    def test_extra_non_scalar_refused(self):
+        with pytest.raises(ValueError, match="unsupported extra field"):
+            self.mod.coerce_treatment_row(
+                {"eventType": "Note", "date": 1705305600000, "junk": {"a": 1}}, row=0
+            )
+
+    def test_notes_must_be_string(self):
+        with pytest.raises(ValueError, match="notes must be a string"):
+            self.mod.coerce_treatment_row(
+                {"eventType": "Note", "notes": 5, "date": 1705305600000}, row=0
+            )
+
+    def test_entered_by_override(self):
+        rec = self.mod.coerce_treatment_row(
+            {"eventType": "Note", "enteredBy": "phone-app", "date": 1705305600000}, row=0
+        )
+        assert rec["enteredBy"] == "phone-app"
+
+    def test_system_keys_are_not_passthrough(self):
+        rec = self.mod.coerce_treatment_row(
+            {"eventType": "Note", "date": 1705305600000, "sysTime": "x", "_id": "y"},
+            row=0,
+        )
+        assert "sysTime" not in rec and "_id" not in rec
+
+
+class TestImportUploads:
+    def setup_method(self):
+        from cli_anything.nightscout.core import import_data
+
+        self.mod = import_data
+
+    def _rows(self, n):
+        return [
+            {"sgv": 100 + i, "date": 1705305600000 + i * 300000, "device": "d"} for i in range(n)
+        ]
+
+    def test_chunking_and_payload_shape(self):
+        rows = [
+            self.mod.coerce_entry_row(r, row=i, device="d") for i, r in enumerate(self._rows(5))
+        ]
+        calls: list[list] = []
+
+        def fake_post(path, *, data, **_):
+            calls.append(data)
+            return data
+
+        with mock.patch.object(self.mod.backend, "post", fake_post):
+            res = self.mod.import_entries(rows, conn={"server_url": "https://x"}, chunk_size=2)
+        assert res["count"] == 5 and res["posted"] == 5
+        assert [c["rows"] for c in res["chunks"]] == [2, 2, 1]
+        assert len(calls) == 3
+        # Every call must be a JSON array, not a single dict — the array form
+        # is the whole point of the bulk import.
+        assert all(isinstance(c, list) for c in calls)
+        assert calls[0][0]["sgv"] == 100.0
+        assert all(c["ok"] for c in res["chunks"])
+
+    def test_failed_chunk_is_visible_and_does_not_stop_later_chunks(self):
+        rows = [
+            self.mod.coerce_entry_row(r, row=i, device="d") for i, r in enumerate(self._rows(4))
+        ]
+        attempted: list[int] = []
+
+        def fake_post(path, *, data, **_):
+            attempted.append(data[0]["date"])
+            if data[0]["date"] == rows[1]["date"]:
+                raise RuntimeError("server exploded")
+            return data
+
+        with mock.patch.object(self.mod.backend, "post", fake_post):
+            res = self.mod.import_entries(rows, conn={"server_url": "https://x"}, chunk_size=1)
+        assert len(attempted) == 4  # chunk 2 failed but chunk 3+ still ran
+        assert res["posted"] == 3
+        assert res["chunks"][1]["ok"] is False
+        assert "server exploded" in res["chunks"][1]["error"]
+        assert [c["ok"] for c in res["chunks"]] == [True, False, True, True]
+
+    def test_treatments_upload_path(self):
+        rows = [
+            self.mod.coerce_treatment_row(
+                {"eventType": "Note", "date": 1705305600000 + i}, row=i
+            )
+            for i in range(3)
+        ]
+        calls: list[tuple] = []
+
+        def fake_post(path, *, data, **_):
+            calls.append((path, data))
+            return data
+
+        with mock.patch.object(self.mod.backend, "post", fake_post):
+            res = self.mod.import_treatments(rows, conn={"server_url": "https://x"}, chunk_size=10)
+        assert len(calls) == 1
+        assert calls[0][0] == "/treatments.json"
+        assert calls[0][1][0]["eventType"] == "Note"
+        assert res["posted"] == 3
+
+    def test_empty_records_post_nothing(self):
+        def fake_post(path, **_):
+            raise AssertionError("must not post")
+
+        with mock.patch.object(self.mod.backend, "post", fake_post):
+            res = self.mod.import_entries([], conn={"server_url": "https://x"})
+        assert res == {"count": 0, "posted": 0, "chunks": []}
+
+    def test_bad_chunk_size_raises(self):
+        with pytest.raises(ValueError, match="chunk_size"):
+            self.mod.import_entries(self._rows(1), conn={"server_url": "x"}, chunk_size=0)
+
+
+class TestBulkImportCommands:
+    """`entries import` / `treatments import` — CLI wiring (CliRunner)."""
+
+    def _invoke(self, args, as_json=True):
+        from click.testing import CliRunner
+
+        from cli_anything.nightscout import nightscout_cli as mod
+
+        runner = CliRunner()
+        full_args = ["--url", "https://ns.example.com", "--api-secret", "testsecret12chars"]
+        full_args += ["--json"] if as_json else []
+        full_args += args
+        return runner.invoke(mod.cli, full_args, standalone_mode=False, catch_exceptions=True)
+
+    def _write(self, tmp_path, name, text):
+        p = tmp_path / name
+        p.write_text(text, encoding="utf-8")
+        return str(p)
+
+    def _patch_posts(self, capture):
+        from cli_anything.nightscout.core import import_data as im
+
+        def fake_post(path, *, data, **_):
+            capture.append((path, data))
+            return data
+
+        return mock.patch.object(im.backend, "post", fake_post)
+
+    def test_entries_preview_posts_nothing(self, tmp_path):
+        f = self._write(tmp_path, "rows.json", '[{"sgv": 100, "date": 1705305600000}]')
+        capture: list = []
+        with self._patch_posts(capture):
+            result = self._invoke(["entries", "import", "--file", f])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["dry_run"] is True
+        assert data["valid"] == 1 and data["chunks"] == 1
+        assert data["rows_preview"][0]["type"] == "sgv"
+        assert data["hint"] == "pass --apply to upload"
+        assert capture == []  # preview must not touch the network
+
+    def test_entries_apply_uploads_array(self, tmp_path):
+        f = self._write(
+            tmp_path,
+            "rows.json",
+            '[{"sgv": 100, "date": 1705305600000}, {"sgv": 110, "date": 1705305900000}]',
+        )
+        capture: list = []
+        with self._patch_posts(capture):
+            result = self._invoke(["entries", "import", "--file", f, "--apply"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["posted"] == 2 and data["count"] == 2
+        assert capture and capture[0][0] == "/entries.json"
+        assert isinstance(capture[0][1], list)
+
+    def test_entries_invalid_rows_refused_without_skip(self, tmp_path):
+        f = self._write(
+            tmp_path, "rows.json", '[{"sgv": 100, "date": 1705305600000}, {"sgv": "x"}]'
+        )
+        capture: list = []
+        with self._patch_posts(capture):
+            result = self._invoke(["entries", "import", "--file", f, "--apply"])
+        assert result.exit_code == 1
+        assert "invalid row" in str(result.exception)
+        assert capture == []
+
+    def test_entries_skip_invalid_posts_valid_rows_only(self, tmp_path):
+        f = self._write(
+            tmp_path,
+            "rows.ndjson",
+            '{"sgv": 100, "date": 1705305600000}\n{"sgv": "bad", "date": 1705305900000}\n',
+        )
+        capture: list = []
+        with self._patch_posts(capture):
+            result = self._invoke(["entries", "import", "--file", f, "--apply", "--skip-invalid"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["posted"] == 1 and data["count"] == 1
+        assert data["skipped"][0]["error"]
+
+    def test_entries_stdin_and_csv(self):
+        from click.testing import CliRunner
+
+        from cli_anything.nightscout import nightscout_cli as mod
+
+        capture: list = []
+        runner = CliRunner()
+        full_args = [
+            "--url", "https://ns.example.com", "--api-secret", "testsecret12chars", "--json",
+            "entries", "import", "--file", "-", "--format", "csv", "--apply",
+        ]
+        with self._patch_posts(capture):
+            result = runner.invoke(
+                mod.cli, full_args, input="sgv,dateString\n101,2024-01-15T08:00:00Z\n",
+                standalone_mode=False, catch_exceptions=True,
+            )
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["posted"] == 1
+        assert capture[0][1][0]["sgv"] == 101.0
+
+    def test_entries_dry_run_blocks_apply(self, tmp_path):
+        f = self._write(tmp_path, "rows.json", '[{"sgv": 100, "date": 1705305600000}]')
+        capture: list = []
+        with self._patch_posts(capture):
+            result = self._invoke(["--dry-run", "entries", "import", "--file", f, "--apply"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["dry_run"] is True
+        assert "bulk" in data["would"]
+        assert capture == []
+
+    def test_missing_file_is_click_exception(self, tmp_path):
+        result = self._invoke(
+            ["entries", "import", "--file", str(tmp_path / "nope.json"), "--apply"]
+        )
+        assert result.exit_code == 1
+        assert "cannot read" in str(result.exception)
+
+    def test_malformed_file_is_click_exception(self, tmp_path):
+        f = self._write(tmp_path, "bad.json", "{not json")
+        result = self._invoke(["entries", "import", "--file", f])
+        assert result.exit_code == 1
+        assert "invalid JSON" in str(result.exception)
+
+    def test_treatments_preview_and_apply(self, tmp_path):
+        f = self._write(
+            tmp_path,
+            "tx.ndjson",
+            '{"eventType": "Meal Bolus", "carbs": 30, "timestamp": "2024-01-15T12:00:00Z"}\n'
+            '{"eventType": "Note", "timestamp": "2024-01-15T13:00:00Z"}',
+        )
+        capture: list = []
+        with self._patch_posts(capture):
+            preview = self._invoke(["treatments", "import", "--file", f])
+            assert preview.exit_code == 0, preview.exception
+            pdata = json.loads(preview.output)
+            assert pdata["valid"] == 2 and pdata["dry_run"] is True
+            assert capture == []
+            applied = self._invoke(
+                ["treatments", "import", "--file", f, "--apply", "--entered-by", "agent"]
+            )
+        assert applied.exit_code == 0, applied.exception
+        data = json.loads(applied.output)
+        assert data["posted"] == 2
+        sent = capture[0][1]
+        assert sent[0]["created_at"] == "2024-01-15T12:00:00.000Z"
+        assert sent[1]["enteredBy"] == "agent"
+
+    def test_treatments_unknown_event_type_warns(self, tmp_path):
+        f = self._write(
+            tmp_path, "tx.json", '[{"eventType": "Dinner Time", "timestamp": "2024-01-15T12:00:00Z"}]'
+        )
+        capture: list = []
+        with self._patch_posts(capture):
+            result = self._invoke(["treatments", "import", "--file", f, "--apply"])
+        assert result.exit_code == 0, result.exception
+        assert "Dinner Time" in result.stderr or "Dinner Time" in result.output
+
+    def test_treatments_invalid_default_refused(self, tmp_path):
+        f = self._write(tmp_path, "tx.json", '[{"carbs": 30, "timestamp": "2024-01-15T12:00:00Z"}]')
+        result = self._invoke(["treatments", "import", "--file", f, "--apply"])
+        assert result.exit_code == 1
+        assert "eventType" in str(result.exception)

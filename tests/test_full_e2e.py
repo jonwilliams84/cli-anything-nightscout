@@ -2724,3 +2724,173 @@ class TestSensorsRevokeLastChangeE2E:
         second = json.loads(r.stdout)
         assert second["found"] is False
         assert second["status"] == "none"
+
+
+# ─── v2.16.0: bulk backfill import (entries + treatments) ──────────────────
+
+
+class TestBulkImportE2E:
+    """`entries import` / `treatments import` — end-to-end against the server.
+
+    Stand-in and live mode both accept JSON arrays on POST /entries.json and
+    /treatments.json, so these run the real chunked upload path: file → row
+    validation → array POST → verify back with `entries list` /
+    `treatments list` / `report ages`.
+    """
+
+    CLI_BASE = _resolve_cli("cli-anything-nightscout")
+
+    def _run(self, args, env=None, check=True):
+        env_full = os.environ.copy()
+        if env:
+            env_full.update(env)
+        return subprocess.run(
+            self.CLI_BASE + list(args),
+            capture_output=True,
+            text=True,
+            check=check,
+            env=env_full,
+            timeout=30,
+        )
+
+    def _conn_env(self, server_url_and_secret):
+        url, secret = server_url_and_secret
+        return {
+            "NIGHTSCOUT_URL": url,
+            "NIGHTSCOUT_API_SECRET": secret,
+            "NIGHTSCOUT_TOKEN": "",
+            "CLI_ANYTHING_HOME": "/tmp/.cli-anything-test-" + uuid.uuid4().hex[:8],
+        }
+
+    @staticmethod
+    def _entry_rows(n, device):
+        """n glucose rows spaced 5 minutes apart ending 10 minutes ago."""
+        base = datetime.now(timezone.utc) - timedelta(minutes=10 + 5 * n)
+        return [
+            {
+                "type": "sgv",
+                "sgv": 100 + i,
+                "date": int((base + timedelta(minutes=5 * i)).timestamp() * 1000),
+                "device": device,
+            }
+            for i in range(n)
+        ]
+
+    def test_entries_import_preview_posts_nothing(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret)
+        rows = self._entry_rows(2, "e2e-import-preview")
+        f = tmp_path / "rows.json"
+        f.write_text(json.dumps(rows))
+        r = self._run(["--json", "entries", "import", "--file", str(f)], env=env)
+        data = json.loads(r.stdout)
+        assert data["dry_run"] is True
+        assert data["valid"] == 2 and data["chunks"] == 1
+        assert data["rows_preview"][0]["device"] == "e2e-import-preview"
+        r = self._run(
+            ["--json", "entries", "list", "--count", "10", "--find", "device=e2e-import-preview"],
+            env=env,
+        )
+        assert json.loads(r.stdout) == []
+
+    def test_entries_import_apply_and_verify(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret)
+        rows = self._entry_rows(3, "e2e-import-apply")
+        f = tmp_path / "rows.json"
+        f.write_text(json.dumps(rows))
+        r = self._run(["--json", "entries", "import", "--file", str(f), "--apply"], env=env)
+        data = json.loads(r.stdout)
+        assert data["posted"] == 3 and data["count"] == 3
+        assert all(c["ok"] for c in data["chunks"])
+        # Round-trip: back via `entries list`, filter by the import device.
+        r = self._run(
+            ["--json", "entries", "list", "--count", "10", "--find", "device=e2e-import-apply"],
+            env=env,
+        )
+        back = json.loads(r.stdout)
+        assert len(back) == 3
+        assert sorted(int(e["sgv"]) for e in back) == [100, 101, 102]
+
+    def test_entries_import_refuses_invalid_then_skips(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret)
+        good = self._entry_rows(1, "e2e-import-skip")[0]
+        bad = {"type": "sgv", "sgv": "not a number", "date": 1705305600000,
+               "device": "e2e-import-skip"}
+        f = tmp_path / "mixed.ndjson"
+        f.write_text(json.dumps(good) + "\n" + json.dumps(bad))
+        # Refusal: exit non-zero, nothing posted (the default, safe behaviour).
+        r = self._run(["--json", "entries", "import", "--file", str(f), "--apply"], env=env,
+                      check=False)
+        assert r.returncode != 0
+        assert "invalid row" in (r.stdout + r.stderr)
+        # --skip-invalid posts exactly the valid row and reports the skipped one.
+        r = self._run(
+            ["--json", "entries", "import", "--file", str(f), "--apply", "--skip-invalid"],
+            env=env,
+        )
+        data = json.loads(r.stdout)
+        assert data["posted"] == 1 and len(data["skipped"]) == 1
+        r = self._run(
+            ["--json", "entries", "list", "--count", "10", "--find", "device=e2e-import-skip"],
+            env=env,
+        )
+        back = json.loads(r.stdout)
+        assert len(back) == 1 and back[0]["sgv"] == good["sgv"]
+
+    def test_entries_import_dry_run_blocks_apply(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret)
+        rows = self._entry_rows(2, "e2e-import-dryrun")
+        f = tmp_path / "rows.json"
+        f.write_text(json.dumps(rows))
+        r = self._run(["--dry-run", "--json", "entries", "import", "--file", str(f), "--apply"],
+                      env=env)
+        data = json.loads(r.stdout)
+        assert data["dry_run"] is True
+        assert "bulk" in data["would"]
+        r = self._run(
+            ["--json", "entries", "list", "--count", "10", "--find", "device=e2e-import-dryrun"],
+            env=env,
+        )
+        assert json.loads(r.stdout) == []
+
+    def test_treatments_import_workflow_with_ages(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret)
+        now = datetime.now(timezone.utc)
+        cannula = (now - timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        rows = [
+            {"eventType": "Site Change", "timestamp": cannula, "enteredBy": "e2e-import-tx"},
+        ]
+        f = tmp_path / "tx.json"
+        f.write_text(json.dumps(rows))
+        r = self._run(
+            ["--json", "treatments", "import", "--file", str(f), "--apply", "--entered-by",
+             "e2e-import-tx"],
+            env=env,
+        )
+        data = json.loads(r.stdout)
+        assert data["posted"] == 1
+        assert data["chunks"][0]["ok"] is True
+        # Round-trip through `treatments list`.
+        r = self._run(
+            ["--json", "treatments", "list", "--count", "10", "--find", "enteredBy=e2e-import-tx"],
+            env=env,
+        )
+        back = json.loads(r.stdout)
+        assert len(back) == 1
+        assert back[0]["eventType"] == "Site Change"
+        assert back[0]["enteredBy"] == "e2e-import-tx"
+        # Workflow: the imported Care Portal event feeds the `report ages`
+        # counter (CAGE ≈ 5h, certainly < 24h).
+        r = self._run(["--json", "report", "ages"], env=env)
+        data = json.loads(r.stdout)
+        cage = data["counters"]["cage"]
+        assert cage["found"] is True
+        assert cage["age_hours"] < 24
+
+    def test_treatments_import_requires_event_type(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret)
+        f = tmp_path / "tx.json"
+        f.write_text(json.dumps([{"carbs": 30, "timestamp": "2024-01-15T12:00:00Z"}]))
+        r = self._run(["--json", "treatments", "import", "--file", str(f), "--apply"], env=env,
+                      check=False)
+        assert r.returncode != 0
+        assert "eventType" in (r.stdout + r.stderr)

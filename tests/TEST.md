@@ -919,3 +919,33 @@ nightscout_cli.py: 91 % · core/sensors.py: revoke functions fully covered
 
 Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
 exits 0.
+### Test results — 2026-10-29 (v2.16.0 — bulk backfill import `entries import` / `treatments import`)
+
+New coverage for the gap against the software's array-upload capability:
+`POST /api/v1/entries.json` and `POST /api/v1/treatments.json` both accept
+a JSON **array** of records (that is how every uploader and migration tool
+backfills history), but the harness could only post one record per
+invocation. The new `core/import_data.py` module supplies file parsing
+(JSON array / NDJSON / CSV, auto-detected), per-row validation into the
+exact wire shape (refusing anything that would be stored broken, with the
+row index in the error) and chunked array posts where a failed chunk stays
+visible and later chunks still run.
+
+| File | New tests | Scope |
+|------|-----------|-------|
+| `test_core.py` | **57** | `TestParseRecords` (11): JSON array, single object wrapped, NDJSON, NDJSON bad line names the line, CSV with numeric strings, CSV `None` keys dropped, auto-detect of CSV/JSON/NDJSON (a `{`-leading doc parses as JSON and falls back to NDJSON), empty input, unsupported format, non-object rows refused. `TestParseDateToMs` (9): epoch ms, epoch-s → ms (below 1e11), numeric strings, ISO with `Z`, naive ISO taken as UTC, unparseable/None/bool/list refused. `TestCoerceEntryRow` (14): the wire shape (type/sgv/date/dateString/device/direction), sgv default, mbg key mapping, `cal` refused (it silently shifts raw-BG), bogus type, `value` fallback key, missing glucose/date, invalid direction, non-positive value, numeric strings, non-dict rows, row index in every error. `TestCoerceTreatmentRow` (12): the wire shape (`eventType` + `created_at` from `timestamp`), missing eventType/timestamp refused, numeric coercion, negative carbs/insulin, `glucoseType` whitelist, extra scalar passthrough vs. non-scalar refused, notes/enteredBy typing, reserved keys (`sysTime`, `_id`) excluded. `TestImportUploads` (5): chunking (5 rows / chunk 2 → 3 array POSTs, arrays not dicts), failed chunk stays visible (`ok: false`, error text) AND later chunks still run (`posted: 3` of 4), treatments post path (`/treatments.json`), empty input posts nothing, chunk_size < 1 refused. `TestBulkImportCommands` (CliRunner, 11): preview posts nothing (assert zero HTTP calls) with `rows_preview` + hint; `--apply` uploads arrays (`posted`/`count`); invalid rows refuse the file with the first error quoted and **zero** posts; `--skip-invalid` posts exactly the valid rows; stdin + CSV round-trip; global `--dry-run` blocks `--apply` (no HTTP); missing/malformed file are `ClickException`s; treatments preview→apply with `enteredBy` defaulting and `created_at` normalisation; unknown event type warns; missing eventType refuses. |
+| `test_full_e2e.py` | **6** | `TestBulkImportE2E` (real HTTP, stand-in + live): preview validates and posts nothing (server check via `entries list --find`); `--apply` backfills 3 entries and round-trips through `entries list --find device=…` with exact sgv values; mixed file refuses without `--skip-invalid` (exit ≠ 0, nothing posted) then posts exactly the valid row with it; global `--dry-run` blocks `--apply` and the server stays empty; treatments workflow — a `Site Change` row imports and feeds the `report ages` CAGE counter (`found: true`, age < 24 h); rows without `eventType` refuse the file. |
+
+No stand-in server changes — the commands reuse the existing
+`POST /api/v1/entries.json` / `POST /api/v1/treatments.json` array surface,
+so the E2E tests pass against both the stand-in and a live server.
+
+```text
+$ /work/venv/bin/python -m pytest tests --cov=cli_anything --cov-fail-under=78 -q
+1703 passed; Total coverage: 93.96 % (78 % gate)
+
+core/import_data.py: 92 % · nightscout_cli.py: 90 % (import commands fully covered)
+```
+
+Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
+exits 0.

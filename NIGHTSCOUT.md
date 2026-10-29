@@ -39,8 +39,8 @@ summary) are computed locally from data the server returns.
 |-------|----------|---------|
 | `config` | `set`, `show`, `clear`, `test` | Manage server URL + API secret/token |
 | `status` | `info`, `version`, `versions`, `last-modified`, `verifyauth` | Server health, identity, plugin manifest |
-| `entries` | `latest`, `current`, `list`, `get`, `add`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize`, `calibrations`, `raw`, `gaps` | CGM glucose entries, plus the record types the analytics filter away (`cal` transfer function, raw BG) and the silence *between* readings |
-| `treatments` | `latest`, `list`, `get`, `add`, `update`, `delete`, `bg-check`, `temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`, `event-types`, `active` | Treatment events (boluses, meals, site/sensor changes) + the structured Care Portal event types |
+| `entries` | `latest`, `current`, `list`, `get`, `add`, `import`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize`, `calibrations`, `raw`, `gaps` | CGM glucose entries, bulk backfill (`import`), plus the record types the analytics filter away (`cal` transfer function, raw BG) and the silence *between* readings |
+| `treatments` | `latest`, `list`, `get`, `add`, `import`, `update`, `delete`, `bg-check`, `temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`, `event-types`, `active` | Treatment events (boluses, meals, site/sensor changes) + the structured Care Portal event types + bulk backfill (`import`) |
 | `profile` | `active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `basal-total`, `create`, `update`, `delete` | Profile records, schedule lookups and scheduled basal totals |
 | `devicestatus` | `latest`, `list`, `add`, `delete`, `pump`, `uploader`, `loop` | Device status — raw records plus parsed pump / uploader / closed-loop views |
 | `sensors` | `sessions`, `data`, `revoke-last-change` | CGM sensor-session detection (windows between `Sensor Start` / `Sensor Change` events) — canonical source for sensor-change history; `data` slices the CGM entries by session with per-segment statistics; `revoke-last-change` undoes the most recent ha-bridge Stop+Start pair |
@@ -459,6 +459,52 @@ is reported per record, never silent.
 Core functions in `core/sensors.py`: `find_last_habridge_pair` (pure
 decision logic), `plan_revoke_last_change` (read-only fetch + decision),
 `execute_revoke` (the deletes), `revoke_last_sensor_change` (wrapper).
+
+## Bulk backfill import (v2.16.0+)
+
+`entries import --file F` and `treatments import --file F` backfill many
+records in one command. Nightscout's v1 API accepts a JSON **array** on
+`POST /entries.json` and `POST /treatments.json` — the form every uploader
+and migration tool uses — but the harness could previously only post one
+record per invocation, so backfilling a rig-to-rig migration or a
+care-event backlog meant one CLI call per record.
+
+- **Formats**: `--format auto` (default) detects a JSON array, NDJSON
+  (one object per line) or CSV (header required; numeric fields arrive as
+  strings and are coerced). `-` reads stdin.
+- **Preview is the default**: rows are parsed, validated and shown —
+  `dry_run: true`, `rows_preview`, how many `chunks` would be sent — and
+  nothing is posted. `--apply` commits; global `--dry-run` stays
+  network-safe on top of `--apply`.
+- **Chunked upload**: rows post as JSON arrays, `--chunk-size` (default
+  100, max 2000). Per-chunk results are always reported (`ok`, `error`):
+  a failed chunk is visible and later chunks still run, so the caller
+  sees how far the backfill got.
+- **Row validation refuses anything that would be stored broken** (errors
+  carry the row index): no date (a backfill row without one would be
+  filed at *import* time), unknown `direction`, non-positive glucose,
+  treatments without `eventType` (stored but read by no plugin) or
+  without a timestamp, `glucoseType` outside `Finger`/`Sensor`/`Manual`,
+  non-scalar extra fields. Entry types: only `sgv` and `mbg` — `cal` and
+  `etr` are refused (a broken `cal` record silently shifts every raw-BG
+  reading). Unrecognized treatment event types are sent but warned about,
+  same as `treatments add`.
+- **All-or-nothing by default**: one invalid row refuses the file; the
+  JSON payload lists every invalid row. `--skip-invalid` uploads the
+  valid rows and reports the skipped ones with their row-level error.
+- **Append-only, no de-duplication**: the server does not detect
+  duplicates, so re-importing the same file duplicates the records — run
+  once, and check with `entries count` / `treatments list --find`.
+- Timestamps accept epoch-ms, epoch-s (< 1e11), numeric strings and ISO
+  8601 (`Z` or naive, naive taken as UTC); rows may override `device` /
+  `enteredBy`, with `--device` / `--entered-by` as the per-command
+  defaults. Mutating commands auto-save the session.
+
+Core functions in `core/import_data.py`: `parse_records` (file
+parsing), `coerce_entry_row` / `coerce_treatment_row` (per-row
+validation + wire-shape normalisation), `import_entries` /
+`import_treatments` (chunked array posts), `parse_date_to_ms` (the
+timestamp coercion).
 
 ## Auth resolution order (highest precedence first)
 

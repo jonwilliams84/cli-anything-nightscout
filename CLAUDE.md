@@ -37,3 +37,11 @@ data; analytic reports (TIR, GMI, AGP, MAGE…) are computed locally from server
 ## Conventions
 - Versioning is semver; record changes in `CHANGELOG.md`. Never commit `config.json`/`session.json`/`.env`/TLS material (see `.gitignore`).
 - `watch` (socket.io live stream) needs the `[watch]` extra (`python-socketio`).
+- Bulk backfill (v2.16.0+): `entries import --file F[.json|.ndjson|.csv]` and
+  `treatments import --file F` use the v1 **array** POST form uploaders use.
+  Default is preview-only; `--apply` commits; global `--dry-run` stays
+  network-safe. Per-row validation refuses rows with no date/bad type with
+  the row index (a backfill row without a date would be filed at import
+  time); one bad row refuses the file unless `--skip-invalid`. Append-only:
+  the server does NOT de-duplicate, so re-importing duplicates records —
+  check with `entries count` / `treatments list --find` afterwards.

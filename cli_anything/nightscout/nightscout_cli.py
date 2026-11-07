@@ -43,7 +43,7 @@ from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-VERSION = "2.16.0"
+VERSION = "2.17.0"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -3020,6 +3020,281 @@ def profile_delete(ctx: click.Context, profile_id: str, yes: bool) -> None:
     res = profile_mod.delete_profile(profile_id, conn=conn)
     _maybe_save_session(ctx, action="profile.delete", detail=profile_id)
     _emit(ctx, res, human=f"deleted profile {profile_id}")
+
+
+# ─── v2.17.0: profile store export / import (rig-migration backup) ─────────
+
+
+@profile_grp.command("export")
+@click.option(
+    "--file",
+    "file_path",
+    required=True,
+    help="Write the JSON envelope to this path, or '-' for stdout.",
+)
+@click.pass_context
+def profile_export(ctx: click.Context, file_path: str) -> None:
+    """Dump all profile records to a JSON envelope (backup / migration).
+
+    Read-only. The envelope carries every profile record (``defaultProfile``
+    + the full named ``store`` map) and is accepted verbatim by
+    `profile import` — the round-trip is the intended rig-migration path,
+    completing what `entries import` / `treatments import` cover for
+    history.
+
+    Use `--file -` to print to stdout. Mutating nothing, so no preview
+    step: the file IS the preview.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    envelope = profile_mod.export_records(conn=conn)
+    if not envelope["records"]:
+        raise click.ClickException("no profile records on the server to export")
+    text = json.dumps(envelope, indent=2, ensure_ascii=False)
+    if file_path == "-":
+        click.echo(text)
+    else:
+        try:
+            with open(file_path, "w", encoding="utf-8") as fh:
+                fh.write(text + "\n")
+        except OSError as exc:
+            raise click.ClickException(f"cannot write {file_path!r}: {exc}") from None
+        summary = {
+            "exported": file_path,
+            "count": envelope["count"],
+            "records": [
+                {"startDate": r.get("startDate"), "default": r.get("defaultProfile")}
+                for r in envelope["records"]
+            ],
+            "bytes": len(text),
+        }
+        _emit(
+            ctx,
+            summary,
+            human=(
+                f"exported {envelope['count']} profile record(s) → {file_path} ({len(text)} bytes)"
+            ),
+        )
+
+
+@profile_grp.command("import")
+@click.option(
+    "--file",
+    "file_path",
+    required=True,
+    help="JSON array / NDJSON / single profile record to import, or '-' for stdin.",
+)
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["auto", "json", "ndjson"]),
+    default="auto",
+    show_default=True,
+    help="Record format (auto detects an export envelope, array, single record or NDJSON).",
+)
+@click.option(
+    "--entered-by",
+    default="cli-anything-nightscout",
+    help="Default enteredBy stamped on records that do not carry one.",
+)
+@click.option(
+    "--chunk-size",
+    type=click.IntRange(min=1, max=2000),
+    default=100,
+    show_default=True,
+    help="Records per array POST.",
+)
+@click.option(
+    "--skip-invalid",
+    is_flag=True,
+    default=False,
+    help="Upload the valid records even when some records fail validation.",
+)
+@click.option(
+    "--apply",
+    "apply_",
+    is_flag=True,
+    default=False,
+    help="Actually upload. Without this the command validates and previews only.",
+)
+@click.pass_context
+def profile_import(
+    ctx: click.Context,
+    file_path: str,
+    fmt: str,
+    entered_by: str,
+    chunk_size: int,
+    skip_invalid: bool,
+    apply_: bool,
+) -> None:
+    """Upload profile records from a file (bulk mutation, append-only).
+
+    Accepts exactly what `profile export` writes (an envelope with a
+    `records` list) plus a bare JSON array of profile records, a single
+    record object or NDJSON. Every record is validated before anything is
+    sent: a `defaultProfile` that is not a `store` key, or a named profile
+    with no readable `basal` schedule, would be stored by the server but
+    resolve to nothing — so it is refused with the record index.
+
+    The transfer is append-only and the server does NOT de-duplicate:
+    re-importing the same file duplicate-stamps the profile history (the
+    newest record by startDate wins, e.g. in Profile Switch resolution),
+    so run it once. Default is preview-only; pass --apply to commit;
+    global --dry-run stays network-safe.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    text = _read_import_file(file_path)
+    parsed: list[dict[str, Any]] = []
+    try:
+        parsed = _parse_profile_text(text, fmt=fmt, source=file_path)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    canonical: list[dict[str, Any]] = []
+    invalid: list[dict[str, str]] = []
+    for i, raw in enumerate(parsed):
+        try:
+            canonical.append(profile_mod.coerce_profile_record(raw, row=i, entered_by=entered_by))
+        except ValueError as exc:
+            invalid.append({"row": i, "error": str(exc)})
+    if invalid and not skip_invalid:
+        _emit(
+            ctx,
+            {
+                "dry_run": True,
+                "refused": True,
+                "parsed": len(parsed),
+                "valid": len(canonical),
+                "invalid": invalid,
+            },
+            human=f"[refused] {len(invalid)} invalid profile record(s) of {len(parsed)} parsed",
+        )
+        raise click.ClickException(
+            f"{len(invalid)} invalid profile record(s) (e.g. {invalid[0]['error']}); "
+            f"fix them or pass --skip-invalid"
+        )
+    if not canonical:
+        raise click.ClickException(f"no valid profile records to import from {file_path!r}")
+    n_chunks = max(1, math.ceil(len(canonical) / chunk_size))
+    if not apply_:
+        _emit(
+            ctx,
+            {
+                "dry_run": True,
+                "would": "POST /profile.json",
+                "parsed": len(parsed),
+                "valid": len(canonical),
+                "skipped": invalid,
+                "chunk_size": chunk_size,
+                "chunks": n_chunks,
+                "rows_preview": [
+                    {
+                        "default": r["defaultProfile"],
+                        "profiles": sorted(r["store"]),
+                        "startDate": r["startDate"],
+                    }
+                    for r in canonical[:3]
+                ],
+                "hint": "pass --apply to upload",
+            },
+            human=(
+                f"[preview] {len(canonical)}/{len(parsed)} profile record(s) validated → "
+                f"{n_chunks} chunk(s); pass --apply to upload"
+            ),
+        )
+        return
+    if _dry_run_block(
+        ctx,
+        f"POST /profile.json (bulk import: {len(canonical)} record(s) in {n_chunks} chunk(s))",
+    ):
+        return
+    res = profile_mod.import_records(canonical, conn=conn, chunk_size=chunk_size)
+    res.update({"parsed": len(parsed), "skipped": invalid, "chunk_size": chunk_size})
+    _maybe_save_session(
+        ctx, action="profile.import", detail=f"posted={res['posted']}/{res['count']}"
+    )
+    _emit(
+        ctx,
+        res,
+        human=(
+            f"posted {res['posted']}/{res['count']} profile record(s) across "
+            f"{len(res['chunks'])} chunk(s)"
+        ),
+    )
+
+
+def _parse_profile_text(text: str, *, fmt: str, source: str) -> list[dict[str, Any]]:
+    """Parse profile import bytes into raw record dicts.
+
+    Unlike entries/treatments, rows are full records → only JSON forms make
+    sense; CSV is refused with a pointer at the JSON export. A single
+    record object and a `profile export` envelope (`{"records": [...]}`)
+    are both accepted so the export → import round-trip needs no manual
+    unwrapping.
+    """
+    if fmt == "ndjson":
+        return _parse_ndjson_profile(text)
+    stripped = text.strip()
+
+    def _load(s: str) -> Any:
+        try:
+            return json.loads(s)
+        except json.JSONDecodeError:
+            return None
+
+    if fmt in ("auto", "json", "ndjson"):
+        obj = _load(stripped)
+        if fmt == "json" and obj is None:
+            raise ValueError(f"unparseable JSON in {source!r}")
+        if isinstance(obj, dict):
+            if "records" in obj:
+                if obj.get("kind") is not None and obj["kind"] != profile_mod.EXPORT_KIND:
+                    raise ValueError(
+                        f"unrecognized envelope kind {obj['kind']!r} — expected "
+                        f"{profile_mod.EXPORT_KIND!r} (profile export)"
+                    )
+                recs = obj.get("records")
+                if not isinstance(recs, list):
+                    raise ValueError("envelope 'records' is not a list")
+                return recs
+            return [obj]
+        if isinstance(obj, list):
+            if fmt == "ndjson":
+                raise ValueError("a JSON array is not NDJSON — re-run without --format ndjson")
+            return obj
+    if fmt == "auto":
+        try:
+            return _parse_ndjson_profile(text)
+        except ValueError as ndjson_exc:
+            raise ValueError(
+                f"cannot parse profile records from {source!r}: profile rows are full "
+                "records, so JSON array / single record / envelope / NDJSON only "
+                "(no CSV). Use `profile export` to produce a file."
+            ) from ndjson_exc
+    raise ValueError(
+        f"cannot parse profile records from {source!r}: profile rows are full "
+        "records, so JSON array / single record / envelope / NDJSON only "
+        "(no CSV). Use `profile export` to produce a file."
+    )
+
+
+def _parse_ndjson_profile(text: str) -> list[dict[str, Any]]:
+    recs: list[dict[str, Any]] = []
+    for i, line in enumerate(text.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            raise ValueError(f"unparseable NDJSON at line {i + 1}") from None
+        if isinstance(obj, dict) and "records" in obj and "defaultProfile" not in obj:
+            raise ValueError(
+                "NDJSON line is an export envelope — export envelopes are "
+                "JSON files, not lines; re-run without --format ndjson"
+            )
+        recs.append(obj)
+    return recs
 
 
 # ─── entries: current / count / times / normalize ───────────────────────────

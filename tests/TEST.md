@@ -949,3 +949,31 @@ core/import_data.py: 92 % · nightscout_cli.py: 90 % (import commands fully cove
 
 Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
 exits 0.
+### Test results — 2026-11-07 (v2.17.0 — profile store export / import)
+
+New coverage for the rig-migration gap left open by v2.16.0: the profile
+record (wrapper with `defaultProfile` + the named `store` map) could not be
+backed up or moved between rigs — `profile create --body-json` required
+hand-building the envelope, and nothing validated the store contents that
+every basal/IOB consumer reads. The new core functions in
+`core/profile.py` (`export_records`, `coerce_profile_record`,
+`import_records`, `_check_basal_slots`) and the `profile export` / 
+`profile import` CLI commands close it. The transfer is preview-by-default,
+chunked, append-only, and validated per record with the row index; the
+E2E suite reuses the stand-in's existing `POST /api/v1/profile.json` array
+surface, so no stand-in changes were needed.
+
+| File | New tests | Scope |
+|------|-----------|-------|
+| `test_core.py` | **30** | `TestProfileExport` (3): envelope shape (`kind`/`version` == package version/`exported_at` with `Z`/`count`/`records`), export is strictly read-only (asserts zero HTTP posts), empty server → empty envelope (the CLI layer refuses). `TestCoerceProfileRecord` (15): `_id` stripped and `startDate` kept on the happy path; missing `defaultProfile`, `defaultProfile` not a `store` key, empty `store`, non-object store body, basal-less store body, basal slot without a `time`/`timeAsSeconds` anchor, non-numeric and negative slot rates — all refused with the row index in the message; `rate` alias and string-numeric rates accepted; missing `startDate` stamped with import time; epoch-ms `startDate` normalised to ISO `Z`; object-valued unknown top-level fields refused (wrong payload shape); `--entered-by` stamps missing values but never overrides an existing one; non-dict rows refused. `TestProfileImportUploads` (4): the POST is a JSON **array** on `/profile.json` (the bulk form), a failed chunk is visible (`ok: false` + error text), empty record list and `chunk_size < 1` refused before any HTTP. `TestProfileImportCommands` (CliRunner, 8): `profile export` writes the file and emits a summary with the record count; `--file -` prints the envelope; empty-server export exits 1; import **preview posts nothing** (asserts zero HTTP calls) with `rows_preview` + hint; `--apply` posts the canonical record (array, no `_id`, `enteredBy` stamped); a bad record refuses the file listing the first error with zero posts; `--skip-invalid` posts exactly the valid rows and reports the skipped one; export envelope round-trips through import; foreign `kind` refused; a bare single-record object accepted; NDJSON accepted (2 records); CSV refused with the `profile export` hint; global `--dry-run` blocks `--apply` (no HTTP). |
+| `test_full_e2e.py` | **5** | `TestProfileTransferE2E` (real HTTP, stand-in + live): export reads the seeded `Default` profile into a well-formed envelope; preview validates and changes nothing (byte-equal `profile list` before/after); the export → import → `profile list` round-trip posts the store back append-only and verifies it lands; a record without a usable `basal` schedule is refused (exit ≠ 0); import → `profile get-named` → `profile setting-at` → `profile basal-total` workflow resolves the imported named profile's basal (0.7 U/hr → 16.8 U/day). |
+
+```text
+$ /work/venv/bin/python -m pytest tests --cov=cli_anything --cov-fail-under=78 -q
+1744 passed; Total coverage: 93.90 % (78 % gate)
+
+core/profile.py: export/import fully covered · nightscout_cli.py: 90 %
+```
+
+Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
+exits 0.

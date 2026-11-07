@@ -2894,3 +2894,133 @@ class TestBulkImportE2E:
                       check=False)
         assert r.returncode != 0
         assert "eventType" in (r.stdout + r.stderr)
+
+
+class TestProfileTransferE2E:
+    """`profile export` / `profile import` — end-to-end against the server.
+
+    The export → import round-trip is the intended rig-migration path: dump
+    the profile store from one rig, upload it to another. The stand-in and a
+    live server both accept JSON arrays on POST /profile.json, so these run
+    the real chunked upload path and verify back with `profile list`.
+    """
+
+    CLI_BASE = _resolve_cli("cli-anything-nightscout")
+
+    def _run(self, args, env=None, check=True):
+        env_full = os.environ.copy()
+        if env:
+            env_full.update(env)
+        return subprocess.run(
+            self.CLI_BASE + list(args),
+            capture_output=True,
+            text=True,
+            check=check,
+            env=env_full,
+            timeout=30,
+        )
+
+    def _conn_env(self, server_url_and_secret):
+        url, secret = server_url_and_secret
+        return {
+            "NIGHTSCOUT_URL": url,
+            "NIGHTSCOUT_API_SECRET": secret,
+            "NIGHTSCOUT_TOKEN": "",
+            "CLI_ANYTHING_HOME": "/tmp/.cli-anything-test-" + uuid.uuid4().hex[:8],
+        }
+
+    def test_export_reads_seeded_profile(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret)
+        f = tmp_path / "profiles.json"
+        r = self._run(["--json", "profile", "export", "--file", str(f)], env=env)
+        data = json.loads(r.stdout)
+        assert data["count"] >= 1
+        env_file = json.loads(f.read_text())
+        assert env_file["kind"].endswith("profile export")
+        rec = env_file["records"][0]
+        assert rec["defaultProfile"] == "Default"
+        assert "basal" in rec["store"]["Default"]
+
+    def test_preview_posts_nothing(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret)
+        f = tmp_path / "new.json"
+        f.write_text(
+            json.dumps(
+                {
+                    "defaultProfile": "Migration",
+                    "store": {"Migration": {"basal": [{"time": "00:00", "value": 0.6}]}},
+                }
+            )
+        )
+        before = self._run(["--json", "profile", "list"], env=env).stdout
+        r = self._run(["--json", "profile", "import", "--file", str(f)], env=env)
+        data = json.loads(r.stdout)
+        assert data["dry_run"] is True and data["valid"] == 1
+        assert data["hint"] == "pass --apply to upload"
+        after = self._run(["--json", "profile", "list"], env=env).stdout
+        assert json.loads(before) == json.loads(after)
+
+    def test_export_import_round_trip_and_verify(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret)
+        dump = tmp_path / "profiles.json"
+        r = self._run(["--json", "profile", "export", "--file", str(dump)], env=env)
+        assert json.loads(r.stdout)["count"] >= 1
+        # Import the same envelope back → a second, append-only record.
+        r = self._run(["--json", "profile", "import", "--file", str(dump), "--apply"], env=env)
+        data = json.loads(r.stdout)
+        assert data["posted"] >= 1 and data["count"] == data["posted"]
+        assert all(c["ok"] for c in data["chunks"])
+        # Verify back: the store now resolvable, named profile readable.
+        r = self._run(["--json", "profile", "list"], env=env)
+        records = json.loads(r.stdout)
+        assert len(records) >= 2  # seeded + imported
+        names = {rec.get("defaultProfile") for rec in records}
+        assert "Default" in names
+
+    def test_import_refuses_record_without_usable_basal(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret)
+        f = tmp_path / "bad.json"
+        f.write_text(json.dumps({"defaultProfile": "Nope", "store": {"Nope": {"sens": []}}}))
+        r = self._run(["--json", "profile", "import", "--file", str(f), "--apply"], env=env,
+                      check=False)
+        assert r.returncode != 0
+        assert "basal" in (r.stdout + r.stderr)
+
+    def test_import_workflow_then_active_profile(self, server_url_and_secret, tmp_path):
+        """Import a named profile, then read it back through the analytics."""
+        env = self._conn_env(server_url_and_secret)
+        f = tmp_path / "one.json"
+        f.write_text(
+            json.dumps(
+                {
+                    "defaultProfile": "Migration",
+                    "startDate": "2026-01-01T00:00:00.000Z",
+                    "store": {
+                        "Migration": {
+                            "basal": [{"time": "00:00", "value": 0.7}],
+                            "dia": 5,
+                            "timezone": "UTC",
+                        }
+                    },
+                }
+            )
+        )
+        r = self._run(["--json", "profile", "import", "--file", str(f), "--apply"], env=env)
+        assert json.loads(r.stdout)["posted"] == 1
+        # The imported profile must be readable by name from the newest record.
+        r = self._run(["--json", "profile", "get-named", "Migration"], env=env)
+        body = json.loads(r.stdout)
+        assert body["basal"][0]["value"] == 0.7
+        # And the schedule lookup resolves a basal rate from it.
+        r = self._run(
+            ["--json", "profile", "setting-at", "--field", "basal", "--name", "Migration",
+             "--at", "10:00"],
+            env=env,
+        )
+        data = json.loads(r.stdout)
+        assert data["value"] == 0.7
+        # Basal total from the imported schedule (0.7 U/hr × 24h = 16.8).
+        r = self._run(["--json", "profile", "basal-total", "--name", "Migration"], env=env)
+        data = json.loads(r.stdout)
+        assert data["found"] is True
+        assert data["total_units_per_day"] == pytest.approx(0.7 * 24, abs=0.2)

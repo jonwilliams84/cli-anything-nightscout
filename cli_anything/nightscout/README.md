@@ -495,6 +495,35 @@ their errors. Rows are **append-only** and the server does not
 de-duplicate — re-importing the same file duplicates the records. Global
 `--dry-run` stays network-safe.
 
+### Profile store export & import (v2.17.0+)
+
+The profile record — `defaultProfile` plus the `store` map of named
+profiles with their `basal` / `carbratio` / `sens` slot lists — is the one
+thing on a rig that cannot be re-typed from memory. v2.16.0 moved the
+history; this pair moves the settings:
+
+```bash
+# Dump every profile record into one JSON envelope (read-only)
+cli-anything-nightscout --json profile export --file profiles.json
+
+# Move it to the new rig: envelope is accepted verbatim, preview first
+cli-anything-nightscout --json profile import --file profiles.json
+cli-anything-nightscout --json profile import --file profiles.json --apply
+
+# Verify on the target
+cli-anything-nightscout --json profile list
+cli-anything-nightscout --json profile basal-total
+```
+
+Import validates each record before anything is sent and refuses anything
+the server would store but no plugin could read (with the record index): a
+missing `defaultProfile`, a `defaultProfile` that is not a `store` key, or
+a named profile with no usable `basal` schedule. `_id`s are stripped
+(append-only), missing `startDate`s are stamped with import time, and the
+transfer is chunked with per-chunk results always visible. Default is
+preview-only (`--apply` to commit); global `--dry-run` stays network-safe;
+the server does not de-duplicate, so run it once.
+
 ### Dry-run is network-safe (v2.1.0+)
 
 `--dry-run` now describes the request without sending it — every mutating
@@ -567,6 +596,13 @@ cli-anything-nightscout --json report iob-cob | jq .summary
 
 # All properties (or a comma-separated subset)
 cli-anything-nightscout properties get iob,cob,sensor
+
+# Back up the basal-profile store to a file (or --file - for stdout)
+cli-anything-nightscout --json profile export --file profiles.json
+
+# Restore that store on another rig: preview first, then commit
+cli-anything-nightscout --json profile import --file profiles.json
+cli-anything-nightscout --json profile import --file profiles.json --apply
 
 # Current sensor age vs. replacement threshold
 cli-anything-nightscout report sensor-life --threshold-hours 168

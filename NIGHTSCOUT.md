@@ -41,7 +41,7 @@ summary) are computed locally from data the server returns.
 | `status` | `info`, `version`, `versions`, `last-modified`, `verifyauth` | Server health, identity, plugin manifest |
 | `entries` | `latest`, `current`, `list`, `get`, `add`, `import`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize`, `calibrations`, `raw`, `gaps` | CGM glucose entries, bulk backfill (`import`), plus the record types the analytics filter away (`cal` transfer function, raw BG) and the silence *between* readings |
 | `treatments` | `latest`, `list`, `get`, `add`, `import`, `update`, `delete`, `bg-check`, `temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`, `event-types`, `active` | Treatment events (boluses, meals, site/sensor changes) + the structured Care Portal event types + bulk backfill (`import`) |
-| `profile` | `active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `basal-total`, `create`, `update`, `delete` | Profile records, schedule lookups and scheduled basal totals |
+| `profile` | `active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `basal-total`, `create`, `update`, `delete`, `export`, `import` | Profile records, schedule lookups, scheduled basal totals — plus the full-store export/import pair for backup and rig migration |
 | `devicestatus` | `latest`, `list`, `add`, `delete`, `pump`, `uploader`, `loop` | Device status — raw records plus parsed pump / uploader / closed-loop views |
 | `sensors` | `sessions`, `data`, `revoke-last-change` | CGM sensor-session detection (windows between `Sensor Start` / `Sensor Change` events) — canonical source for sensor-change history; `data` slices the CGM entries by session with per-segment statistics; `revoke-last-change` undoes the most recent ha-bridge Stop+Start pair |
 | `properties` | `get` | Derived state from `/api/v2/properties` — IOB, COB, bgnow, delta, loop, sensor age |
@@ -505,6 +505,44 @@ parsing), `coerce_entry_row` / `coerce_treatment_row` (per-row
 validation + wire-shape normalisation), `import_entries` /
 `import_treatments` (chunked array posts), `parse_date_to_ms` (the
 timestamp coercion).
+
+## Profile store export & import (v2.17.0+)
+
+A profile record is the one thing on a rig that cannot be re-typed from
+memory: a wrapper naming `defaultProfile` plus a `store` map of named
+profiles, each holding `basal` / `carbratio` / `sens` / target slot lists.
+v2.16.0 moved the history; this pair moves the settings:
+
+- **`profile export --file F`** — read-only dump of *every* profile record
+  into one JSON envelope (`kind`, `version`, `exported_at`, `count`,
+  `records`). `--file -` prints to stdout. An empty server refuses: a
+  backup of nothing is a footgun.
+- **`profile import --file F`** — accepts the export envelope verbatim, a
+  bare JSON array, a single record object, or NDJSON (`--format auto`).
+  CSV is refused with a pointer at `profile export` — profile rows are
+  full records, not flat rows, so a CSV round-trip would lie.
+- **Preview is the default**: records are parsed and validated,
+  `dry_run: true` + `rows_preview` (default name, named profiles,
+  `startDate`) + the chunk count are emitted, nothing is sent. `--apply`
+  commits; global `--dry-run` stays network-safe on top of `--apply`.
+- **Validation refuses anything the server would store but no plugin could
+  use** (errors carry the record index): missing `defaultProfile`, a
+  `defaultProfile` that is not a `store` key, empty/non-object `store`, a
+  named profile with no usable `basal` schedule (non-empty slot list, each
+  slot a numeric `value`/`rate` ≥ 0 anchored at `time` or
+  `timeAsSeconds`), and unexpected object-valued top-level fields (the
+  wrong payload shape). `_id` is stripped on import; a missing `startDate`
+  is stamped with import time; `--entered-by` stamps records without one.
+- **Chunked array posts** to `POST /profile.json` (`--chunk-size`, default
+  100, max 2000); per-chunk results are always reported (`ok`, `error`).
+- **Append-only, no de-duplication**: re-importing the same file
+  duplicate-stamps profile history (newest `startDate` wins) — run it
+  once. Verify afterwards with `profile list` / `profile get-named` /
+  `profile basal-total`.
+
+Core functions in `core/profile.py`: `export_records`, 
+`coerce_profile_record` (per-record validation), `import_records`
+(chunked array posts), `_check_basal_slots` (the basal-schedule rule).
 
 ## Auth resolution order (highest precedence first)
 

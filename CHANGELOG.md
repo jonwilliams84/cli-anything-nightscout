@@ -4,6 +4,71 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.17.0] — 2026-11-07
+
+- **New commands: `profile export` + `profile import`** — the basal-profile
+  leg of the rig-migration story the v2.16.0 bulk backfill completed for
+  history. A profile record is the one thing on a Nightscout rig that cannot
+  be re-typed from memory: a wrapper naming a `defaultProfile` plus a
+  `store` map of named profiles, each holding `basal` / `carbratio` / `sens`
+  / target slot lists. Until now the harness could only fetch parts of it
+  (`profile active`, `profile get-named`) or write a full record by hand
+  through `profile create --body-json` — there was no way to back the store
+  up or move it to another rig in one step. What the commands do:
+  - **`profile export --file F`** (read-only) dumps *every* profile record
+    into one JSON envelope (`kind`, `version`, `exported_at`, `count`,
+    `records`), accepted verbatim by `profile import` — the round-trip is
+    the migration path. `--file -` prints the envelope to stdout; an empty
+    server refuses with a clear error (a backup of nothing is a footgun).
+  - **`profile import --file F`** (bulk mutation, append-only) accepts the
+    export envelope, a bare JSON array, a single record object, or NDJSON
+    (`--format auto` detects the shape; CSV is refused with a pointer at
+    `profile export` — profile rows are full records, not flat rows).
+  - **Preview is the default**: records are parsed and validated,
+    `dry_run: true` + `rows_preview` (default name, named profiles,
+    `startDate`) + the chunk count are emitted, and nothing is sent.
+    `--apply` commits; global `--dry-run` stays network-safe on top of
+    `--apply`, exactly like the v2.16.0 imports.
+  - **Per-record validation refuses anything that would be stored as a
+    profile no plugin can use** (errors carry the record index): missing
+    `defaultProfile` (the record would name no active profile), a
+    `defaultProfile` that is not a `store` key, an empty/non-object
+    `store`, a named profile without a *usable* `basal` schedule (non-empty
+    list of slots, each with a numeric `value`/`rate` ≥ 0 and a
+    `time`/`timeAsSeconds` anchor — the server stores a basal-less profile
+    happily and every basal/IOB consumer then reads zero), and unexpected
+    object-valued top-level fields (almost certainly the wrong payload
+    pointed at the import). `_id` is stripped on import (append-only;
+    carrying a source-rig id invites clobbering), a missing `startDate` is
+    stamped with import time, unknown scalar extras pass through, and
+    `--entered-by` stamps records that do not carry one.
+  - **Chunked array posts** to `POST /profile.json` with `--chunk-size`
+    (default 100); per-chunk results are always reported (`ok`, `error`).
+  - **Append-only, no de-duplication**: re-importing the same file
+    duplicate-stamps profile history (the newest record by `startDate`
+    wins in Profile Switch resolution) — run it once, and the command docs
+    say so.
+  - **No stand-in changes needed**: the E2E tests reuse the existing
+    `POST /api/v1/profile.json` array surface, so they pass against both
+    the in-process stand-in and a live server.
+- Core additions in `core/profile.py`: `export_records` (envelope dump),
+  `coerce_profile_record` (per-record validation + wire-shape
+  normalisation), `import_records` (chunked array posts), plus the
+  `_check_basal_slots` schedule rule.
+- Tests: **30 unit tests** (`TestProfileExport`, `TestCoerceProfileRecord`,
+  `TestProfileImportUploads`, `TestProfileImportCommands` — CliRunner wiring
+  incl. preview-posts-nothing, envelope round-trip, skip-invalid, global
+  `--dry-run` network safety) and **5 E2E tests** (`TestProfileTransferE2E`:
+  export of the seeded profile, preview posts nothing vs `profile list`
+  before/after, export→import→`profile list` round-trip, refusal of a
+  basal-less record, and an import → `profile get-named` /
+  `profile setting-at` / `profile basal-total` read-back workflow).
+- Docs: SOP (`NIGHTSCOUT.md`) gains a "Profile store export & import
+  (v2.17.0+)" section and an updated `profile` command-group row; package
+  README gains a usage section; agent skill docs (`SKILL.md`) gain a
+  migration row. Fixed the stale `nightscout_cli.VERSION` literal (still
+  2.16.0 while the package shipped 2.17.0).
+
 ## [2.16.0] — 2026-10-29
 
 - **New commands: `entries import` + `treatments import`** — bulk backfill

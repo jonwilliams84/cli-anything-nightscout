@@ -12,13 +12,51 @@ This module exposes both:
 * :func:`current_store` — returns the inner active named profile (a dict with
   ``basal``, ``carbratio``, ``sens``, ``target_low``, ``target_high``, etc.).
 * :func:`current_named` — fetch any named profile out of the active record.
+
+Profile store transfer (v2.17.0+) completes the rig-migration story the bulk
+backfill importer started (v2.16.0 covered ``entries`` / ``treatments``):
+
+* :func:`export_records` — dump every profile record into one JSON envelope
+  (a file the ``profile import`` verb can upload verbatim to another rig).
+* :func:`coerce_profile_record` — per-record validation; refuses anything
+  that would be stored as an unusable profile (no ``defaultProfile``, a
+  ``defaultProfile`` that is not a ``store`` key, a ``store`` body without a
+  readable ``basal`` schedule).
+* :func:`import_records` — chunked array posts, append-only like every other
+  importer (the server does NOT de-duplicate).
 """
 
 from __future__ import annotations
 
+import datetime as _dt
+import math
 from typing import Any
 
+from cli_anything.nightscout.core import import_data as import_mod
 from cli_anything.nightscout.utils import nightscout_backend as backend
+
+EXPORT_KIND = "cli-anything-nightscout profile export"
+
+# Container fields a profile record may legitimately carry beyond the core
+# (``defaultProfile`` / ``store`` / ``startDate``). Anything else at the top
+# level must be a scalar (a string, number or bool) — a dict here almost
+# always means an entire different payload shape was pointed at the import.
+_PROFILE_CONTAINER_FIELDS = frozenset(
+    {
+        "defaultProfile",
+        "store",
+        "startDate",
+        "startDateRaw",
+        "enteredBy",
+        "units",
+        "mrn",
+        "loopParams",
+        "created_at",
+        "modifiedDate",
+        "validDate",
+        "notes",
+    }
+)
 
 
 def list_profiles(*, conn: dict[str, Any]) -> list[dict[str, Any]]:
@@ -219,3 +257,177 @@ def schedule_snapshot(store: dict, hhmm: str) -> dict[str, float | None]:
     """
     store = store or {}
     return {field: setting_at(store, field, hhmm) for field in _SCHEDULE_FIELDS}
+
+
+# ─── Profile store export / import (v2.17.0) ────────────────────────────────
+
+
+def _now_iso() -> str:
+    """UTC ISO 8601 with milliseconds + Z — the Nightscout timestamp shape."""
+    now = _dt.datetime.now(_dt.timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S") + f".{now.microsecond // 1000:03d}Z"
+
+
+def export_records(*, conn: dict[str, Any]) -> dict[str, Any]:
+    """Dump every profile record into one transferable JSON envelope.
+
+    Read-only: nothing on the server is touched. The envelope's ``records``
+    list is exactly what a rig holds (wrapper records with ``defaultProfile``
+    and the full named ``store`` map) and is accepted verbatim by
+    :func:`import_records` — the round-trip export → import is the intended
+    migration path.
+    """
+    records = list_profiles(conn=conn)
+    import cli_anything.nightscout as pkg
+
+    return {
+        "kind": EXPORT_KIND,
+        "version": getattr(pkg, "__version__", "unknown"),
+        "exported_at": _now_iso(),
+        "count": len(records),
+        "records": records,
+    }
+
+
+def _check_basal_slots(body: dict[str, Any], *, name: str, row: int) -> None:
+    """Validate the ``basal`` schedule in a named profile body."""
+    basal = body.get("basal")
+    if not isinstance(basal, list) or not basal:
+        raise ValueError(
+            f"row {row}: profile {name!r} has no usable basal schedule "
+            "(a stored profile without basal is read by every basal/"
+            "IOB consumer as zero)"
+        )
+    for i, slot in enumerate(basal):
+        if not isinstance(slot, dict):
+            raise ValueError(f"row {row}: profile {name!r} basal slot {i} is not an object")
+        value = slot.get("value", slot.get("rate"))
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            try:
+                value = float(str(value).strip())
+            except (ValueError, TypeError, AttributeError):
+                raise ValueError(
+                    f"row {row}: profile {name!r} basal slot {i}: rate must be a number"
+                ) from None
+        if float(value) < 0:
+            raise ValueError(f"row {row}: profile {name!r} basal slot {i}: rate must be >= 0")
+        if "time" not in slot and "timeAsSeconds" not in slot:
+            raise ValueError(f"row {row}: profile {name!r} basal slot {i}: no time/timeAsSeconds")
+
+
+def coerce_profile_record(
+    raw: dict[str, Any], *, row: int, entered_by: str | None = None
+) -> dict[str, Any]:
+    """Validate + normalise one raw profile record into the wire shape.
+
+    Raises ``ValueError`` (message carries the row index) on anything that
+    would be stored as a profile no plugin can use:
+
+    * ``defaultProfile`` missing/empty, or not a key of ``store`` — the
+      record would be stored but the rig would resolve no active profile;
+    * ``store`` missing, empty, or holding bodies without a usable ``basal``
+      schedule (non-empty list of slots with a numeric ``value``/``rate``
+      and a ``time``/``timeAsSeconds`` anchor);
+    * unrecognised top-level fields whose value is a dict (almost certainly
+      the wrong payload pointed at the import).
+
+    ``_id`` is stripped (the import is append-only; carrying a source rig's
+    id invites accidental clobbering) and a missing ``startDate`` is stamped
+    with import time, since a record without one is treated as "now" by the
+    server's active-profile resolution.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError(f"row {row}: expected a JSON object, got {type(raw).__name__}")
+    default = raw.get("defaultProfile")
+    if not isinstance(default, str) or not default.strip():
+        raise ValueError(
+            f"row {row}: missing defaultProfile — a profile record without one "
+            "names no active profile and resolves to nothing"
+        )
+    default = default.strip()
+    store = raw.get("store")
+    if not isinstance(store, dict) or not store:
+        raise ValueError(
+            f"row {row}: store must be a non-empty object mapping profile names to bodies"
+        )
+    for name, body in store.items():
+        if not isinstance(body, dict):
+            raise ValueError(f"row {row}: profile {name!r}: body must be an object")
+        _check_basal_slots(body, name=name, row=row)
+    if default not in store:
+        raise ValueError(
+            f"row {row}: defaultProfile {default!r} is not a store key "
+            f"(store has: {', '.join(sorted(map(str, store)))})"
+        )
+    record = dict(raw)
+    record.pop("_id", None)
+    record["defaultProfile"] = default
+    for key, value in raw.items():
+        if key in _PROFILE_CONTAINER_FIELDS or key == "_id":
+            continue
+        if isinstance(value, dict) or (
+            isinstance(value, list) and any(isinstance(v, dict) for v in value)
+        ):
+            raise ValueError(
+                f"row {row}: unexpected object value for field {key!r} — "
+                "this is not a profile record (wrong payload shape?)"
+            )
+    start = raw.get("startDate")
+    if start not in (None, ""):
+        ms = import_mod.parse_date_to_ms(start, row=row)
+        record["startDate"] = _ms_to_iso(ms)
+    else:
+        record["startDate"] = _now_iso()
+    if entered_by and "enteredBy" not in record:
+        record["enteredBy"] = entered_by
+    return record
+
+
+def _ms_to_iso(ms: int) -> str:
+    dt = _dt.datetime.fromtimestamp(ms / 1000, tz=_dt.timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{ms % 1000:03d}Z"
+
+
+def import_records(
+    records: list[dict[str, Any]],
+    *,
+    conn: dict[str, Any],
+    chunk_size: int = import_mod.DEFAULT_CHUNK_SIZE,
+) -> dict[str, Any]:
+    """Upload canonical profile records as JSON arrays (chunks).
+
+    Per-chunk results are always reported: a failed chunk is visible
+    (``ok: false`` + ``error``), never silently swallowed. Append-only —
+    the server does not de-duplicate, so re-importing the same export
+    duplicate-stamps history (Profile Switch plugins pick the newest record
+    by ``startDate``, so the result stays usable).
+    """
+    if chunk_size < 1:
+        raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
+    if not records:
+        raise ValueError("no profile records to import")
+    chunks: list[dict[str, Any]] = []
+    posted = 0
+    for start, chunk in enumerate(import_mod._chunk(records, chunk_size)):
+        ok, error = True, None
+        try:
+            backend.post(
+                "/profile.json",
+                data=chunk,
+                base_url=conn["server_url"],
+                version="v1",
+                api_secret=conn.get("api_secret"),
+                token=conn.get("api_token"),
+            )
+        except Exception as exc:
+            ok, error = False, str(exc)[:200]
+        if ok:
+            posted += len(chunk)
+        chunks.append(
+            {"row_start": start * chunk_size, "rows": len(chunk), "ok": ok, "error": error}
+        )
+    return {"count": len(records), "posted": posted, "chunks": chunks}

@@ -3841,3 +3841,427 @@ class TestBulkImportCommands:
         result = self._invoke(["treatments", "import", "--file", f, "--apply"])
         assert result.exit_code == 1
         assert "eventType" in str(result.exception)
+
+
+# ─── profile store export / import (v2.17.0) ───────────────────────────────
+
+
+class TestProfileExport:
+    """`profile.export_records` — read-only envelope dump."""
+
+    def setup_method(self):
+        from cli_anything.nightscout.core import profile as pm
+
+        self.mod = pm
+
+    def _seed(self, records):
+        return mock.patch.object(
+            self.mod,
+            "list_profiles",
+            lambda *, conn: records,
+        )
+
+    def _store_record(self, name="Default"):
+        return {
+            "_id": "abc" * 8,
+            "defaultProfile": name,
+            "startDate": "2025-04-01T00:00:00.000Z",
+            "store": {
+                name: {
+                    "basal": [{"time": "00:00", "value": 0.8}],
+                    "carbratio": [{"time": "00:00", "value": 10}],
+                    "sens": [{"time": "00:00", "value": 50}],
+                    "timezone": "UTC",
+                }
+            },
+        }
+
+    def test_envelope_shape_and_count(self, isolated_home):
+        recs = [self._store_record(), self._store_record("Weekday")]
+        with self._seed(recs):
+            env = self.mod.export_records(conn={"server_url": "https://x"})
+        assert env["kind"] == self.mod.EXPORT_KIND
+        assert env["count"] == 2
+        assert env["records"] == recs
+        assert env["exported_at"].endswith("Z")
+        assert "T" in env["exported_at"]
+        assert env["version"] == "2.17.0"
+
+    def test_export_is_read_only(self, isolated_home):
+        posted = []
+        with mock.patch.object(self.mod.backend, "post", lambda *a, **k: posted.append(a)):
+            with self._seed([self._store_record()]):
+                self.mod.export_records(conn={"server_url": "https://x"})
+        assert posted == []  # export must never touch the network
+
+    def test_empty_server_exports_empty_envelope(self, isolated_home):
+        with self._seed([]):
+            env = self.mod.export_records(conn={"server_url": "https://x"})
+        assert env["count"] == 0 and env["records"] == []
+
+
+class TestCoerceProfileRecord:
+    """`profile.coerce_profile_record` — per-record validation rules."""
+
+    def setup_method(self):
+        from cli_anything.nightscout.core import profile as pm
+
+        self.mod = pm
+
+    @staticmethod
+    def _record():
+        return {
+            "_id": "0123456789abcdef01234567",
+            "defaultProfile": "Default",
+            "startDate": "2025-04-01T00:00:00.000Z",
+            "store": {
+                "Default": {
+                    "basal": [{"time": "00:00", "value": 0.8}],
+                    "timezone": "UTC",
+                }
+            },
+        }
+
+    def test_valid_record_round_trips_without_id(self):
+        rec = self.mod.coerce_profile_record(self._record(), row=0)
+        assert rec["defaultProfile"] == "Default"
+        assert "_id" not in rec  # append-only: never carry a source _id
+        assert rec["startDate"] == "2025-04-01T00:00:00.000Z"
+
+    def test_missing_default_profile_refused(self):
+        raw = self._record()
+        del raw["defaultProfile"]
+        with pytest.raises(ValueError, match="missing defaultProfile"):
+            self.mod.coerce_profile_record(raw, row=3)
+
+    def test_default_profile_missing_from_store_refused(self):
+        raw = self._record()
+        raw["defaultProfile"] = "Weekend"
+        with pytest.raises(ValueError, match="not a store key"):
+            self.mod.coerce_profile_record(raw, row=1)
+
+    def test_empty_store_refused(self):
+        raw = self._record()
+        raw["store"] = {}
+        with pytest.raises(ValueError, match="non-empty object"):
+            self.mod.coerce_profile_record(raw, row=2)
+
+    def test_store_body_must_be_object(self):
+        raw = self._record()
+        raw["store"] = {"Default": "not-a-body"}
+        with pytest.raises(ValueError, match="body must be an object"):
+            self.mod.coerce_profile_record(raw, row=0)
+
+    def test_body_without_basal_refused(self):
+        raw = self._record()
+        raw["store"]["Default"] = {"sens": [{"time": "00:00", "value": 50}]}
+        with pytest.raises(ValueError, match="no usable basal schedule"):
+            self.mod.coerce_profile_record(raw, row=0)
+
+    def test_basal_slot_without_anchor_refused(self):
+        raw = self._record()
+        raw["store"]["Default"]["basal"] = [{"value": 0.8}]
+        with pytest.raises(ValueError, match="no time/timeAsSeconds"):
+            self.mod.coerce_profile_record(raw, row=0)
+
+    def test_basal_slot_non_numeric_rate_refused(self):
+        raw = self._record()
+        raw["store"]["Default"]["basal"] = [{"time": "00:00", "value": "high"}]
+        with pytest.raises(ValueError, match="rate must be a number"):
+            self.mod.coerce_profile_record(raw, row=0)
+
+    def test_basal_slot_negative_rate_refused(self):
+        raw = self._record()
+        raw["store"]["Default"]["basal"] = [{"time": "00:00", "rate": -1}]
+        with pytest.raises(ValueError, match="rate must be >= 0"):
+            self.mod.coerce_profile_record(raw, row=0)
+
+    def test_rate_alias_and_string_number_accepted(self):
+        raw = self._record()
+        raw["store"]["Default"]["basal"] = [{"time": "00:00", "rate": "0.75"}]
+        rec = self.mod.coerce_profile_record(raw, row=0)
+        assert rec["store"]["Default"]["basal"][0]["rate"] == "0.75"  # kept as-is
+
+    def test_missing_start_date_stamped_with_now(self):
+        raw = self._record()
+        del raw["startDate"]
+        rec = self.mod.coerce_profile_record(raw, row=0)
+        assert rec["startDate"].endswith("Z")
+
+    def test_start_date_epoch_ms_normalized_to_iso(self):
+        raw = self._record()
+        raw["startDate"] = 1743465600000  # 2025-04-01T00:00:00Z
+        rec = self.mod.coerce_profile_record(raw, row=0)
+        assert rec["startDate"] == "2025-04-01T00:00:00.000Z"
+
+    def test_non_scalar_extra_field_refused(self):
+        raw = self._record()
+        raw["carbratio"] = {"oops": 1}
+        with pytest.raises(ValueError, match="unexpected object value"):
+            self.mod.coerce_profile_record(raw, row=0)
+
+    def test_entered_by_stamped_when_missing(self):
+        rec = self.mod.coerce_profile_record(
+            self._record(), row=0, entered_by="migration-bridge"
+        )
+        assert rec["enteredBy"] == "migration-bridge"
+
+    def test_existing_entered_by_not_overridden(self):
+        raw = self._record()
+        raw["enteredBy"] = "someone"
+        rec = self.mod.coerce_profile_record(raw, row=0, entered_by="bridge")
+        assert rec["enteredBy"] == "someone"
+
+    def test_non_dict_row_refused(self):
+        with pytest.raises(ValueError, match="expected a JSON object"):
+            self.mod.coerce_profile_record([1, 2], row=5)  # type: ignore[arg-type]
+
+
+class TestProfileImportUploads:
+    """`profile.import_records` — chunked array POST wiring."""
+
+    def setup_method(self):
+        from cli_anything.nightscout.core import profile as pm
+
+        self.mod = pm
+
+    def test_posted_as_json_arrays_per_chunk(self):
+        recs = [self.mod.coerce_profile_record({**TestCoerceProfileRecord._record()}, row=0)]
+        recs[0]["store"]["Default"] = {k: v for k, v in recs[0]["store"]["Default"].items()}
+        calls: list = []
+
+        def fake_post(path, *, data, **_):
+            calls.append((path, data))
+            return data
+
+        with mock.patch.object(self.mod.backend, "post", fake_post):
+            res = self.mod.import_records(recs, conn={"server_url": "https://x"})
+        assert res["count"] == 1 and res["posted"] == 1
+        assert calls == [("/profile.json", [recs[0]])]
+        assert res["chunks"][0]["ok"] is True
+
+    def test_failed_chunk_reported_not_silent(self):
+        rec = TestCoerceProfileRecord._record()
+
+        def fake_post(path, *, data, **_):
+            raise RuntimeError("server said no")
+
+        with mock.patch.object(self.mod.backend, "post", fake_post):
+            res = self.mod.import_records([rec], conn={"server_url": "https://x"})
+        assert res["posted"] == 0
+        assert res["chunks"][0]["ok"] is False
+        assert "server said no" in res["chunks"][0]["error"]
+
+    def test_empty_records_refused(self):
+        with pytest.raises(ValueError, match="no profile records"):
+            self.mod.import_records([], conn={"server_url": "https://x"})
+
+    def test_bad_chunk_size_refused(self):
+        rec = TestCoerceProfileRecord._record()
+        with pytest.raises(ValueError, match="chunk_size must be >= 1"):
+            self.mod.import_records([rec], conn={"server_url": "https://x"}, chunk_size=0)
+
+
+class TestProfileImportCommands:
+    """`profile export` / `profile import` — CLI wiring (CliRunner)."""
+
+    def _invoke(self, args, as_json=True):
+        from click.testing import CliRunner
+
+        from cli_anything.nightscout import nightscout_cli as mod
+
+        runner = CliRunner()
+        full_args = ["--url", "https://ns.example.com", "--api-secret", "testsecret12chars"]
+        full_args += ["--json"] if as_json else []
+        full_args += args
+        return runner.invoke(mod.cli, full_args, standalone_mode=False, catch_exceptions=True)
+
+    def _seed_profile(self):
+        from cli_anything.nightscout.core import profile as pm
+
+        data = [
+            {
+                "_id": "0123456789abcdef01234567",
+                "defaultProfile": "Default",
+                "startDate": "2025-04-01T00:00:00.000Z",
+                "store": {
+                    "Default": {
+                        "basal": [{"time": "00:00", "value": 0.8}],
+                        "timezone": "UTC",
+                    }
+                },
+            }
+        ]
+        return mock.patch.object(pm, "list_profiles", lambda *, conn: data)
+
+    def _patch_posts(self, capture):
+        from cli_anything.nightscout.core import profile as pm
+
+        def fake_post(path, *, data, **_):
+            capture.append((path, data))
+            return data
+
+        return mock.patch.object(pm.backend, "post", fake_post)
+
+    def test_export_writes_file_and_summary(self, tmp_path):
+        out = tmp_path / "profiles.json"
+        with self._seed_profile():
+            result = self._invoke(["profile", "export", "--file", str(out)])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["count"] == 1
+        assert data["exported"] == str(out)
+        env = json.loads(out.read_text())
+        assert env["kind"].endswith("profile export")
+        assert env["records"][0]["defaultProfile"] == "Default"
+
+    def test_export_to_stdout_prints_envelope(self):
+        with self._seed_profile():
+            result = self._invoke(["profile", "export", "--file", "-"])
+        assert result.exit_code == 0, result.exception
+        env = json.loads(result.output)
+        assert env["count"] == 1
+
+    def test_export_empty_server_refused(self):
+        with mock.patch.object(
+            __import__(
+                "cli_anything.nightscout.core.profile", fromlist=["x"]
+            ),
+            "list_profiles",
+            lambda *, conn: [],
+        ):
+            result = self._invoke(["profile", "export", "--file", "-"])
+        assert result.exit_code == 1
+        assert "no profile records" in str(result.exception)
+
+    def test_import_preview_posts_nothing(self, tmp_path):
+        f = tmp_path / "p.json"
+        f.write_text(
+            json.dumps(
+                {
+                    "defaultProfile": "Default",
+                    "store": {"Default": {"basal": [{"time": "00:00", "value": 0.9}]}},
+                }
+            )
+        )
+        capture: list = []
+        with self._patch_posts(capture):
+            result = self._invoke(["profile", "import", "--file", str(f)])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["dry_run"] is True and data["valid"] == 1
+        assert data["rows_preview"][0]["default"] == "Default"
+        assert data["hint"] == "pass --apply to upload"
+        assert capture == []
+
+    def test_import_apply_posts_canonical_record(self, tmp_path):
+        f = tmp_path / "p.json"
+        f.write_text(json.dumps(TestCoerceProfileRecord._record()))
+        capture: list = []
+        with self._patch_posts(capture):
+            result = self._invoke(["profile", "import", "--file", str(f), "--apply"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["posted"] == 1 and data["count"] == 1
+        sent = capture[0][1]
+        assert isinstance(sent, list)  # array POST, the bulk form
+        assert sent[0]["defaultProfile"] == "Default"
+        assert "_id" not in sent[0]
+        assert sent[0]["enteredBy"] == "cli-anything-nightscout"
+
+    def test_import_refuses_bad_record_with_row_index(self, tmp_path):
+        f = tmp_path / "p.json"
+        f.write_text(
+            json.dumps(
+                [
+                    {"defaultProfile": "Default", "store": {"Default": {"basal": [{"time": "00:00", "value": 1}]}}},
+                    {"store": {"X": {"basal": [{"time": "00:00", "value": 1}]}}},
+                ]
+            )
+        )
+        capture: list = []
+        with self._patch_posts(capture):
+            result = self._invoke(["profile", "import", "--file", str(f), "--apply"])
+        assert result.exit_code == 1
+        assert "missing defaultProfile" in str(result.exception)
+        assert capture == []
+
+    def test_import_skip_invalid_uploads_valid_rows(self, tmp_path):
+        f = tmp_path / "p.json"
+        f.write_text(
+            json.dumps(
+                [
+                    {"defaultProfile": "Default", "store": {"Default": {"basal": [{"time": "00:00", "value": 1}]}}},
+                    {"defaultProfile": "Bad", "store": {}},
+                ]
+            )
+        )
+        capture: list = []
+        with self._patch_posts(capture):
+            result = self._invoke(
+                ["profile", "import", "--file", str(f), "--apply", "--skip-invalid"]
+            )
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["posted"] == 1 and len(data["skipped"]) == 1
+
+    def test_import_accepts_export_envelope_round_trip(self, tmp_path):
+        f = tmp_path / "p.json"
+        env = {
+            "kind": "cli-anything-nightscout profile export",
+            "version": "2.17.0",
+            "exported_at": "2026-11-07T00:00:00.000Z",
+            "count": 1,
+            "records": [TestCoerceProfileRecord._record()],
+        }
+        f.write_text(json.dumps(env))
+        capture: list = []
+        with self._patch_posts(capture):
+            result = self._invoke(["profile", "import", "--file", str(f), "--apply"])
+        assert result.exit_code == 0, result.exception
+        data = json.loads(result.output)
+        assert data["parsed"] == 1 and data["posted"] == 1
+
+    def test_import_refuses_foreign_envelope_kind(self, tmp_path):
+        f = tmp_path / "p.json"
+        f.write_text(json.dumps({"kind": "some-other-tool export", "records": []}))
+        result = self._invoke(["profile", "import", "--file", str(f)])
+        assert result.exit_code == 1
+        assert "unrecognized envelope kind" in str(result.exception)
+
+    def test_import_single_record_object_accepted(self, tmp_path):
+        f = tmp_path / "p.json"
+        f.write_text(
+            json.dumps(TestCoerceProfileRecord._record())  # a bare record, not an array
+        )
+        capture: list = []
+        with self._patch_posts(capture):
+            result = self._invoke(["profile", "import", "--file", str(f), "--apply"])
+        assert result.exit_code == 0, result.exception
+        assert json.loads(result.output)["count"] == 1
+
+    def test_import_ndjson_accepted(self, tmp_path):
+        f = tmp_path / "p.json"
+        r = TestCoerceProfileRecord._record()
+        f.write_text(json.dumps(r) + "\n" + json.dumps(r) + "\n")
+        capture: list = []
+        with self._patch_posts(capture):
+            result = self._invoke(["profile", "import", "--file", str(f), "--apply"])
+        assert result.exit_code == 0, result.exception
+        assert json.loads(result.output)["count"] == 2
+
+    def test_import_csv_refused_with_export_hint(self, tmp_path):
+        f = tmp_path / "p.csv"
+        f.write_text("defaultProfile,store\nDefault,x\n")
+        result = self._invoke(["profile", "import", "--file", str(f)])
+        assert result.exit_code == 1
+        assert "no CSV" in str(result.exception) and "profile export" in str(result.exception)
+
+    def test_import_global_dry_run_network_safe(self, tmp_path):
+        f = tmp_path / "p.json"
+        f.write_text(json.dumps(TestCoerceProfileRecord._record()))
+        capture: list = []
+        with self._patch_posts(capture):
+            result = self._invoke(["--dry-run", "profile", "import", "--file", str(f), "--apply"])
+        assert result.exit_code == 0, result.exception
+        assert capture == []  # global --dry-run must never send anything

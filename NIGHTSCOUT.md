@@ -48,7 +48,7 @@ summary) are computed locally from data the server returns.
 | `notifications` | `ack`, `admin` | Alarm acknowledgement and admin notices |
 | `activity` | `latest`, `list`, `get`, `add`, `delete` | Activity / exercise records (API v3) |
 | `food` | `list`, `quickpicks`, `regular`, `add`, `update`, `delete` | Food database |
-| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `distribution`, `intraday`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages`, `loop`, `data-quality`, `accuracy`, `day` | Computed reports + composed snapshots; `day` is the one-day clinical snapshot |
+| `report` | `tir`, `summary`, `daily`, `gmi`, `agp`, `distribution`, `intraday`, `hypos`, `mage`, `risk`, `by-weekday`, `excursions`, `excursions-by-hour`, `sensor-life`, `iob-cob`, `tdd`, `basal`, `device-health`, `ages`, `loop`, `data-quality`, `accuracy`, `day`, `compare` | Computed reports + composed snapshots; `day` is the one-day clinical snapshot; `compare` puts a baseline and a current window head-to-head |
 | `v3` | `list`, `get`, `create`, `update`, `patch`, `delete`, `search`, `history` | Generic CRUD + sync over any v3 collection |
 | `watch` | (socket.io) | Real-time entries/treatments stream (needs `pip install '.[watch]'`) |
 | `session` | `info`, `save`, `load`, `clear` | Session state and last-fetched cache |
@@ -543,6 +543,41 @@ v2.16.0 moved the history; this pair moves the settings:
 Core functions in `core/profile.py`: `export_records`, 
 `coerce_profile_record` (per-record validation), `import_records`
 (chunked array posts), `_check_basal_slots` (the basal-schedule rule).
+
+## Window comparison (v2.18.0+)
+
+`report compare [--days N] [--baseline-from/--baseline-to --current-from/--current-to] [--low L --high H] [--tz Z] [--units U]`
+— every therapy question is comparative ("did the profile switch lower my
+TIR?", "is the new sensor reading high?") and the single-window reports
+(`report summary`, `report tir`) cannot answer one by themselves. This
+command fetches the SAME metrics for a **baseline** window and a **current**
+window and emits their deltas in one payload:
+
+- **Default windows**: the current window is the last `--days` days (today
+  in the `--tz` zone back to `days-1`), the baseline is the `--days` immediately
+  before it. Explicit `--baseline-from/--baseline-to --current-from/--current-to`
+  override the split (all four or none — a half-specified pair refuses, so two
+  windows of different shape can never be silently mismatched).
+- **Deltas are `current - baseline`** for readings count, mean (absolute +
+  relative %), stdev, min, max, GMI%, CV% and the TIR/TBR/TAR split in
+  percentage points, plus bolus insulin (`insulin_units`) and carbs
+  (`carbs_g`) when treatment records are fetched for both windows.
+- **One band, two windows**: the 70/180 mg/dL consensus pair (or
+  `--low/--high`) is resolved ONCE and applied to both windows — the deltas
+  are always apples-to-apples.
+- **Honesty rails**: a window with no valid readings is `found: false` on
+  its side and every `deltas.` field it feeds is `null`, never a misleading
+  0; mbg entries are excluded so `count` and `total_readings` agree;
+  `Temp Basal` counts as a rate, not a dose (`includes_basal: false`, same
+  rule as `report tdd`); the windows are echoed in the payload so the
+  caller sees exactly what was compared.
+- **Unit consistency** as everywhere since v2.11.1: server `sgv` is read as
+  mg/dL and mmol display adds `*_mmol` twins (mean) to the window summary
+  and the deltas.
+
+Core function in `core/report.py`: `compare_windows` (composes `summary`,
+`time_in_range` and `treatment_totals` so definitions cannot drift between
+the two windows).
 
 ## Auth resolution order (highest precedence first)
 

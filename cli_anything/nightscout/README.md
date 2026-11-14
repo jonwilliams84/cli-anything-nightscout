@@ -524,6 +524,32 @@ transfer is chunked with per-chunk results always visible. Default is
 preview-only (`--apply` to commit); global `--dry-run` stays network-safe;
 the server does not de-duplicate, so run it once.
 
+### Window comparison (v2.18.0+)
+
+`report compare` puts a **baseline** window and a **current** window
+head-to-head: mean, stdev, CV%, GMI, the TIR/TBR/TAR band split and the
+bolus insulin / carb totals for each, plus their deltas — so "did the
+profile switch lower my TIR?" is one command instead of two plus mental
+diffing.
+
+```bash
+# Last 7 days vs the 7 before them (default split, today in --tz)
+cli-anything-nightscout --json report compare --days 7
+
+# Explicit windows: sensor switch in between
+cli-anything-nightscout --json report compare \
+    --baseline-from 2026-10-01T00:00:00.000Z --baseline-to 2026-10-08T00:00:00.000Z \
+    --current-from  2026-10-10T00:00:00.000Z --current-to  2026-10-17T00:00:00.000Z
+
+# Human table + a tighter band than the 70/180 consensus pair
+cli-anything-nightscout report compare --days 14 --low 70 --high 160
+```
+
+Deltas are `current - baseline` (percentage points for the band split,
+absolute + relative % for the mean). The band thresholds are resolved ONCE
+and applied to both windows. A window with no valid readings reads
+`found: false` and every delta it feeds is `null`, never a misleading 0.
+
 ### Dry-run is network-safe (v2.1.0+)
 
 `--dry-run` now describes the request without sending it — every mutating

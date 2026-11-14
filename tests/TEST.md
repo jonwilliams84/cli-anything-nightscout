@@ -977,3 +977,30 @@ core/profile.py: export/import fully covered · nightscout_cli.py: 90 %
 
 Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
 exits 0.
+
+### Test results — 2026-11-14 (v2.18.0 — window comparison, `report compare`)
+
+New coverage for the therapy-decision gap: every single-window report
+(`report summary`, `report tir`, `report daily`) answers "how did it go in
+this window?" but never "did it get **better** than the window before?" —
+the question every profile switch, sensor change or diet experiment asks.
+`report compare` fetches the same metrics for a baseline and a current
+window and emits their deltas in one payload, composed from the existing
+primitives (`summary`, `time_in_range`, `treatment_totals`) so definitions
+cannot drift between the two windows. Core addition in `core/report.py`:
+`compare_windows`.
+
+| File | New tests | Scope |
+|------|-----------|-------|
+| `test_core.py` | **12** | `TestCompareWindows`: deltas are current − baseline (mean absolute + relative %, GMI delta off the 3.31 + 0.02392·mean formula); band-split deltas land in percentage points (TIR 50→100 %, TAR 25→0 %); a dataless window reads `found: false` on its side and every delta it feeds is `null` (never 0); both-windows-empty is safe and the band split is still a well-formed zero result; custom `--low/--high` thresholds apply equally to both windows (asserted identical); mmol display adds `*_mmol` twins while `input_units` stays mg/dL; treatment totals join the payload and deltas (baseline 5 U/60 g vs current 2 U/0 g → −3 U/−60 g) with `Temp Basal` insulin **not** summed (`includes_basal: false`); treatments may be omitted entirely; mbg-only windows are dataless (`found: false`, count == total_readings == 0); custom labels carry through; the `units` field reports the display unit; relative mean-% change is defined for a tiny (0.5 mg/dL) baseline mean. |
+| `test_full_e2e.py` | **5** | `TestReportCompareE2E` (real HTTP, stand-in + live): two disjoint historical windows seeded through the stand-in (`3×100 mg/dL` + Meal Bolus 5 U/60 g vs `2×120 mg/dL` + Correction Bolus 2 U) give fully deterministic deltas (mean +20/+20 %, readings −1, insulin −3 U, carbs −60 g) and the windows are echoed in the payload; the human table prints metric/TIR/GMI rows with the mean delta; an empty baseline window is honest (`found: false`, `mean_mgdl`/`gmi_pct` deltas `null`); a half-specified explicit window pair (one flag of four) refuses; the default `--days 1` split stamps a "now" entry into the current window and exits 0 even when the baseline is empty. |
+
+```text
+$ /work/venv/bin/python -m pytest tests --cov=cli_anything --cov-fail-under=78 -q
+1761 passed; Total coverage: 93 % (78 % gate)
+
+nightscout_cli.py: 87 % (report compare covered) · core/report.py: 98 %
+```
+
+Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
+exits 0.

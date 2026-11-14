@@ -4,6 +4,61 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.18.0] — 2026-11-14
+
+- **New command: `report compare`** — the two-window therapy-decision report
+  the single-window reports could not answer. `report summary`, `report tir`
+  and `report daily` each describe ONE window; "did the profile switch lower
+  my TIR?", "is the new sensor reading high?", "did the diet experiment calm
+  the evenings?" are *comparative* questions, and until now an agent had to
+  run two commands and diff the JSON by hand — inviting threshold and window
+  mismatches. `report compare` fetches a **baseline** window and a **current**
+  window with the SAME metrics and emits their deltas in one payload (also
+  on stdout in human mode as a metric table):
+  - **Metrics per window**: mean, stdev, min, max, CV%, GMI and the
+    TIR/TBR/TAR band split, plus bolus insulin (`insulin_units`) and carb
+    totals from treatment records. **`deltas` is `current − baseline`** for
+    every field — percentage points for the band split, absolute + relative %
+    for the mean — plus insulin/carb deltas when treatments were fetched.
+  - **Windows**: default split is `--days N` (N=7) ending today *today in the
+    `--tz` zone* with the N days before it as baseline; explicit
+    `--baseline-from/--baseline-to --current-from/--current-to` compare any
+    two windows (all four flags or none — a half-specified pair refuses so
+    two differently-shaped windows can never be silently mismatched). The
+    windows are echoed in the payload under `windows` so the caller sees
+    exactly what was compared.
+  - **One band, two windows**: the 70/180 mg/dL consensus pair (or
+    `--low/--high`) is resolved ONCE and applied to both windows — the
+    deltas are always apples-to-apples.
+  - **Honesty rails**: a window with no valid readings is `found: false` on
+    its side and every `deltas.` field it feeds is `null`, never a misleading
+    0; mbg entries are excluded so `count` and `total_readings` agree; a
+    `Temp Basal` counts as a rate, not a dose (`includes_basal: false`, the
+    same rule as `report tdd`); a fetch that hits the sgv cap warns on
+    stderr that the deltas may compare truncated data.
+  - **Unit consistency** as everywhere since v2.11.1: server `sgv` is always
+    read as mg/dL and mmol display adds `*_mmol` twins to the window
+    summaries and the deltas.
+- Core addition in `core/report.py`: `compare_windows` — composes the
+  existing `summary`, `time_in_range` and `treatment_totals` primitives so
+  the two windows can never be computed with drifting definitions; ships
+  with sgv-only filtering (count == total_readings) and `_delta` null-on-missing
+  semantics.
+- Tests: **12 unit tests** (`TestCompareWindows`: delta arithmetic incl.
+  relative mean-% change, percentage-point band deltas, `found: false` /
+  null-delta honesty for empty windows, shared thresholds, mmol twins,
+  treatment totals with Temp-Basal exclusion, label carry-through) and
+  **5 E2E tests** (`TestReportCompareE2E` against the stand-in: deterministic
+  two-window seeding with asserted deltas and echoed windows, human table
+  output, empty-baseline honesty, half-specified explicit window refusal,
+  and a default `--days 1` split workflow).
+- Docs: SOP (`NIGHTSCOUT.md`) gains a "Window comparison (v2.18.0+)" section
+  and the `report` command-group row; package README gains a usage section;
+  agent skill docs (`SKILL.md`) gain a "Did the change help?" row. Fixed the
+  stale `nightscout_cli.VERSION` literal (still 2.17.0 while the package
+  ships 2.18.0) and the two test literals that pinned the old export
+  envelope version.
+
 ## [2.17.0] — 2026-11-07
 
 - **New commands: `profile export` + `profile import`** — the basal-profile

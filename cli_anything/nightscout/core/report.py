@@ -1270,3 +1270,144 @@ def intraday_grid(
         "high_threshold_mgdl": round(high_mgdl, 2),
         "units": "mmol/l" if mmol else "mg/dl",
     }
+
+
+# ── window comparison ────────────────────────────────────────────────────
+
+
+def _delta(a: Any, b: Any) -> Any:
+    """Return ``b - a`` for two numerics, else ``None`` when either is missing."""
+    if a is None or b is None:
+        return None
+    return round(b - a, 4)
+
+
+def compare_windows(
+    baseline_entries: list[dict[str, Any]],
+    current_entries: list[dict[str, Any]],
+    *,
+    units: str = "mg/dl",
+    input_units: str | None = None,
+    low: float | None = None,
+    high: float | None = None,
+    tz: tzinfo | str | None = None,
+    label_baseline: str = "baseline",
+    label_current: str = "current",
+    baseline_treatments: list[dict[str, Any]] | None = None,
+    current_treatments: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Compare two time windows head-to-head: baseline vs current.
+
+    The question every therapy decision asks — *"did the change work?"* —
+    needs both halves: a window **before** the change and a comparable
+    window **after**. This composes the two single-window primitives so
+    definitions cannot drift between them:
+
+    * ``summary`` — mean / stdev / min / max / CV% / GMI per window
+    * ``time_in_range`` — the shared TIR / TBR / TAR band split
+    * ``treatment_totals`` — bolus insulin, carbs and event counts, when
+      treatment records are supplied for a window
+
+    ``deltas`` is ``current − baseline`` for every comparable metric
+    (percentage-point changes for the band split, absolute + relative
+    change for the mean). Two honesty rails: a window with no valid
+    readings has ``found: false`` on its side and every delta involving it
+    is ``None`` (never a misleading 0); band thresholds must be the same
+    for both windows — they are computed once here, not per window.
+
+    ``units`` is display only (server ``sgv`` is always read as mg/dL via
+    ``input_units``); mmol display adds ``*_mmol`` twins. ``tz`` feeds the
+    per-window treatment-day bucketing only.
+    """
+    units, input_units = _resolve_units(units, input_units)
+    mmol = _is_mmol(units)
+    if low is None:
+        low = DEFAULT_LOW_MMOL if mmol else DEFAULT_LOW_MGDL
+    if high is None:
+        high = DEFAULT_HIGH_MMOL if mmol else DEFAULT_HIGH_MGDL
+
+    def _window(
+        entries: list[dict[str, Any]] | None,
+        treatments: list[dict[str, Any]] | None,
+        label: str,
+    ) -> dict[str, Any]:
+        # sgv only: summary() would silently fold mbg in while the band split
+        # filters it out, so count and total_readings must agree.
+        entries = _filter_sgv([e for e in (entries or []) if isinstance(e, dict)])
+        summ = summary(entries, units=units, input_units=input_units)
+        tir = time_in_range(entries, low=low, high=high, units=units, input_units=input_units)
+        glucose: dict[str, Any] = {k: tir[k] for k in ("total_readings",) if k in tir}
+        glucose.update({k: summ[k] for k in ("count", "gmi_pct", "cv_pct")})
+        for k in ("mean", "stdev", "min", "max"):
+            glucose[f"{k}_mgdl"] = summ.get(f"{k}_mgdl")
+        if mmol:
+            for k in ("mean", "stdev", "min", "max"):
+                glucose[f"{k}_mmol"] = summ.get(f"{k}_mmol")
+        for k in ("tir_pct", "tbr_pct", "tar_pct"):
+            glucose[k] = tir[k]
+        out: dict[str, Any] = {
+            "label": label,
+            "found": bool(summ["count"]),
+            "glucose": glucose,
+            "thresholds": {
+                "low": low,
+                "high": high,
+                "units": "mmol/l" if mmol else "mg/dl",
+            },
+        }
+        if treatments is not None:
+            totals = treatment_totals([t for t in treatments if isinstance(t, dict)], tz=tz)[
+                "totals"
+            ]
+            out["treatments"] = {
+                "totals": totals,
+                # Bolus-only insulin/carbs over the window. Basal delivery is
+                # deliberately NOT scaled in here (a Temp Basal is a rate, not
+                # a dose) — `includes_basal: false` says so, like report tdd.
+                "includes_basal": False,
+            }
+        return out
+
+    baseline = _window(baseline_entries, baseline_treatments, label_baseline)
+    current = _window(current_entries, current_treatments, label_current)
+
+    bg = baseline["glucose"]
+    cg = current["glucose"]
+    deltas: dict[str, Any] = {
+        "readings": _delta(bg["total_readings"], cg["total_readings"]),
+        "gmi_pct": _delta(bg["gmi_pct"], cg["gmi_pct"]),
+        "cv_pct": _delta(bg["cv_pct"], cg["cv_pct"]),
+        "mean_mgdl": _delta(bg.get("mean_mgdl"), cg.get("mean_mgdl")),
+        "mean_pct_change": (
+            round(
+                (cg["mean_mgdl"] - bg["mean_mgdl"]) / bg["mean_mgdl"] * 100,
+                2,
+            )
+            if bg.get("mean_mgdl") and cg.get("mean_mgdl")
+            else None
+        ),
+        "stdev_mgdl": _delta(bg.get("stdev_mgdl"), cg.get("stdev_mgdl")),
+        "min_mgdl": _delta(bg.get("min_mgdl"), cg.get("min_mgdl")),
+        "max_mgdl": _delta(bg.get("max_mgdl"), cg.get("max_mgdl")),
+        "tir_pct": _delta(bg.get("tir_pct"), cg.get("tir_pct")),
+        "tbr_pct": _delta(bg.get("tbr_pct"), cg.get("tbr_pct")),
+        "tar_pct": _delta(bg.get("tar_pct"), cg.get("tar_pct")),
+    }
+    if mmol:
+        deltas["mean_mmol"] = _delta(bg.get("mean_mmol"), cg.get("mean_mmol"))
+    bt = baseline.get("treatments")
+    ct = current.get("treatments")
+    if bt is not None and ct is not None:
+        deltas["insulin_units"] = _delta(
+            bt["totals"]["insulin_units"], ct["totals"]["insulin_units"]
+        )
+        deltas["carbs_g"] = _delta(bt["totals"]["carbs_g"], ct["totals"]["carbs_g"])
+
+    both = baseline["found"] and current["found"]
+    return {
+        "found": bool(both),
+        "baseline": baseline,
+        "current": current,
+        "deltas": deltas,
+        "units": "mmol/l" if mmol else "mg/dl",
+    }

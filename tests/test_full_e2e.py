@@ -3024,3 +3024,260 @@ class TestProfileTransferE2E:
         data = json.loads(r.stdout)
         assert data["found"] is True
         assert data["total_units_per_day"] == pytest.approx(0.7 * 24, abs=0.2)
+
+
+# ─── v2.18.0: report compare — baseline vs current windows ─────────────────
+
+
+class TestReportCompareE2E:
+    """E2E for `report compare` — head-to-head window comparison.
+
+    Seeds two disjoint historical windows (explicit dates, so the
+    module-scoped stand-in's now-stamped data from other tests never leaks
+    in) and checks the deltas, the honesty rails and the human output.
+    """
+
+    CLI_BASE = _resolve_cli("cli-anything-nightscout")
+
+    BASE_FROM = "2026-07-01T00:00:00.000Z"
+    BASE_TO = "2026-07-02T00:00:00.000Z"
+    CUR_FROM = "2026-07-10T00:00:00.000Z"
+    CUR_TO = "2026-07-11T00:00:00.000Z"
+    # Baseline: 3×100 mg/dL + one Meal Bolus (5U / 60g). Current: 2×120 mg/dL
+    # + one Correction Bolus (2U). Deltas are fully deterministic.
+    BASE_SGVS = [100, 100, 100]
+    CUR_SGVS = [120, 120]
+
+    def _run(self, args, env=None, check=True):
+        env_full = os.environ.copy()
+        if env:
+            env_full.update(env)
+        return subprocess.run(
+            self.CLI_BASE + list(args),
+            capture_output=True,
+            text=True,
+            check=check,
+            env=env_full,
+            timeout=30,
+        )
+
+    def _conn_env(self, server_url_and_secret, tmp_path):
+        url, secret = server_url_and_secret
+        return {
+            "NIGHTSCOUT_URL": url,
+            "NIGHTSCOUT_API_SECRET": secret,
+            "NIGHTSCOUT_TOKEN": "",
+            "CLI_ANYTHING_HOME": str(tmp_path),
+        }
+
+    def _post(self, server_url_and_secret, path, records):
+        from cli_anything.nightscout.utils import nightscout_backend as backend
+
+        url, secret = server_url_and_secret
+        return backend.post(
+            path,
+            data=records,
+            base_url=url,
+            version="v1",
+            api_secret=secret,
+        )
+
+    @pytest.fixture()
+    def seeded(self, server_url_and_secret):
+        if _is_live_mode():
+            pytest.skip("compare seeding uses fixed past dates; skipped in LIVE mode")
+        base_ms = int(
+            datetime.fromisoformat(self.BASE_FROM.replace("Z", "+00:00")).timestamp() * 1000
+        )
+        cur_ms = int(
+            datetime.fromisoformat(self.CUR_FROM.replace("Z", "+00:00")).timestamp() * 1000
+        )
+        entries = []
+        for i, v in enumerate(self.BASE_SGVS):
+            entries.append(
+                {
+                    "type": "sgv",
+                    "sgv": v,
+                    "date": base_ms + (i + 1) * 5 * 60 * 1000,
+                    "dateString": (
+                        datetime.fromtimestamp((base_ms + (i + 1) * 300000) / 1000, timezone.utc)
+                        .strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                    ),
+                }
+            )
+        for i, v in enumerate(self.CUR_SGVS):
+            entries.append(
+                {
+                    "type": "sgv",
+                    "sgv": v,
+                    "date": cur_ms + (i + 1) * 5 * 60 * 1000,
+                    "dateString": (
+                        datetime.fromtimestamp((cur_ms + (i + 1) * 300000) / 1000, timezone.utc)
+                        .strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                    ),
+                }
+            )
+        self._post(server_url_and_secret, "/entries.json", entries)
+        self._post(
+            server_url_and_secret,
+            "/treatments.json",
+            [
+                {
+                    "eventType": "Meal Bolus",
+                    "insulin": 5.0,
+                    "carbs": 60,
+                    "date": base_ms + 300000,
+                    "created_at": (
+                        datetime.fromtimestamp((base_ms + 300000) / 1000, timezone.utc)
+                        .strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                    ),
+                },
+                {
+                    "eventType": "Correction Bolus",
+                    "insulin": 2.0,
+                    "date": cur_ms + 300000,
+                    "created_at": (
+                        datetime.fromtimestamp((cur_ms + 300000) / 1000, timezone.utc)
+                        .strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                    ),
+                },
+            ],
+        )
+        time.sleep(0.1)
+        return server_url_and_secret
+
+    def test_json_deltas_current_minus_baseline(self, seeded, tmp_path):
+        env = self._conn_env(seeded, tmp_path)
+        r = self._run(
+            [
+                "--json",
+                "report",
+                "compare",
+                "--tz",
+                "UTC",
+                "--baseline-from",
+                self.BASE_FROM,
+                "--baseline-to",
+                self.BASE_TO,
+                "--current-from",
+                self.CUR_FROM,
+                "--current-to",
+                self.CUR_TO,
+            ],
+            env=env,
+        )
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["found"] is True
+        assert data["baseline"]["glucose"]["mean_mgdl"] == 100.0
+        assert data["current"]["glucose"]["mean_mgdl"] == 120.0
+        assert data["deltas"]["mean_mgdl"] == 20.0
+        assert data["deltas"]["mean_pct_change"] == 20.0
+        # Band split: both windows all-in-range with the consensus pair…
+        assert data["deltas"]["tir_pct"] == 0.0
+        # …but the reading counts and treatment totals must differ.
+        assert data["deltas"]["readings"] == -1
+        assert data["deltas"]["insulin_units"] == -3.0
+        assert data["deltas"]["carbs_g"] == -60.0
+        assert data["baseline"]["treatments"]["includes_basal"] is False
+        # The windows are echoed so the caller sees what was compared.
+        assert data["windows"]["baseline"]["from"] == self.BASE_FROM
+        assert data["windows"]["current"]["to"] == self.CUR_TO
+
+    def test_human_output_rows(self, seeded, tmp_path):
+        env = self._conn_env(seeded, tmp_path)
+        r = self._run(
+            [
+                "report",
+                "compare",
+                "--tz",
+                "UTC",
+                "--baseline-from",
+                self.BASE_FROM,
+                "--baseline-to",
+                self.BASE_TO,
+                "--current-from",
+                self.CUR_FROM,
+                "--current-to",
+                self.CUR_TO,
+            ],
+            env=env,
+        )
+        assert r.returncode == 0, r.stderr
+        assert "metric" in r.stdout
+        assert "GMI" in r.stdout and "TIR" in r.stdout
+        assert "20" in r.stdout  # the mean delta surfaces to a human eye too
+
+    def test_empty_baseline_window_is_honest(self, seeded, tmp_path):
+        env = self._conn_env(seeded, tmp_path)
+        r = self._run(
+            [
+                "--json",
+                "report",
+                "compare",
+                "--tz",
+                "UTC",
+                "--baseline-from",
+                "2001-01-01T00:00:00.000Z",
+                "--baseline-to",
+                "2001-01-02T00:00:00.000Z",
+                "--current-from",
+                self.CUR_FROM,
+                "--current-to",
+                self.CUR_TO,
+            ],
+            env=env,
+        )
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["found"] is False
+        assert data["baseline"]["found"] is False
+        assert data["current"]["found"] is True
+        # Deltas involving the empty window are None, never a misleading 0.
+        assert data["deltas"]["mean_mgdl"] is None
+        assert data["deltas"]["gmi_pct"] is None
+
+    def test_half_explicit_window_fails(self, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r = self._run(
+            ["report", "compare", "--baseline-from", self.BASE_FROM],
+            env=env,
+            check=False,
+        )
+        assert r.returncode != 0
+        assert "all four" in (r.stdout + r.stderr)
+
+    def test_days_split_workflow(self, seeded, tmp_path):
+        """Default --days 1 split: an entry stamped now lands in the current
+        window; the baseline (yesterday) may be empty — found:false is the
+        honest answer, and the command still exits 0."""
+        from cli_anything.nightscout.utils import nightscout_backend as backend
+
+        url, secret = seeded
+        now = datetime.now(timezone.utc)
+        backend.post(
+            "/entries.json",
+            data=[
+                {
+                    "type": "sgv",
+                    "sgv": 110,
+                    "date": int(now.timestamp() * 1000),
+                    "dateString": now.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                }
+            ],
+            base_url=url,
+            version="v1",
+            api_secret=secret,
+        )
+        env = self._conn_env(seeded, tmp_path)
+        r = self._run(
+            ["--json", "report", "compare", "--days", "1", "--tz", "UTC"],
+            env=env,
+        )
+        assert r.returncode == 0, r.stderr
+        data = json.loads(r.stdout)
+        assert data["windows"]["current"]["to"] >= data["windows"]["baseline"]["to"]
+        # current window contains now → has data
+        assert data["current"]["found"] is True
+        if data["baseline"]["found"] is False:
+            assert data["found"] is False

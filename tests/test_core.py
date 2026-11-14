@@ -3885,7 +3885,7 @@ class TestProfileExport:
         assert env["records"] == recs
         assert env["exported_at"].endswith("Z")
         assert "T" in env["exported_at"]
-        assert env["version"] == "2.17.0"
+        assert env["version"] == "2.18.0"
 
     def test_export_is_read_only(self, isolated_home):
         posted = []
@@ -4209,7 +4209,7 @@ class TestProfileImportCommands:
         f = tmp_path / "p.json"
         env = {
             "kind": "cli-anything-nightscout profile export",
-            "version": "2.17.0",
+            "version": "2.18.0",
             "exported_at": "2026-11-07T00:00:00.000Z",
             "count": 1,
             "records": [TestCoerceProfileRecord._record()],
@@ -4265,3 +4265,154 @@ class TestProfileImportCommands:
             result = self._invoke(["--dry-run", "profile", "import", "--file", str(f), "--apply"])
         assert result.exit_code == 0, result.exception
         assert capture == []  # global --dry-run must never send anything
+
+
+# ─── report.compare_windows (v2.18.0 window comparison) ────────────────────
+
+
+class TestCompareWindows:
+    """`report.compare_windows` — baseline vs current head-to-head report."""
+
+    def setup_method(self):
+        from cli_anything.nightscout.core import report
+
+        self.report = report
+
+    def _entries(self, values, day_iso="2025-05-01"):
+        return [
+            {
+                "type": "sgv",
+                "sgv": v,
+                "dateString": f"{day_iso}T00:0{i}:00.000Z",
+            }
+            for i, v in enumerate(values)
+        ]
+
+    def test_deltas_are_current_minus_baseline(self):
+        base = self._entries([100, 100, 100])
+        cur = self._entries([120, 120, 120], day_iso="2025-05-08")
+        r = self.report.compare_windows(base, cur)
+        assert r["found"] is True
+        assert r["baseline"]["glucose"]["mean_mgdl"] == 100.0
+        assert r["current"]["glucose"]["mean_mgdl"] == 120.0
+        assert r["deltas"]["mean_mgdl"] == 20.0
+        assert r["deltas"]["mean_pct_change"] == 20.0
+        # GMI moves with the mean: 6.18 - 5.70
+        assert r["deltas"]["gmi_pct"] == round(6.18 - 5.7, 4)
+
+    def test_band_split_deltas_in_percentage_points(self):
+        base = self._entries([100, 100, 200, 60])
+        cur = self._entries([100, 100, 100, 110], day_iso="2025-05-08")
+        r = self.report.compare_windows(base, cur)
+        # baseline TIR = 2/4, current TIR = 4/4
+        assert r["baseline"]["glucose"]["tir_pct"] == 50.0
+        assert r["current"]["glucose"]["tir_pct"] == 100.0
+        assert r["deltas"]["tir_pct"] == 50.0
+        # TAR drops 25 → 0
+        assert r["deltas"]["tar_pct"] == -25.0
+
+    def test_found_false_when_baseline_window_is_empty(self):
+        cur = self._entries([100, 110], day_iso="2025-05-08")
+        r = self.report.compare_windows([], cur)
+        assert r["found"] is False
+        assert r["baseline"]["found"] is False
+        assert r["current"]["found"] is True
+        assert r["deltas"]["mean_mgdl"] is None
+        assert r["deltas"]["gmi_pct"] is None
+
+    def test_found_false_when_both_windows_are_empty(self):
+        r = self.report.compare_windows([], [])
+        assert r["found"] is False
+        assert r["baseline"]["found"] is False
+        assert r["current"]["found"] is False
+        # the band split must still be a well-formed zero result
+        assert r["baseline"]["glucose"]["tir_pct"] == 0.0
+        # readings delta of two zeros is 0, never a crash
+        assert r["deltas"]["readings"] == 0
+
+    def test_custom_thresholds_apply_to_both_windows(self):
+        base = self._entries([100, 100])
+        cur = self._entries([100, 100], day_iso="2025-05-08")
+        r = self.report.compare_windows(base, cur, low=90, high=110)
+        assert r["baseline"]["thresholds"]["low"] == 90.0
+        assert r["current"]["thresholds"]["high"] == 110.0
+        assert r["baseline"]["thresholds"] == r["current"]["thresholds"]
+
+    def test_mmol_display_adds_mmol_twins(self):
+        # Server sgv is always mg/dL — pass input_units explicitly, as the
+        # CLI does (units is display only).
+        base = self._entries([100, 140])
+        cur = self._entries([110, 150], day_iso="2025-05-08")
+        r = self.report.compare_windows(base, cur, units="mmol", input_units="mg/dl")
+        bgl = r["baseline"]["glucose"]
+        assert bgl["mean_mgdl"] == 120.0
+        assert bgl["mean_mmol"] == round(120.0 / 18.018, 2)
+        assert r["deltas"]["mean_mmol"] == round(130.0 / 18.018 - 120.0 / 18.018, 2)
+        # mg/dl fields are always present alongside
+        assert r["deltas"]["mean_mgdl"] == 10.0
+
+    def test_treatment_totals_and_deltas(self):
+        base_tx = [
+            {"eventType": "Meal Bolus", "insulin": 5.0, "carbs": 60, "created_at": "2025-05-01T10:00:00.000Z"},
+            {"eventType": "Temp Basal", "insulin": 99, "created_at": "2025-05-01T11:00:00.000Z"},
+        ]
+        cur_tx = [
+            {"eventType": "Correction Bolus", "insulin": 2.0, "created_at": "2025-05-08T10:00:00.000Z"},
+        ]
+        base = self._entries([100, 110])
+        cur = self._entries([105, 115], day_iso="2025-05-08")
+        r = self.report.compare_windows(
+            base,
+            cur,
+            baseline_treatments=base_tx,
+            current_treatments=cur_tx,
+        )
+        assert r["baseline"]["treatments"]["totals"]["insulin_units"] == 5.0
+        assert r["baseline"]["treatments"]["totals"]["carbs_g"] == 60.0
+        # Temp Basal is a rate, not a dose: the 99 U must NOT be counted
+        assert r["deltas"]["insulin_units"] == -3.0
+        assert r["deltas"]["carbs_g"] == -60.0
+        assert r["baseline"]["treatments"]["includes_basal"] is False
+
+    def test_treatments_may_be_omitted(self):
+        base = self._entries([100])
+        cur = self._entries([110], day_iso="2025-05-08")
+        r = self.report.compare_windows(base, cur)
+        assert "treatments" not in r["baseline"]
+        assert "treatments" not in r["current"]
+        assert "insulin_units" not in r["deltas"]
+
+    def test_non_sgv_entries_are_filtered(self):
+        base = [{"type": "mbg", "mbg": 100, "dateString": "2025-05-01T00:00:00.000Z"}]
+        cur = self._entries([120], day_iso="2025-05-08")
+        r = self.report.compare_windows(base, cur)
+        # mbg entries are NOT counted: a window of only meter calibrations is
+        # a dataless CGM window, never a found one.
+        assert r["baseline"]["glucose"]["total_readings"] == 0
+        assert r["baseline"]["glucose"]["count"] == 0
+        assert r["baseline"]["found"] is False
+
+    def test_labels_carry_through(self):
+        base = self._entries([100])
+        cur = self._entries([110], day_iso="2025-05-08")
+        r = self.report.compare_windows(
+            base, cur, label_baseline="last week", label_current="this week"
+        )
+        assert r["baseline"]["label"] == "last week"
+        assert r["current"]["label"] == "this week"
+
+    def test_units_field_reports_display_units(self):
+        base = self._entries([100])
+        cur = self._entries([110], day_iso="2025-05-08")
+        assert self.report.compare_windows(base, cur)["units"] == "mg/dl"
+        assert (
+            self.report.compare_windows(base, cur, units="mmol/l")["units"] == "mmol/l"
+        )
+
+    def test_pct_change_defined_even_for_tiny_baseline_mean(self):
+        base = self._entries([0.5])
+        cur = self._entries([110], day_iso="2025-05-08")
+        r = self.report.compare_windows(base, cur)
+        # baseline mean > 0 → pct change is defined, and it is huge.
+        assert r["found"] is True
+        assert r["deltas"]["mean_pct_change"] == round((110.0 - 0.5) / 0.5 * 100, 2)

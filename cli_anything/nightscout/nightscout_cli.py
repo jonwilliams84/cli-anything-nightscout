@@ -43,7 +43,7 @@ from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-VERSION = "2.17.0"
+VERSION = "2.18.0"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -5686,6 +5686,201 @@ def treatments_import(
             + (f"; skipped {len(invalid)} invalid row(s)" if invalid else "")
         ),
     )
+
+
+# ─── v2.18.0: window comparison (baseline vs current) ──────────────────────
+
+
+def _compare_iso(dt: Any) -> str:
+    """Format an aware datetime as a Nightscout-style ISO UTC Z string."""
+    from datetime import timezone as _tz
+
+    return dt.astimezone(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+@report_grp.command("compare")
+@click.option("--days", default=7, type=int, help="Window size in days (default 7).")
+@click.option(
+    "--baseline-from",
+    default=None,
+    help="ISO start of the baseline window (overrides the --days split).",
+)
+@click.option("--baseline-to", default=None, help="ISO end of the baseline window.")
+@click.option(
+    "--current-from",
+    default=None,
+    help="ISO start of the current window (overrides the --days split).",
+)
+@click.option("--current-to", default=None, help="ISO end of the current window.")
+@click.option(
+    "--low", default=None, type=float, help="Low threshold (default: 70 mg/dL or 3.9 mmol/L)"
+)
+@click.option(
+    "--high", default=None, type=float, help="High threshold (default: 180 mg/dL or 10.0 mmol/L)"
+)
+@click.option(
+    "--units",
+    "units_flag",
+    default=None,
+    type=click.Choice(["mg/dl", "mmol", "mmol/l"]),
+    help="Override session units for this report",
+)
+@click.option(
+    "--tz", "tz_name", default=None, help="Day-boundary timezone (default: local system tz)."
+)
+@click.pass_context
+def report_compare(
+    ctx: click.Context,
+    days: int,
+    baseline_from: str | None,
+    baseline_to: str | None,
+    current_from: str | None,
+    current_to: str | None,
+    low: float | None,
+    high: float | None,
+    units_flag: str | None,
+    tz_name: str | None,
+) -> None:
+    """Head-to-head comparison of two windows: baseline vs current.
+
+    Every therapy question is comparative — "did the profile switch lower my
+    TIR?", "is the new sensor reading high?" — and single-window reports
+    (`report summary`, `report tir`) cannot answer it. This fetches the SAME
+    metrics for a baseline window and a current window and emits their deltas:
+    mean, stdev, CV%, GMI, the TIR/TBR/TAR band split, plus bolus insulin and
+    carb totals.
+
+    Default windows: the current window is the last --days days (today in the
+    --tz zone back to --days-1); the baseline window is the --days immediately
+    before it. Explicit --baseline-from/--baseline-to and
+    --current-from/--current-to override the split so any two windows can be
+    compared. The band thresholds are computed ONCE and applied to both
+    windows, so the deltas are always an apples-to-apples comparison.
+    """
+    import datetime as _dt_mod
+
+    conn = _conn(ctx)
+    _require_url(conn)
+    units = units_flag or conn.get("units", "mg/dl")
+    tz = tz_name or _default_tz_name()
+    tzinfo = report_mod._resolve_tz(tz)
+    now_local = _dt_mod.datetime.now(_dt_mod.timezone.utc).astimezone(tzinfo)
+    explicit = any([baseline_from, baseline_to, current_from, current_to])
+    if explicit and not (baseline_from and baseline_to and current_from and current_to):
+        raise click.ClickException(
+            "report compare: pass all four of --baseline-from/--baseline-to and "
+            "--current-from/--current-to (or none of them to use the --days split)."
+        )
+    if explicit:
+        base_s, base_e = baseline_from, baseline_to
+        cur_s, cur_e = current_from, current_to
+        windows = {
+            "baseline": {"from": base_s, "to": base_e},
+            "current": {"from": cur_s, "to": cur_e},
+            "tz_used": tz,
+        }
+    else:
+        if days < 1:
+            raise click.ClickException("report compare: --days must be >= 1.")
+        today = now_local.date()
+        cur_start = _dt_mod.datetime.combine(
+            today - _dt_mod.timedelta(days=days - 1), _dt_mod.time.min
+        ).replace(tzinfo=tzinfo)
+        base_start = cur_start - _dt_mod.timedelta(days=days)
+        base_s = _compare_iso(base_start)
+        base_e = _compare_iso(cur_start)
+        cur_s = _compare_iso(cur_start)
+        cur_e = _compare_iso(now_local)
+        windows = {
+            "baseline": {"from": base_s, "to": base_e, "days": days},
+            "current": {"from": cur_s, "to": cur_e},
+            "tz_used": tz,
+        }
+    base_sgv = entries_mod.list_entries(
+        conn=conn, count=100000, type_="sgv", date_gte=base_s, date_lte=base_e
+    )
+    cur_sgv = entries_mod.list_entries(
+        conn=conn, count=100000, type_="sgv", date_gte=cur_s, date_lte=cur_e
+    )
+    base_tx = treatments_mod.list_treatments(
+        conn=conn, count=10000, date_gte=base_s, date_lte=base_e
+    )
+    cur_tx = treatments_mod.list_treatments(conn=conn, count=10000, date_gte=cur_s, date_lte=cur_e)
+    res = report_mod.compare_windows(
+        base_sgv,
+        cur_sgv,
+        units=units,
+        input_units="mg/dl",
+        low=low,
+        high=high,
+        tz=tz,
+        baseline_treatments=base_tx,
+        current_treatments=cur_tx,
+    )
+    res["windows"] = windows
+    base_sgv_n = len([e for e in base_sgv if e.get("type", "sgv") == "sgv"])
+    cur_sgv_n = len([e for e in cur_sgv if e.get("type", "sgv") == "sgv"])
+    if base_sgv_n >= 100000 or cur_sgv_n >= 100000:
+        click.echo(
+            "  ⚠ window hit the 100000-reading fetch cap; deltas may compare truncated data",
+            err=True,
+        )
+    _maybe_save_session(ctx, action="report.compare", detail=f"days={days}")
+    if _is_json(ctx):
+        _emit(ctx, res)
+        return
+    mmol = _is_mmol_units(units)
+    u = "mmol/L" if mmol else "mg/dL"
+    bg = res["baseline"]["glucose"]
+    cg = res["current"]["glucose"]
+    d = res["deltas"]
+    if not res["found"]:
+        empty = [w["label"] for w in (res["baseline"], res["current"]) if not w["found"]]
+        click.echo(f"  no glucose readings in the {', '.join(empty)} window(s); nothing to compare")
+        return
+
+    def fnum(v: Any, suffix: str = "") -> str:
+        return "—" if v is None else f"{v:g}{suffix}"
+
+    click.echo(f"  {'metric':<12} {'baseline':>10} {'current':>10} {'Δ':>10}")
+    click.echo(f"  {'-' * 46}")
+    click.echo(
+        f"  {'readings':<12} {bg['total_readings']:>10} {cg['total_readings']:>10} {fnum(d['readings'], ''):>10}"
+    )
+    mean_key = "mean_mmol" if mmol else "mean_mgdl"
+    dmean_key = "mean_mmol" if mmol else "mean_mgdl"
+    mean_d = fnum(d.get(dmean_key))
+    if d["mean_pct_change"] is not None:
+        mean_d += f" ({d['mean_pct_change']:+g}%)"
+    click.echo(
+        f"  {'mean':<12} {fnum(bg.get(mean_key)):>10} {fnum(cg.get(mean_key)):>10} {mean_d:>10}"
+    )
+    click.echo(
+        f"  {'GMI %':<12} {fnum(bg['gmi_pct']):>10} {fnum(cg['gmi_pct']):>10} {fnum(d['gmi_pct']):>10}"
+    )
+    click.echo(
+        f"  {'CV %':<12} {fnum(bg['cv_pct']):>10} {fnum(cg['cv_pct']):>10} {fnum(d['cv_pct']):>10}"
+    )
+    click.echo(
+        f"  {'TIR %':<12} {fnum(bg['tir_pct']):>10} {fnum(cg['tir_pct']):>10} {fnum(d['tir_pct']):>10}"
+    )
+    click.echo(
+        f"  {'TBR %':<12} {fnum(bg['tbr_pct']):>10} {fnum(cg['tbr_pct']):>10} {fnum(d['tbr_pct']):>10}"
+    )
+    click.echo(
+        f"  {'TAR %':<12} {fnum(bg['tar_pct']):>10} {fnum(cg['tar_pct']):>10} {fnum(d['tar_pct']):>10}"
+    )
+    bt = res["baseline"].get("treatments")
+    ct = res["current"].get("treatments")
+    if bt and ct:
+        click.echo(
+            f"  {'insulin U':<12} {bt['totals']['insulin_units']:>10g} {ct['totals']['insulin_units']:>10g} {fnum(d['insulin_units']):>10}"
+        )
+        click.echo(
+            f"  {'carbs g':<12} {bt['totals']['carbs_g']:>10g} {ct['totals']['carbs_g']:>10g} {fnum(d['carbs_g']):>10}"
+        )
+    bth = res["baseline"]["thresholds"]
+    click.echo(f"  thresholds {fnum(bth['low'])}–{fnum(bth['high'])} {u}")
 
 
 if __name__ == "__main__":

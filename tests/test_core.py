@@ -3885,7 +3885,7 @@ class TestProfileExport:
         assert env["records"] == recs
         assert env["exported_at"].endswith("Z")
         assert "T" in env["exported_at"]
-        assert env["version"] == "2.18.0"
+        assert env["version"] == "2.19.0"
 
     def test_export_is_read_only(self, isolated_home):
         posted = []
@@ -4209,7 +4209,7 @@ class TestProfileImportCommands:
         f = tmp_path / "p.json"
         env = {
             "kind": "cli-anything-nightscout profile export",
-            "version": "2.18.0",
+            "version": "2.19.0",
             "exported_at": "2026-11-07T00:00:00.000Z",
             "count": 1,
             "records": [TestCoerceProfileRecord._record()],
@@ -4416,3 +4416,375 @@ class TestCompareWindows:
         # baseline mean > 0 → pct change is defined, and it is huge.
         assert r["found"] is True
         assert r["deltas"]["mean_pct_change"] == round((110.0 - 0.5) / 0.5 * 100, 2)
+
+
+# ─── export_data (v2.19.0 history export) ──────────────────────────────────
+
+
+class TestExportData:
+    """Unit tests for the v2.19.0 bulk history exporter (entries/treatments)."""
+
+    def setup_method(self):
+        from cli_anything.nightscout.core import export_data as export_mod
+
+        self.export_mod = export_mod
+
+    @staticmethod
+    def _entries(n, *, step_minutes=5, base=None):
+        from datetime import datetime as dt, timedelta, timezone
+
+        b = base or dt(2025, 1, 1, tzinfo=timezone.utc)
+        recs = []
+        for i in range(n):
+            ts = b + timedelta(minutes=step_minutes * i)
+            ms = int(ts.timestamp() * 1000)
+            recs.append(
+                {
+                    "_id": f"objid{i:03d}" + "0" * 18,
+                    "type": "sgv",
+                    "sgv": 100 + i,
+                    "date": ms,
+                    "dateString": ts.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "device": "unit-test",
+                    "direction": "Flat",
+                }
+            )
+        return recs
+
+    @staticmethod
+    def _treatments(n, *, base=None):
+        from datetime import datetime as dt, timedelta, timezone
+
+        b = base or dt(2025, 1, 1, tzinfo=timezone.utc)
+        recs = []
+        for i in range(n):
+            ts = b + timedelta(minutes=15 * i)
+            recs.append(
+                {
+                    "_id": f"tx{i:03d}" + "0" * 19,
+                    "eventType": "Meal Bolus" if i % 2 else "Correction Bolus",
+                    "created_at": ts.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "carbs": 30 if i % 2 else None,
+                    "insulin": 2.5 + 0.1 * i,
+                    "enteredBy": "unit-test",
+                }
+            )
+        return recs
+
+    class _NewestFirstFake:
+        """A newest-first v1 list endpoint honoring count + date cursors.
+
+        Filters on whichever cursor field is in play (dateString for
+        entries, created_at for treatments) plus optional extra find keys.
+        """
+
+        def __init__(self, records, *, ignore_cursor=False, ts_key="date"):
+            self.records = list(records)
+            self.ignore_cursor = ignore_cursor
+            self.ts_key = ts_key
+            self.requests: list[dict] = []
+
+        def __call__(self, conn, path, params):
+            self.requests.append(dict(params))
+            if self.ts_key == "date":
+                items = sorted(self.records, key=lambda r: r["date"], reverse=True)
+                date_field = "dateString"
+            else:
+                items = sorted(self.records, key=lambda r: r["created_at"], reverse=True)
+                date_field = "created_at"
+            gte = params.get(f"find[{date_field}][$gte]")
+            lte = params.get(f"find[{date_field}][$lte]")
+            ftype = params.get("find[type]")
+            etype = params.get("find[eventType]")
+            floor_ms = params.get("find[date][$gte]")
+            lt = None
+            for key in params:
+                if key.endswith("][$lt]"):
+                    lt = params[key]
+            if gte:
+                items = [r for r in items if str(r[date_field]) >= gte]
+            if lte:
+                items = [r for r in items if str(r[date_field]) <= lte]
+            if floor_ms:
+                items = [r for r in items if float(r.get("date", 0)) >= float(floor_ms)]
+            if ftype:
+                items = [r for r in items if r.get("type") == ftype]
+            if etype:
+                items = [r for r in items if r.get("eventType") == etype]
+            if lt and not self.ignore_cursor:
+                items = [r for r in items if str(r[date_field]) < lt]
+            items = items[: int(params.get("count", 10))]
+            return items
+
+    CONN = {"server_url": "http://unit-test", "api_secret": "s", "api_token": ""}
+
+    # -- fetch_all paging --------------------------------------------------
+
+    def test_fetch_all_walks_backwards_and_returns_ascending(self, monkeypatch):
+        recs = self._entries(7)
+        fake = self._NewestFirstFake(recs)
+        monkeypatch.setattr(self.export_mod, "_fetch_page", fake)
+        res = self.export_mod.fetch_all(
+            self.CONN,
+            path="/entries.json",
+            ts_getter=self.export_mod._entry_ts,
+            cursor_field="dateString",
+            page_size=3,
+            max_records=None,
+        )
+        assert res["fetched"] == 7
+        assert res["pages"] == 3
+        assert res["truncated"] is False
+        # oldest-first ordering
+        stamps = [r["date"] for r in res["records"]]
+        assert stamps == sorted(stamps)
+        # cursors advanced: every page after the first carries an $lt cursor
+        assert "find[dateString][$lt]" not in fake.requests[0]
+        assert fake.requests[1]["find[dateString][$lt]"] == "2025-01-01T00:20:00.000Z"
+
+    def test_fetch_all_dedupes_when_cursor_is_ignored(self, monkeypatch):
+        """A server that ignores $lt must not loop forever or duplicate rows."""
+        recs = self._entries(5)
+        fake = self._NewestFirstFake(recs, ignore_cursor=True)
+        monkeypatch.setattr(self.export_mod, "_fetch_page", fake)
+        res = self.export_mod.fetch_all(
+            self.CONN,
+            path="/entries.json",
+            ts_getter=self.export_mod._entry_ts,
+            cursor_field="dateString",
+            page_size=2,
+            max_records=None,
+        )
+        assert res["fetched"] == 2  # first page only, deduped afterwards
+        assert res["pages"] == 2
+
+    def test_fetch_all_marks_truncated_when_cap_cuts_a_page(self, monkeypatch):
+        recs = self._entries(8)
+        fake = self._NewestFirstFake(recs)
+        monkeypatch.setattr(self.export_mod, "_fetch_page", fake)
+        res = self.export_mod.fetch_all(
+            self.CONN,
+            path="/entries.json",
+            ts_getter=self.export_mod._entry_ts,
+            cursor_field="dateString",
+            page_size=3,
+            max_records=5,
+        )
+        assert res["fetched"] == 5
+        assert res["truncated"] is True
+
+    def test_fetch_all_probe_clears_false_truncation_at_boundary(self, monkeypatch):
+        """Cap == store size and the page ends exactly there: NOT truncated."""
+        recs = self._entries(6)
+        fake = self._NewestFirstFake(recs)
+        monkeypatch.setattr(self.export_mod, "_fetch_page", fake)
+        res = self.export_mod.fetch_all(
+            self.CONN,
+            path="/entries.json",
+            ts_getter=self.export_mod._entry_ts,
+            cursor_field="dateString",
+            page_size=3,
+            max_records=6,
+        )
+        assert res["fetched"] == 6
+        assert res["truncated"] is False
+
+    def test_fetch_all_probe_confirms_truncation_at_boundary(self, monkeypatch):
+        """Cap lands on a page boundary but more records remain → truncated."""
+        recs = self._entries(8)
+        fake = self._NewestFirstFake(recs)
+        monkeypatch.setattr(self.export_mod, "_fetch_page", fake)
+        res = self.export_mod.fetch_all(
+            self.CONN,
+            path="/entries.json",
+            ts_getter=self.export_mod._entry_ts,
+            cursor_field="dateString",
+            page_size=4,
+            max_records=4,
+        )
+        assert res["fetched"] == 4
+        assert res["truncated"] is True
+
+    def test_fetch_all_stops_on_short_first_page(self, monkeypatch):
+        recs = self._entries(2)
+        fake = self._NewestFirstFake(recs)
+        monkeypatch.setattr(self.export_mod, "_fetch_page", fake)
+        res = self.export_mod.fetch_all(
+            self.CONN,
+            path="/entries.json",
+            ts_getter=self.export_mod._entry_ts,
+            cursor_field="dateString",
+            page_size=10,
+            max_records=None,
+        )
+        assert res["fetched"] == 2
+        assert res["pages"] == 1
+        assert res["truncated"] is False
+
+    def test_fetch_all_validates_page_size_and_cap(self):
+        for kwargs in ({"page_size": 0}, {"max_records": 0}):
+            with pytest.raises(ValueError):
+                self.export_mod.fetch_all(
+                    self.CONN,
+                    path="/entries.json",
+                    ts_getter=self.export_mod._entry_ts,
+                    cursor_field="dateString",
+                    **kwargs,
+                )
+
+    # -- envelopes ---------------------------------------------------------
+
+    def test_export_entries_envelope_shape_and_undated_floor(self, monkeypatch):
+        from datetime import datetime as dt, timedelta, timezone
+
+        # Records NEAR now so the undated floor (computed from the cap at
+        # 5-minute cadence, 2x headroom) actually covers them.
+        recs = self._entries(
+            4,
+            base=dt.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=10),
+        )
+        fake = self._NewestFirstFake(recs)
+        monkeypatch.setattr(self.export_mod, "_fetch_page", fake)
+        env = self.export_mod.export_entries(self.CONN, page_size=3, max_records=50)
+        assert env["kind"] == self.export_mod.ENTRY_EXPORT_KIND
+        assert env["count"] == 4
+        assert env["pages"] == 2  # 3 + 1 with the short-page stop
+        assert env["truncated"] is False
+        assert env["records"][0]["_id"] == recs[0]["_id"]
+        assert env["exported_at"].endswith("Z")
+        assert isinstance(env["version"], str)
+        # undated export: a floor was computed and echoed honestly
+        assert "undated_floor" in env["filters"]
+        assert "find[date][$gte]" in fake.requests[0]
+
+    def test_export_entries_explicit_window_skips_floor_and_echoes_filters(
+        self, monkeypatch
+    ):
+        recs = self._entries(4)
+        fake = self._NewestFirstFake(recs)
+        monkeypatch.setattr(self.export_mod, "_fetch_page", fake)
+        env = self.export_mod.export_entries(
+            self.CONN,
+            page_size=2,
+            max_records=50,
+            type_="sgv",
+            date_gte="2025-01-01T00:00:00.000Z",
+            date_lte="2025-01-01T00:30:00.000Z",
+        )
+        assert env["filters"] == {
+            "type": "sgv",
+            "from": "2025-01-01T00:00:00.000Z",
+            "to": "2025-01-01T00:30:00.000Z",
+            "find": None,
+        }
+        assert "undated_floor" not in env["filters"]
+        assert "find[date][$gte]" not in fake.requests[0]
+
+    def test_export_entries_refuses_bad_type(self):
+        with pytest.raises(ValueError):
+            self.export_mod.export_entries(self.CONN, type_="bogus")
+
+    def test_export_entries_refuses_non_string_bound(self):
+        with pytest.raises(ValueError):
+            self.export_mod.export_entries(self.CONN, date_gte=12345)
+
+    def test_export_treatments_envelope_and_event_filter(self, monkeypatch):
+        recs = self._treatments(6)
+        fake = self._NewestFirstFake(recs, ts_key="created_at")
+        monkeypatch.setattr(self.export_mod, "_fetch_page", fake)
+        env = self.export_mod.export_treatments(
+            self.CONN, page_size=4, max_records=100, event_type="Meal Bolus"
+        )
+        assert env["kind"] == self.export_mod.TREATMENT_EXPORT_KIND
+        assert env["count"] == 3  # the even-indexed eventType filter matched
+        assert env["filters"]["event_type"] == "Meal Bolus"
+        assert all(
+            r["eventType"] == "Meal Bolus" for r in env["records"]
+        )
+        # treatments carry no undated floor (no 4-day window server-side)
+        assert "undated_floor" not in env["filters"]
+
+    # -- serialization round-trips ----------------------------------------
+
+    def test_to_ndjson_round_trips_through_import(self):
+        import cli_anything.nightscout.core.import_data as import_mod
+
+        recs = self._entries(3)
+        text = self.export_mod.to_ndjson(recs)
+        rows = import_mod.parse_records(text, fmt="ndjson")
+        assert rows == recs
+
+    def test_to_ndjson_refuses_non_dict(self):
+        with pytest.raises(TypeError):
+            self.export_mod.to_ndjson([{"ok": 1}, 42])
+
+    def test_to_csv_entries_round_trips_through_coerce(self):
+        import cli_anything.nightscout.core.import_data as import_mod
+
+        recs = self._entries(4)
+        # make row types heterogeneous to exercise the sgv/mbg columns
+        recs[2]["type"] = "mbg"
+        recs[2]["mbg"] = recs[2].pop("sgv")
+        text = self.export_mod.to_csv(recs, kind="entries")
+        rows = import_mod.parse_records(text, fmt="csv")
+        assert len(rows) == 4
+        for i, raw in enumerate(rows):
+            rec = import_mod.coerce_entry_row(raw, row=i, device="reimport")
+            assert rec["type"] == recs[i]["type"]
+            assert float(rec["date"]) == float(recs[i]["date"])
+
+    def test_to_csv_treatments_extra_scalars_and_dropped_nonscalar(self):
+        import cli_anything.nightscout.core.import_data as import_mod
+
+        recs = self._treatments(2)
+        recs[0]["absorptionTime"] = 180  # extra scalar → extra CSV column
+        recs[1]["store"] = {"Default": {}}  # container → dropped, but named
+        text = self.export_mod.to_csv(recs, kind="treatments")
+        rows = import_mod.parse_records(text, fmt="csv")
+        assert rows[0]["absorptionTime"] == "180"
+        assert rows[0].get("dropped_nonscalar_columns") in (None, "")
+        assert rows[1]["dropped_nonscalar_columns"] == "store"
+        # dropped columns carry no silent loss: the name is in the cell
+        canonic = import_mod.coerce_treatment_row(rows[0], row=0)
+        assert canonic["eventType"] == "Correction Bolus"
+        # CSV values re-enter as strings — the passthrough keeps them verbatim
+        assert canonic["absorptionTime"] == "180"
+
+    def test_to_csv_refuses_bad_kind(self):
+        with pytest.raises(ValueError):
+            self.export_mod.to_csv([], kind="profiles")
+
+    def test_parse_records_unwraps_export_envelopes(self):
+        import cli_anything.nightscout.core.import_data as import_mod
+
+        recs = self._entries(3)
+        env = {
+            "kind": self.export_mod.ENTRY_EXPORT_KIND,
+            "version": "2.19.0",
+            "count": 3,
+            "records": recs,
+        }
+        import json
+
+        assert import_mod.parse_records(json.dumps(env), fmt="json") == recs
+        assert import_mod.parse_records(json.dumps(env)) == recs  # auto too
+        tx_env = dict(env, kind=self.export_mod.TREATMENT_EXPORT_KIND)
+        assert import_mod.parse_records(json.dumps(tx_env), fmt="json") == recs
+
+    def test_parse_records_does_not_unwrap_profile_envelopes(self):
+        import cli_anything.nightscout.core.import_data as import_mod
+
+        env = {"kind": "cli-anything-nightscout profile export", "records": [{}]}
+        import json
+
+        rows = import_mod.parse_records(json.dumps(env), fmt="json")
+        assert len(rows) == 1  # passed through as a single object row
+        assert "records" in rows[0]
+
+    def test_parse_records_does_not_unwrap_unknown_export_kind(self):
+        import cli_anything.nightscout.core.import_data as import_mod
+        import json
+
+        env = {"kind": "some-thing export", "records": [1, 2]}
+        rows = import_mod.parse_records(json.dumps(env), fmt="json")
+        assert len(rows) == 1 and rows[0]["kind"] == "some-thing export"

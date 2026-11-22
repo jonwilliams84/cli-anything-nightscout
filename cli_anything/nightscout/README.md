@@ -524,6 +524,45 @@ transfer is chunked with per-chunk results always visible. Default is
 preview-only (`--apply` to commit); global `--dry-run` stays network-safe;
 the server does not de-duplicate, so run it once.
 
+### History export (v2.19.0+)
+
+v2.16.0 could backfill history onto a rig and v2.17.0 could move the
+profile settings — but getting the CGM / treatment *history* back OUT of a
+rig meant repeated hand-capped `entries list` calls. Now one command pulls
+a whole window into a file the importers accept verbatim:
+
+```bash
+# JSON envelope (backup): kind/version/exported_at/count/filters/records
+# -- page-size forces the backwards date-cursor walk to be exercised
+cli-anything-nightscout --json entries export --file cgm.json \
+    --from 2026-05-01T00:00:00.000Z --to 2026-06-01T00:00:00.000Z
+
+# NDJSON / CSV: the same shapes `entries import` / `treatments import` accept
+cli-anything-nightscout --json entries export --file cgm.ndjson --format ndjson
+cli-anything-nightscout --json treatments export --file tx.csv --format csv
+
+# Move it to the new rig: the export envelope is accepted as-is,
+# preview first, then --apply
+cli-anything-nightscout --json entries import --file cgm.json
+cli-anything-nightscout --json entries import --file cgm.json --apply
+
+# Verify the round-trip landed (append-only: counts only ever grow)
+cli-anything-nightscout --json entries count
+```
+
+Filters echo into the summary and the envelope, so a migrated archive can
+be audited: `--type sgv|mbg|cal|etr`, `--from/--to`, `--event-type`
+(treatments) and repeatable `KEY=VALUE` `--find` pairs. Records come back
+oldest-first; sparse CSV treatment rows round-trip because empty cells read
+as absent on re-import, and nested container values cannot survive a CSV
+cell — they are dropped and *named* in a `dropped_nonscalar_columns` cell.
+An unbounded export (no `--from/--to`) is windowed honestly: entries
+queries without a date bound only reach the most recent four days
+server-side, so the CLI computes and echoes an `undated_floor` from
+`--max-records` (default 20000) instead of pretending it exported
+everything; a run that hits the cap carries `truncated: true` in the
+payload and warns on stderr. Read-only: nothing on the server is touched.
+
 ### Window comparison (v2.18.0+)
 
 `report compare` puts a **baseline** window and a **current** window

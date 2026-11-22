@@ -1004,3 +1004,28 @@ nightscout_cli.py: 87 % (report compare covered) · core/report.py: 98 %
 
 Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
 exits 0.
+
+### Test results — 2026-11-22 (v2.19.0 — bulk history export, `entries export` / `treatments export`)
+
+New coverage for the backup/migration gap: v2.16.0 could backfill history
+onto a rig and v2.17.0 could move the profile settings, but getting the CGM
+/ treatment *history* back **out** of a rig meant repeated hand-capped
+`entries list` calls. The two new export commands pull a whole window into
+a file the bulk importers accept verbatim, walking the newest-first v1
+endpoints backwards with a date cursor (`core/export_data.py`: `fetch_all`,
+`export_entries`, `export_treatments`, `to_ndjson`, `to_csv`).
+
+| File | New tests | Scope |
+|------|-----------|-------|
+| `test_core.py` | **21** | `TestExportData` (21): `fetch_all` paged backwards walk returns oldest-first and each page after the first carries the `$lt` cursor (7 records, page-size 3 → 3 pages, short-page stop without a wasted request); a server that ignores the cursor cannot loop the fetcher or duplicate rows (`_id` de-duplication: first page only); cap cutting mid-page is `truncated: true`; cap landing exactly on a page boundary is probed — `truncated: false` when the store truly ends (6 records, cap 6) and `truncated: true` when more remain (8 records, cap 4); short first page is 1 page / not truncated; `page_size`/`max_records` < 1 refused. `export_entries` envelope shape (`kind`, version, `exported_at` `Z`, `count`, `pages`, `truncated`, filters echo) with the **undated floor** computed and echoed when no `--from/--to` is given and absent when an explicit window is supplied; bad `--type` and non-string date bounds refused. `export_treatments` envelope + `--event-type` server-side filter and no undated floor. Serialization round-trips: `to_ndjson` through `parse_records` verbatim; entries `to_csv` through `parse_records` + `coerce_entry_row` (sgv + mbg rows, `date` ms round-trips); treatments `to_csv` extra scalar columns and the `dropped_nonscalar_columns` cell naming a container value that cannot survive a CSV cell; bad `kind` refused. `parse_records` unwraps both export envelopes under `fmt=json` AND auto-detection, passes profile envelopes through as a single object row, and does not unwrap foreign `kind` values; malformed whole-doc JSON still reports `invalid JSON`. |
+| `test_full_e2e.py` | **9** | `TestHistoryExportE2E` (real HTTP, stand-in + live, class-scoped seeding 200 days in the past, `--page-size 2` so the backwards walk is genuinely exercised): json envelope + summary (`count 8`, `pages >= 4`, `truncated false`, echoed `filters`, records oldest-first, envelope `version` == package version); the json export → `entries import` preview round-trip (`parsed 8 / valid 8`, still `POST /entries.json` form); entries CSV export re-imports (mbg row round-trips sparse); truncation is loud (`--max-records 3` → `truncated true` in payload + stderr warning naming `--max-records`); an empty window exits non-zero with `nothing to export` (a backup of nothing is a footgun); treatments json envelope round-trip with `created_at` sorted ascending; `--event-type` filter + ndjson output (2 Meal Boluses, one JSON object per line); human output line `exported 4 treatments record(s) → …`; the migration **workflow**: export → `entries import --apply` (posted 8) → re-export shows the store grew by exactly 8 (append-only, no de-duplication). |
+
+```text
+$ /work/venv/bin/python -m pytest tests --cov=cli_anything --cov-fail-under=78 -q
+1777 passed; Total coverage: 93 % (78 % gate)
+
+nightscout_cli.py: 88 % (entries/treatments export covered) · core/export_data.py: 97 %
+```
+
+Full CI gate (pytest + `ruff check` + `ruff format --check` + `bandit -ll`)
+exits 0.

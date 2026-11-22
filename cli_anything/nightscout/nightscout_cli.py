@@ -23,6 +23,7 @@ from cli_anything.nightscout.core import device_health as health_mod
 from cli_anything.nightscout.core import devicestatus as ds_mod
 from cli_anything.nightscout.core import entries as entries_mod
 from cli_anything.nightscout.core import excursions as excursions_mod
+from cli_anything.nightscout.core import export_data as export_mod
 from cli_anything.nightscout.core import food as food_mod
 from cli_anything.nightscout.core import import_data as import_mod
 from cli_anything.nightscout.core import logbook as logbook_mod
@@ -43,7 +44,7 @@ from cli_anything.nightscout.utils import nightscout_backend as backend
 from cli_anything.nightscout.utils.repl_skin import ReplSkin
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-VERSION = "2.18.0"
+VERSION = "2.19.0"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -5363,6 +5364,67 @@ def _read_import_file(file_path: str) -> str:
         raise click.ClickException(f"cannot read {file_path!r}: {exc}") from None
 
 
+def _export_text(envelope: dict[str, Any], fmt: str) -> str:
+    """Serialize an export envelope to the requested file format."""
+    if fmt == "json":
+        return json.dumps(envelope, indent=2, ensure_ascii=False)
+    if fmt == "ndjson":
+        return export_mod.to_ndjson(envelope["records"])
+    return export_mod.to_csv(
+        envelope["records"],
+        kind="treatments" if envelope["kind"].endswith("treatments export") else "entries",
+    )
+
+
+def _write_export(
+    ctx: click.Context,
+    envelope: dict[str, Any],
+    *,
+    file_path: str,
+    fmt: str,
+    what: str,
+) -> None:
+    """Shared writer for `entries export` / `treatments export`.
+
+    Read-only fetches, so — like `profile export` — there is no preview
+    step: the file IS the output. Truncation is never silent: a capped run
+    warns on stderr AND carries `truncated: true` in the summary and
+    envelope, with the hint that a narrower `--from/--to` or a raised
+    `--max-records` re-runs it.
+    """
+    text = _export_text(envelope, fmt)
+    if file_path == "-":
+        click.echo(text, nl=False)
+    else:
+        try:
+            with open(file_path, "w", encoding="utf-8") as fh:
+                fh.write(text + ("" if text.endswith("\n") else "\n"))
+        except OSError as exc:
+            raise click.ClickException(f"cannot write {file_path!r}: {exc}") from None
+        summary = {
+            "exported": file_path,
+            "format": fmt,
+            "kind": envelope["kind"],
+            "count": envelope["count"],
+            "pages": envelope["pages"],
+            "truncated": envelope["truncated"],
+            "filters": envelope["filters"],
+            "bytes": len(text),
+        }
+        human = (
+            f"exported {envelope['count']} {what} record(s) → {file_path} "
+            f"({len(text)} bytes, {envelope['pages']} page(s))"
+        )
+        if envelope["truncated"]:
+            click.echo(
+                f"  ⚠ export hit the --max-records cap ({envelope['count']} written): "
+                "it is truncated — narrow --from/--to or raise --max-records and re-run",
+                err=True,
+            )
+            human += " [truncated]"
+        _emit(ctx, summary, human=human)
+
+
 def _bulk_import(
     ctx: click.Context,
     *,
@@ -5534,6 +5596,93 @@ def entries_import(
     )
 
 
+@entries_grp.command("export")
+@click.option(
+    "--file",
+    "file_path",
+    required=True,
+    help="Write the export to this path, or '-' for stdout.",
+)
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["json", "ndjson", "csv"]),
+    default="json",
+    show_default=True,
+    help=(
+        "json = transferable envelope with filters echoed (backup; accepted "
+        "verbatim by `entries import`); ndjson/csv = the bulk-import line formats."
+    ),
+)
+@click.option("--type", "type_", default=None, help="Filter by type (sgv/mbg/cal/etr).")
+@click.option("--from", "date_gte", default=None, help="ISO date lower bound (e.g. 2025-01-01).")
+@click.option("--to", "date_lte", default=None, help="ISO date upper bound.")
+@click.option(
+    "--max-records",
+    "max_records",
+    type=click.IntRange(min=1),
+    default=export_mod.DEFAULT_MAX_RECORDS,
+    show_default=True,
+    help="Hard cap on exported records (the run is flagged truncated when exceeded).",
+)
+@click.option(
+    "--page-size",
+    type=click.IntRange(min=1, max=1000),
+    default=export_mod.EXPORT_PAGE_SIZE,
+    show_default=True,
+    help="Records requested per page while walking the window backwards.",
+)
+@click.option(
+    "--find", "find_pairs", multiple=True, help="KEY=VALUE server-side filter (repeatable)."
+)
+@click.pass_context
+def entries_export(
+    ctx: click.Context,
+    file_path: str,
+    fmt: str,
+    type_: str | None,
+    date_gte: str | None,
+    date_lte: str | None,
+    max_records: int,
+    page_size: int,
+    find_pairs: tuple[str, ...],
+) -> None:
+    """Export a window of glucose history to a file (backup / migration).
+
+    Completes the backup story: `entries import` could backfill history but
+    nothing could pull it back out in bulk — a full window had to be
+    re-fetched with repeated hand-capped `entries list` calls. The fetcher
+    walks the newest-first v1 endpoint backwards with a date cursor,
+    de-duplicates by _id, and returns records oldest-first; the cap is
+    flagged honestly (truncated: true on stderr and in the summary) rather
+    than silently partial.
+
+    --format json writes an envelope (kind/version/exported_at/count/
+    filters/records) that `entries import` accepts verbatim — the intended
+    export → import round-trip onto another rig. ndjson/csv are the
+    line/table shapes the importer also accepts. Read-only: nothing on the
+    server is touched, so there is no preview step; the file IS the output.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    try:
+        find = query_mod.parse_find(find_pairs) if find_pairs else None
+        envelope = export_mod.export_entries(
+            conn,
+            page_size=page_size,
+            max_records=max_records,
+            type_=type_,
+            date_gte=date_gte,
+            date_lte=date_lte,
+            find=find,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    if not envelope["records"]:
+        raise click.ClickException("no entries matched the requested window — nothing to export")
+    _write_export(ctx, envelope, file_path=file_path, fmt=fmt, what="entries")
+
+
 @treatments_grp.command("import")
 @click.option(
     "--file",
@@ -5686,6 +5835,90 @@ def treatments_import(
             + (f"; skipped {len(invalid)} invalid row(s)" if invalid else "")
         ),
     )
+
+
+@treatments_grp.command("export")
+@click.option(
+    "--file",
+    "file_path",
+    required=True,
+    help="Write the export to this path, or '-' for stdout.",
+)
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["json", "ndjson", "csv"]),
+    default="json",
+    show_default=True,
+    help=(
+        "json = transferable envelope with filters echoed (backup; accepted "
+        "verbatim by `treatments import`); ndjson/csv = the bulk-import line formats."
+    ),
+)
+@click.option(
+    "--event-type", "event_type", default=None, help="Filter by event type (e.g. 'Meal Bolus')."
+)
+@click.option("--from", "date_gte", default=None, help="ISO date lower bound (e.g. 2025-01-01).")
+@click.option("--to", "date_lte", default=None, help="ISO date upper bound.")
+@click.option(
+    "--max-records",
+    "max_records",
+    type=click.IntRange(min=1),
+    default=export_mod.DEFAULT_MAX_RECORDS,
+    show_default=True,
+    help="Hard cap on exported records (the run is flagged truncated when exceeded).",
+)
+@click.option(
+    "--page-size",
+    type=click.IntRange(min=1, max=1000),
+    default=export_mod.EXPORT_PAGE_SIZE,
+    show_default=True,
+    help="Records requested per page while walking the window backwards.",
+)
+@click.option(
+    "--find", "find_pairs", multiple=True, help="KEY=VALUE server-side filter (repeatable)."
+)
+@click.pass_context
+def treatments_export(
+    ctx: click.Context,
+    file_path: str,
+    fmt: str,
+    event_type: str | None,
+    date_gte: str | None,
+    date_lte: str | None,
+    max_records: int,
+    page_size: int,
+    find_pairs: tuple[str, ...],
+) -> None:
+    """Export a window of treatment events to a file (backup / migration).
+
+    Same engine as `entries export`, pointed at /treatments.json: a
+    backwards date walk over the newest-first endpoint, de-duplicated by
+    _id, records oldest-first, capped with an honest truncated flag. The
+    --format json envelope is accepted verbatim by `treatments import`;
+    ndjson/csv re-import through the same row validation (eventType and a
+    timestamp required per row). CSV drops nested container values and
+    names them in a `dropped_nonscalar_columns` cell so nothing
+    disappears silently. Read-only: nothing on the server is touched.
+    """
+    conn = _conn(ctx)
+    _require_url(conn)
+    try:
+        find = query_mod.parse_find(find_pairs) if find_pairs else None
+        envelope = export_mod.export_treatments(
+            conn,
+            page_size=page_size,
+            max_records=max_records,
+            event_type=event_type,
+            date_gte=date_gte,
+            date_lte=date_lte,
+            find=find,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    if not envelope["records"]:
+        raise click.ClickException("no treatments matched the requested window — nothing to export")
+    _write_export(ctx, envelope, file_path=file_path, fmt=fmt, what="treatments")
 
 
 # ─── v2.18.0: window comparison (baseline vs current) ──────────────────────

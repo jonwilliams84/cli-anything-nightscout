@@ -4,6 +4,68 @@ All notable changes to `cli-anything-nightscout` are documented here.
 
 The project versions follow semver (MAJOR.MINOR.PATCH).
 
+## [2.19.0] — 2026-11-22
+
+- **New commands: `entries export` and `treatments export`** — the two
+  halves the backup/migration story was missing. v2.16.0 added bulk
+  *import* (`entries import` / `treatments import`) and v2.17.0 added the
+  profile `export`/`import` pair, but a rig's CGM and treatment **history**
+  had no way out except repeated hand-capped `entries list` calls. One
+  command now pulls a whole window into a file the importers accept
+  verbatim (`--file F`, or `-` for stdout; `--format json|ndjson|csv`):
+  - **Paged backwards walk, not a capped single request.** Nightscout's v1
+    list endpoints return the newest records first, so one `count` request
+    only ever reaches the newest slice. The fetcher advances a
+    `find[<field>][$lt]` date cursor page by page (`--page-size`, default
+    500, max 1000), de-duplicates by `_id` so page boundaries that overlap
+    cannot double the export, stops on a short page, and returns records
+    **oldest-first** regardless of wire order.
+  - **JSON envelope** (same style as `profile export`: `kind`, `version`,
+    `exported_at`, `count`, `pages`, `truncated`, `filters`, `records`) is
+    accepted verbatim by `entries import` / `treatments import` — export →
+    import round-trips onto another rig with no unwrap step. `ndjson` /
+    `csv` are the line/table shapes the importers already take.
+  - **Honest truncation.** `--max-records` (default 20000) caps a run;
+    hitting the cap sets `truncated: true` in the payload and warns on
+    stderr. When the cap lands exactly on a page boundary a one-record
+    probe checks whether anything actually remains first, so a cap that
+    happens to fit the store exactly is not a false alarm. An unbounded
+    entries export (no `--from`/`--to`) computes and echoes an
+    `undated_floor` — entries queries without a date bound only reach the
+    most recent four days server-side, so the floor (derived from
+    `--max-records` at 5-minute cadence, 2x headroom) keeps the export
+    honest about the window it really covered.
+  - **Filter echo** (`--type`, `--from`/`--to`, `--event-type`, repeatable
+    `--find KEY=VALUE`) rides along in the summary and the envelope, so a
+    migrated archive can be audited. Sparse CSV treatment rows round-trip:
+    empty cells read as absent on re-import, and container values that
+    cannot survive a CSV cell are dropped and *named* in a
+    `dropped_nonscalar_columns` cell — nothing disappears silently.
+  - **Read-only**, like `profile export`: no preview step (the file IS the
+    output), no `--apply`, network-safe under `--dry-run` by
+    construction. An empty window refuses with `nothing to export` — a
+    backup of nothing is a footgun.
+- Core additions in `core/export_data.py`: `fetch_all` (paged backwards
+  walk with `_id` de-duplication, short-page stop, boundary probe),
+  `export_entries` / `export_treatments` (envelope assembly, filter echo,
+  undated floor), `to_ndjson` / `to_csv` (round-trip serializers).
+  `core/import_data.py` gains export-envelope unwrapping in `parse_records`
+  and empty-cell-as-absent handling (`_present`) in row coercion so CSV
+  round-trips validate.
+- Tests: **21 unit tests** (`TestExportData`: cursor walk and
+  oldest-first ordering, ignored-cursor de-duplication, mid-page and
+  boundary cap semantics with the probe, short-page stop, argument
+  validation, envelope shape + undated floor presence/absence, event-type
+  filtering, ndjson/csv round-trips through the importers, envelope
+  unwrapping incl. profile-envelope pass-through) and **9 E2E tests**
+  (`TestHistoryExportE2E` against the stand-in: envelope + summary with a
+  real multi-page walk, json/csv/ndjson re-import round-trips, loud
+  truncation, empty-window refusal, event-type filtering, human output,
+  and the export → import `--apply` → re-export migration workflow).
+- Docs: SOP (`NIGHTSCOUT.md`) gains a "History export (v2.19.0+)" section
+  and the `entries`/`treatments` command rows gain `export`; README gains a
+  "History export (v2.19.0+)" usage section; TEST.md records the pass.
+
 ## [2.18.0] — 2026-11-14
 
 - **New command: `report compare`** — the two-window therapy-decision report

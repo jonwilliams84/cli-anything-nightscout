@@ -3281,3 +3281,301 @@ class TestReportCompareE2E:
         assert data["current"]["found"] is True
         if data["baseline"]["found"] is False:
             assert data["found"] is False
+
+
+# ─── v2.19.0: history export (entries export / treatments export) ──────────
+
+
+class TestHistoryExportE2E:
+    """E2E for the v2.19.0 bulk history exporter.
+
+    `entries export` / `treatments export` pull a window out of the newest-
+    first v1 endpoints into a file the bulk importers accept verbatim. The
+    seeds go through the real HTTP transport, and the CLI runs with a tiny
+    --page-size so the paged backwards walk is genuinely exercised rather
+    than short-circuited by a single page.
+    """
+
+    CLI_BASE = _resolve_cli("cli-anything-nightscout")
+
+    # Well in the past so it cannot collide with anything other tests seed,
+    # and so --from/--to fully bracket it.
+    DAYS_AGO = 200
+
+    def _run(self, args, env=None, check=True):
+        env_full = os.environ.copy()
+        if env:
+            env_full.update(env)
+        return subprocess.run(
+            self.CLI_BASE + list(args),
+            capture_output=True,
+            text=True,
+            check=check,
+            env=env_full,
+            timeout=60,
+        )
+
+    def _conn_env(self, server_url_and_secret, tmp_path):
+        url, secret = server_url_and_secret
+        return {
+            "NIGHTSCOUT_URL": url,
+            "NIGHTSCOUT_API_SECRET": secret,
+            "NIGHTSCOUT_TOKEN": "",
+            "CLI_ANYTHING_HOME": str(tmp_path),
+        }
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def seeded(cls, server_url_and_secret):
+        """7 sgv + 2 mbg entries and 3 treatments, 200 days ago (seeded once)."""
+        from cli_anything.nightscout.utils import nightscout_backend as backend
+
+        if _is_live_mode():
+            pytest.skip("export seeding uses fixed past dates; skipped in LIVE mode")
+        url, secret = server_url_and_secret
+        conn = {"server_url": url, "api_secret": secret, "api_token": ""}
+        base = datetime.now(timezone.utc) - timedelta(days=cls.DAYS_AGO)
+        entries = []
+        for i in range(7):
+            ts = base + timedelta(minutes=5 * i)
+            entries.append(
+                {
+                    "type": "sgv",
+                    "sgv": 100 + 3 * i,
+                    "date": int(ts.timestamp() * 1000),
+                    "dateString": ts.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "device": "export-e2e",
+                    "direction": "Flat",
+                }
+            )
+        mbg_ts = base + timedelta(minutes=8)
+        entries.append(
+            {
+                "type": "mbg",
+                "mbg": 118,
+                "date": int(mbg_ts.timestamp() * 1000),
+                "dateString": mbg_ts.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                "device": "export-e2e",
+            }
+        )
+        cls._mbg_seed_date_string = entries[-1]["dateString"]
+        treatments = []
+        for i in range(4):
+            ts = base + timedelta(minutes=15 * i + 1)
+            treatments.append(
+                {
+                    "eventType": "Meal Bolus" if i % 2 else "Correction Bolus",
+                    "created_at": ts.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "carbs": 30 if i % 2 else None,
+                    "insulin": 2.0 + 0.5 * i,
+                    "enteredBy": "export-e2e",
+                }
+            )
+        backend.post(
+            "/entries.json",
+            data=entries,
+            base_url=url,
+            version="v1",
+            api_secret=secret,
+            token="",
+        )
+        backend.post(
+            "/treatments.json",
+            data=treatments,
+            base_url=url,
+            version="v1",
+            api_secret=secret,
+            token="",
+        )
+        return {
+            "conn": conn,
+            "from": (base - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            "to": (base + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        }
+
+    def _export(self, env, group, fmt, tmp_path, extra=None, check=True, as_json=True):
+        out = tmp_path / f"{group}-{fmt}.out"
+        args = []
+        if as_json:
+            args.append("--json")
+        args += [
+            group,
+            "export",
+            "--file",
+            str(out),
+            "--format",
+            fmt,
+            "--page-size",
+            "2",
+            *extra,
+        ]
+        r = self._run(args, env=env, check=check)
+        return r, out
+
+    # -- entries export ----------------------------------------------------
+
+    def test_entries_export_json_envelope_and_summary(
+        self, seeded, server_url_and_secret, tmp_path
+    ):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r, out = self._export(
+            env, "entries", "json", tmp_path,
+            extra=["--from", seeded["from"], "--to", seeded["to"]],
+        )
+        assert r.returncode == 0, r.stderr
+        summary = json.loads(r.stdout)
+        assert summary["count"] == 8  # 7 sgv + 1 mbg
+        assert summary["pages"] >= 4  # page-size 2 forces a real multi-page walk
+        assert summary["truncated"] is False
+        assert summary["filters"]["from"] == seeded["from"]
+        assert summary["format"] == "json"
+        assert (tmp_path / (tmp_path / "entries-json.out")).exists()
+        envelope = json.loads(out.read_text())
+        assert envelope["kind"] == "cli-anything-nightscout entries export"
+        assert envelope["version"] == "2.19.0"
+        assert envelope["count"] == 8
+        assert envelope["truncated"] is False
+        stamps = [r["date"] for r in envelope["records"]]
+        assert stamps == sorted(stamps)  # oldest-first
+        assert envelope["records"][0]["sgv"] == 100
+
+    def test_entries_export_json_round_trips_through_import_preview(
+        self, seeded, server_url_and_secret, tmp_path
+    ):
+        """The canonical backup round-trip: export → import accepts it verbatim."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r, out = self._export(
+            env, "entries", "json", tmp_path,
+            extra=["--from", seeded["from"], "--to", seeded["to"]],
+        )
+        assert r.returncode == 0, r.stderr
+        imp = self._run(
+            ["--json", "entries", "import", "--file", str(out)], env=env
+        )
+        assert imp.returncode == 0, imp.stderr
+        data = json.loads(imp.stdout)
+        assert data["parsed"] == 8
+        assert data["valid"] == 8
+        assert data["would"] == "POST /entries.json"
+
+    def test_entries_export_csv_reimports(self, seeded, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r, out = self._export(
+            env, "entries", "csv", tmp_path,
+            extra=["--from", seeded["from"], "--to", seeded["to"]],
+        )
+        assert r.returncode == 0, r.stderr
+        imp = self._run(
+            ["--json", "entries", "import", "--file", str(out), "--format", "csv"],
+            env=env,
+        )
+        assert imp.returncode == 0, imp.stderr
+        data = json.loads(imp.stdout)
+        assert data["parsed"] == 8
+        assert data["valid"] == 8
+
+    def test_entries_export_truncation_is_loud(
+        self, seeded, server_url_and_secret, tmp_path
+    ):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r, out = self._export(
+            env, "entries", "json", tmp_path,
+            extra=["--from", seeded["from"], "--to", seeded["to"], "--max-records", "3"],
+        )
+        assert r.returncode == 0, r.stderr
+        summary = json.loads(r.stdout)
+        assert summary["count"] == 3
+        assert summary["truncated"] is True
+        assert "truncated" in r.stderr
+        assert "max-records" in r.stderr
+        envelope = json.loads(out.read_text())
+        assert envelope["count"] == 3 and envelope["truncated"] is True
+
+    def test_entries_export_empty_window_refuses(
+        self, seeded, server_url_and_secret, tmp_path
+    ):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        far = (datetime.now(timezone.utc) - timedelta(days=500)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z"
+        )
+        r, _ = self._export(
+            env, "entries", "json", tmp_path,
+            extra=["--from", far, "--to", far], check=False,
+        )
+        assert r.returncode != 0
+        assert "nothing to export" in (r.stderr + r.stdout)
+
+    # -- treatments export -------------------------------------------------
+
+    def test_treatments_export_json_round_trips(self, seeded, server_url_and_secret, tmp_path):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r, out = self._export(
+            env, "treatments", "json", tmp_path,
+            extra=["--from", seeded["from"], "--to", seeded["to"]],
+        )
+        assert r.returncode == 0, r.stderr
+        assert json.loads(r.stdout)["count"] == 4
+        envelope = json.loads(out.read_text())
+        assert envelope["kind"] == "cli-anything-nightscout treatments export"
+        stamps = [r["created_at"] for r in envelope["records"]]
+        assert stamps == sorted(stamps)
+        imp = self._run(
+            ["--json", "treatments", "import", "--file", str(out)], env=env
+        )
+        assert imp.returncode == 0, imp.stderr
+        data = json.loads(imp.stdout)
+        assert data["parsed"] == 4
+        assert data["valid"] == 4
+
+    def test_treatments_export_ndjson_and_event_type_filter(
+        self, seeded, server_url_and_secret, tmp_path
+    ):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r, out = self._export(
+            env, "treatments", "ndjson", tmp_path,
+            extra=["--from", seeded["from"], "--to", seeded["to"],
+                    "--event-type", "Meal Bolus"],
+        )
+        assert r.returncode == 0, r.stderr
+        summary = json.loads(r.stdout)
+        assert summary["count"] == 2
+        rows = [json.loads(line) for line in out.read_text().splitlines() if line.strip()]
+        assert len(rows) == 2
+        assert all(row["eventType"] == "Meal Bolus" for row in rows)
+
+    def test_treatments_export_human_output(
+        self, seeded, server_url_and_secret, tmp_path
+    ):
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r, _ = self._export(
+            env, "treatments", "json", tmp_path,
+            extra=["--from", seeded["from"], "--to", seeded["to"]], as_json=False,
+        )
+        assert r.returncode == 0, r.stderr
+        assert "exported 4 treatments record(s)" in r.stdout
+
+    # -- workflow: export → apply → reexport grows the store ----------------
+
+    def test_workflow_export_import_apply_and_reexport(
+        self, seeded, server_url_and_secret, tmp_path
+    ):
+        """The intended migration walk: pull a window, push it back, see it land."""
+        env = self._conn_env(server_url_and_secret, tmp_path)
+        r, out = self._export(
+            env, "entries", "json", tmp_path,
+            extra=["--from", seeded["from"], "--to", seeded["to"]],
+        )
+        before = json.loads(r.stdout)["count"]
+        # Count what the server holds now (this window may have been seeded
+        # once per test run; the DELTA must match the import, not the seed).
+        imp = self._run(
+            ["--json", "entries", "import", "--file", str(out), "--apply"], env=env
+        )
+        assert imp.returncode == 0, imp.stderr
+        assert json.loads(imp.stdout)["posted"] == 8
+        r2, _ = self._export(
+            env, "entries", "json", tmp_path,
+            extra=["--from", seeded["from"], "--to", seeded["to"]],
+        )
+        after = json.loads(r2.stdout)["count"]
+        assert after == before + 8  # append-only: the reimport landed

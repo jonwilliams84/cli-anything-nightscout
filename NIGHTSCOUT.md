@@ -39,8 +39,8 @@ summary) are computed locally from data the server returns.
 |-------|----------|---------|
 | `config` | `set`, `show`, `clear`, `test` | Manage server URL + API secret/token |
 | `status` | `info`, `version`, `versions`, `last-modified`, `verifyauth` | Server health, identity, plugin manifest |
-| `entries` | `latest`, `current`, `list`, `get`, `add`, `import`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize`, `calibrations`, `raw`, `gaps` | CGM glucose entries, bulk backfill (`import`), plus the record types the analytics filter away (`cal` transfer function, raw BG) and the silence *between* readings |
-| `treatments` | `latest`, `list`, `get`, `add`, `import`, `update`, `delete`, `bg-check`, `temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`, `event-types`, `active` | Treatment events (boluses, meals, site/sensor changes) + the structured Care Portal event types + bulk backfill (`import`) |
+| `entries` | `latest`, `current`, `list`, `get`, `add`, `import`, `export`, `delete`, `delete-by-type`, `slice`, `count`, `times`, `normalize`, `calibrations`, `raw`, `gaps` | CGM glucose entries, bulk backfill (`import`) and bulk history export (`export`, v2.19.0+), plus the record types the analytics filter away (`cal` transfer function, raw BG) and the silence *between* readings |
+| `treatments` | `latest`, `list`, `get`, `add`, `import`, `export`, `update`, `delete`, `bg-check`, `temp-basal`, `temp-target`, `profile-switch`, `combo-bolus`, `announcement`, `note`, `exercise`, `care-event`, `event-types`, `active` | Treatment events (boluses, meals, site/sensor changes) + the structured Care Portal event types + bulk backfill (`import`) and bulk history export (`export`, v2.19.0+) |
 | `profile` | `active`, `current`, `list`, `get-named`, `schedule`, `setting-at`, `basal-total`, `create`, `update`, `delete`, `export`, `import` | Profile records, schedule lookups, scheduled basal totals — plus the full-store export/import pair for backup and rig migration |
 | `devicestatus` | `latest`, `list`, `add`, `delete`, `pump`, `uploader`, `loop` | Device status — raw records plus parsed pump / uploader / closed-loop views |
 | `sensors` | `sessions`, `data`, `revoke-last-change` | CGM sensor-session detection (windows between `Sensor Start` / `Sensor Change` events) — canonical source for sensor-change history; `data` slices the CGM entries by session with per-segment statistics; `revoke-last-change` undoes the most recent ha-bridge Stop+Start pair |
@@ -578,6 +578,56 @@ window and emits their deltas in one payload:
 Core function in `core/report.py`: `compare_windows` (composes `summary`,
 `time_in_range` and `treatment_totals` so definitions cannot drift between
 the two windows).
+
+## History export (v2.19.0+)
+
+v2.16.0 could backfill history onto a rig and v2.17.0 could move the
+profile settings, but getting the CGM / treatment *history* back out meant
+repeated hand-capped `entries list` calls. Two commands complete the
+backup / migration story:
+
+- **`entries export --file F`** / **`treatments export --file F`** — pull a
+  window into one file; `--file -` prints to stdout. Formats: `json` (the
+  transferable envelope: `kind`, `version`, `exported_at`, `count`,
+  `pages`, `truncated`, `filters`, `records`), `ndjson` and `csv` (the
+  line/table shapes the bulk importers accept — the json envelope is ALSO
+  accepted verbatim by `entries import` / `treatments import`, so
+  export → import round-trips without an unwrap step).
+- **Filters echo** into the summary and the envelope so an archive can be
+  audited: `--type` (sgv/mbg/cal/etr), `--from`/`--to`, `--event-type`
+  (treatments), repeatable `--find KEY=VALUE`. Records come back
+  **oldest-first** regardless of the server's newest-first wire order.
+- **The fetch walks backwards with a date cursor** (`find[<field>][$lt]`),
+  de-duplicates by `_id` and stops on a short page — a single `count`
+  request only ever reaches the newest slice of history. `--page-size`
+  (default 500, max 1000) sizes the walk; `--max-records` (default 20000)
+  caps it.
+- **Truncation is never silent**: a capped run carries `truncated: true`
+  in the payload and warns on stderr; when the cap lands exactly on a page
+  boundary a one-record probe checks whether anything actually remains
+  before claiming truncation. An unbounded entries export (no
+  `--from`/`--to`) computes and echoes an `undated_floor` ISO bound —
+  entries queries without a date filter only reach the most recent four
+  days server-side, so the floor (from `--max-records`, 5-minute cadence,
+  2x headroom) keeps the export honest about the window it really covered.
+- **CSV round-trips**: empty cells read as absent on re-import (sparse
+  sgv/mbg and carbs/insulin columns), and treatment container values that
+  cannot survive a CSV cell are dropped and *named* in a
+  `dropped_nonscalar_columns` cell — nothing disappears silently.
+- **Read-only**: nothing on the server is touched; like `profile export`
+  there is no preview step — the file IS the output. An empty window
+  refuses (`nothing to export`) rather than writing an empty backup.
+- An empty-window export is a hard error on purpose: a backup of nothing
+  is a footgun. Check `--from`/`--to` against `entries count` /
+  `treatments list` first.
+
+Core functions in `core/export_data.py`: `fetch_all` (the paged backwards
+walk with `_id` de-duplication, short-page stop and cap-probe), 
+`_entry_ts`/`_tx_ts` (mixed epoch-ms / ISO timestamps), `export_entries`,
+`export_treatments` (envelope assembly + filter echo + undated floor),
+`to_ndjson`, `to_csv` (round-trip column models). `core/import_data.py`
+gains export-envelope unwrapping in `parse_records` and empty-cell-as-absent
+handling (`_present`) in the row coercion for the round-trip.
 
 ## Auth resolution order (highest precedence first)
 

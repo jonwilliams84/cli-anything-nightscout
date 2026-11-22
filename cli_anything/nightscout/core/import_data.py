@@ -31,6 +31,7 @@ import json
 import math
 from typing import Any
 
+from cli_anything.nightscout.core import export_data as export_data_mod
 from cli_anything.nightscout.core import treatments as treatments_mod
 from cli_anything.nightscout.core.entries import VALID_TYPES as _ENTRY_VALID_TYPES
 from cli_anything.nightscout.utils import nightscout_backend as backend
@@ -152,6 +153,20 @@ def parse_date_to_ms(value: Any, *, row: int) -> int:
     return int(num * 1000)
 
 
+def _present(raw: dict[str, Any], key: str) -> Any:
+    """Value for ``key`` treating CSV empty-string cells as absent.
+
+    A sparse CSV row (an entry file with sgv/mbg columns, a treatment file
+    with carbs/insulin columns) carries ``""`` in cells the row does not
+    use; the round-tripped export relies on that reading as ABSENT, not as
+    a value to coerce.
+    """
+    v = raw.get(key)
+    if v is None or (isinstance(v, str) and v.strip() == ""):
+        return None
+    return v
+
+
 def coerce_entry_row(raw: dict[str, Any], *, row: int, device: str) -> dict[str, Any]:
     """Validate + normalise one raw entry row into the wire shape.
 
@@ -170,8 +185,9 @@ def coerce_entry_row(raw: dict[str, Any], *, row: int, device: str) -> dict[str,
         )
     value: Any = None
     for key in _ENTRY_VALUE_KEYS[type_]:
-        if raw.get(key) is not None:
-            value = raw[key]
+        v = _present(raw, key)
+        if v is not None:
+            value = v
             break
     if value is None:
         raise ValueError(
@@ -182,8 +198,9 @@ def coerce_entry_row(raw: dict[str, Any], *, row: int, device: str) -> dict[str,
         raise ValueError(f"row {row}: glucose value must be > 0, got {value!r}")
     ms = None
     for key in _ENTRY_DATE_KEYS:
-        if raw.get(key) is not None:
-            ms = parse_date_to_ms(raw[key], row=row)
+        v = _present(raw, key)
+        if v is not None:
+            ms = parse_date_to_ms(v, row=row)
             break
     if ms is None:
         raise ValueError(
@@ -199,7 +216,7 @@ def coerce_entry_row(raw: dict[str, Any], *, row: int, device: str) -> dict[str,
     record["date"] = ms
     record["dateString"] = _iso_from_ms(ms)
     record["device"] = str(raw.get("device") or device)
-    direction = raw.get("direction")
+    direction = _present(raw, "direction")
     if direction is not None:
         direction = str(direction)
         if direction not in VALID_DIRECTIONS:
@@ -231,8 +248,9 @@ def coerce_treatment_row(raw: dict[str, Any], *, row: int) -> dict[str, Any]:
         raise ValueError(f"row {row}: eventType must be a string")
     created_at = None
     for key in _TX_DATE_KEYS:
-        if raw.get(key) is not None:
-            ms = parse_date_to_ms(raw[key], row=row)
+        v = _present(raw, key)
+        if v is not None:
+            ms = parse_date_to_ms(v, row=row)
             created_at = _iso_from_ms(ms)
             break
     if created_at is None:
@@ -241,17 +259,17 @@ def coerce_treatment_row(raw: dict[str, Any], *, row: int) -> dict[str, Any]:
             "filed at import time, so it is refused"
         )
     record: dict[str, Any] = {"eventType": event_type, "created_at": created_at}
-    if raw.get("carbs") is not None:
+    if _present(raw, "carbs") is not None:
         carbs = _fnum(raw["carbs"], "carbs", row)
         if carbs < 0:
             raise ValueError(f"row {row}: carbs must be >= 0")
         record["carbs"] = carbs
-    if raw.get("insulin") is not None:
+    if _present(raw, "insulin") is not None:
         insulin = _fnum(raw["insulin"], "insulin", row)
         if insulin < 0:
             raise ValueError(f"row {row}: insulin must be >= 0")
         record["insulin"] = insulin
-    if raw.get("glucose") is not None:
+    if _present(raw, "glucose") is not None:
         record["glucose"] = _fnum(raw["glucose"], "glucose", row)
         glucose_type = raw.get("glucoseType") or raw.get("glucose_type")
         if glucose_type is not None:
@@ -261,12 +279,12 @@ def coerce_treatment_row(raw: dict[str, Any], *, row: int) -> dict[str, Any]:
                     f"{list(treatments_mod.VALID_GLUCOSE_TYPES)}"
                 )
             record["glucoseType"] = glucose_type
-    notes = raw.get("notes")
+    notes = _present(raw, "notes")
     if notes is not None:
         if not isinstance(notes, str):
             raise ValueError(f"row {row}: notes must be a string")
         record["notes"] = notes
-    entered_by = raw.get("enteredBy")
+    entered_by = _present(raw, "enteredBy")
     if entered_by is not None:
         if not isinstance(entered_by, str):
             raise ValueError(f"row {row}: enteredBy must be a string")
@@ -296,6 +314,36 @@ def parse_records(text: str, *, fmt: str = "auto", source: str = "<input>") -> l
         raise ValueError(f"unsupported format {fmt!r}; expected one of {list(RECORD_FORMATS)}")
     if not text or not text.strip():
         raise ValueError(f"{source}: file is empty")
+
+    def _maybe_envelope(body: Any) -> list[dict[str, Any]] | None:
+        """Unwrap an `entries export` / `treatments export` JSON envelope.
+
+        The v2.19.0 history exporters write an envelope
+        (``kind``/``version``/…/``records``) in the same style as
+        ``profile export``; the importers accept it verbatim so export ->
+        import round-trips without a manual unwrap step. Anything else
+        (including profile envelopes, which have their own importer)
+        passes through unchanged as ``None``.
+        """
+        if isinstance(body, dict):
+            kind = body.get("kind")
+            records = body.get("records")
+            if (
+                isinstance(kind, str)
+                and kind
+                in (export_data_mod.ENTRY_EXPORT_KIND, export_data_mod.TREATMENT_EXPORT_KIND)
+                and isinstance(records, list)
+            ):
+                return [r for r in records if isinstance(r, dict)]
+        return None
+
+    if fmt == "json":
+        try:
+            body = json.loads(text)
+        except ValueError as exc:
+            raise ValueError(f"invalid JSON: {exc}") from None
+        env_rows = _maybe_envelope(body)
+        return env_rows if env_rows is not None else _parse_json(text)
     if fmt == "auto":
         stripped = text.lstrip()
         if stripped.startswith("[") or stripped.startswith("{"):
@@ -304,11 +352,15 @@ def parse_records(text: str, *, fmt: str = "auto", source: str = "<input>") -> l
             # falls back to per-line parsing (a single `{` row parses as
             # whole-document JSON anyway).
             try:
-                return _parse_json(text)
-            except ValueError:
+                body = json.loads(text)
+            except ValueError as exc:
                 if _is_json_line(first_line(text)):
                     return _parse_ndjson(text)
-                raise
+                raise ValueError(f"invalid JSON: {exc}") from None
+            env_rows = _maybe_envelope(body)
+            if env_rows is not None:
+                return env_rows
+            return _parse_json(text)
         fmt = "ndjson" if _is_json_line(first_line(text)) else "csv"
     if fmt == "json":
         return _parse_json(text)
